@@ -1,0 +1,40 @@
+.DS_Store
+build
+node_modules
+.venv
+.venv-pv
+.pyvista
+
+bike.vtp
+seeds.jpg
+tunnel.vtu
+
+.coverage
+dev
+.dev-seb.md
+visual_baseline/**/*.txt
+visual_baseline/**/baseline.png
+visual_baseline/**/baseline_diff_*
+
+# local env files
+.env.local
+.env.*.local
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+__pycache__
+*egg-info
+*pyc

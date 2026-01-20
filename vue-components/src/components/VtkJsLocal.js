@@ -3,15 +3,11 @@ import { ref, inject, onMounted, onBeforeUnmount, watchEffect } from "vue";
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
-import vtkMapperPure from "@kitware/vtk.js/Rendering/Core/Mapper";
-import vtkActorPure from "@kitware/vtk.js/Rendering/Core/Actor";
-import vtkRendererPure from "@kitware/vtk.js/Rendering/Core/Renderer";
-import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
 import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera";
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
-import vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
+import vtkRenderPass from "@kitware/vtk.js/Rendering/SceneGraph/RenderPass";
 
 export default {
   emits: ["updated", "camera"],
@@ -39,6 +35,7 @@ export default {
     let interactor = null;
     let resizeObserver = null;
     let synchronizerContext = null;
+    let buildOnlyPass = null;
 
     async function fetchArray(hash) {
       const session = client.getConnection().getSession();
@@ -82,87 +79,18 @@ export default {
       if (!state || !syncRenderWindow) return;
 
       try {
-        // Clear caches to force fresh object creation and array fetching
         synchronizerContext.emptyCachedInstances();
         synchronizerContext.emptyCachedArrays();
 
         const synced = await syncRenderWindow.synchronize(state);
         if (!synced) return;
 
-        emit("updated");
+        // Build the OpenGL scene graph (view nodes) before rendering.
+        // This ensures all view nodes exist before render passes try to use them.
+        buildOnlyPass.traverse(openGLRenderWindow);
 
-        // Synced objects don't get OpenGL view nodes.
-        // Extract data from synced objects and create fresh rendering pipeline.
-        const allRenderers = renderWindow.getRenderers();
-
-        // Filter to only get synced renderers (those with remoteId from sync)
-        const syncedRenderers = allRenderers.filter(ren =>
-          ren.get('remoteId')?.remoteId !== undefined ||
-          ren.get('managedInstanceId')?.managedInstanceId !== undefined
-        );
-
-        // Remove all renderers
-        allRenderers.forEach(ren => renderWindow.removeRenderer(ren));
-
-        const freshRenderer = vtkRendererPure.newInstance();
-
-        if (syncedRenderers.length > 0) {
-          const syncedRen = syncedRenderers[0];
-          freshRenderer.setBackground(...syncedRen.getBackground());
-
-          const syncedCam = syncedRen.getActiveCamera();
-          if (syncedCam) {
-            const freshCam = vtkCamera.newInstance();
-            freshCam.setPosition(...syncedCam.getPosition());
-            freshCam.setFocalPoint(...syncedCam.getFocalPoint());
-            freshCam.setViewUp(...syncedCam.getViewUp());
-            freshCam.setClippingRange(...syncedCam.getClippingRange());
-            freshCam.setViewAngle(syncedCam.getViewAngle());
-            freshCam.setParallelProjection(syncedCam.getParallelProjection());
-            freshCam.setParallelScale(syncedCam.getParallelScale());
-            freshRenderer.setActiveCamera(freshCam);
-          }
-
-          const syncedActors = syncedRen.getActors();
-          syncedActors.forEach((syncedActor) => {
-            const syncedMapper = syncedActor.getMapper();
-            const syncedPolyData = syncedMapper?.getInputData();
-
-            if (syncedPolyData) {
-              const freshPolyData = vtkPolyData.newInstance();
-              const syncedPoints = syncedPolyData.getPoints();
-              const syncedPolys = syncedPolyData.getPolys();
-
-              if (syncedPoints) {
-                freshPolyData.getPoints().setData(syncedPoints.getData(), 3);
-              }
-              if (syncedPolys) {
-                freshPolyData.getPolys().setData(syncedPolys.getData());
-              }
-
-              const freshMapper = vtkMapperPure.newInstance();
-              freshMapper.setInputData(freshPolyData);
-
-              const freshActor = vtkActorPure.newInstance();
-              freshActor.setMapper(freshMapper);
-              freshActor.setVisibility(syncedActor.getVisibility());
-              freshActor.setPosition(...syncedActor.getPosition());
-
-              const syncedProp = syncedActor.getProperty();
-              const freshProp = freshActor.getProperty();
-              if (syncedProp) {
-                freshProp.setColor(...syncedProp.getColor());
-                freshProp.setOpacity(syncedProp.getOpacity());
-                freshProp.setRepresentation(syncedProp.getRepresentation());
-              }
-
-              freshRenderer.addActor(freshActor);
-            }
-          });
-        }
-
-        renderWindow.addRenderer(freshRenderer);
         renderWindow.render();
+        emit("updated");
       } catch (err) {
         console.error("VtkJsLocal: synchronize error", err);
       }
@@ -185,6 +113,10 @@ export default {
 
       renderWindow = vtkRenderWindow.newInstance();
       renderWindow.addView(openGLRenderWindow);
+
+      buildOnlyPass = vtkRenderPass.newInstance({
+        preDelegateOperations: ["buildPass"],
+      });
 
       syncRenderWindow = vtkSynchronizableRenderWindow.decorate(renderWindow, contextName);
 
@@ -224,6 +156,11 @@ export default {
       if (renderWindow) {
         renderWindow.delete();
         renderWindow = null;
+      }
+
+      if (buildOnlyPass) {
+        buildOnlyPass.delete();
+        buildOnlyPass = null;
       }
 
       if (synchronizerContext) {

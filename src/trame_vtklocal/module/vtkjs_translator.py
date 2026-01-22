@@ -122,6 +122,17 @@ SKIP_PROPERTIES = {
     "vtk-object-manager-kept-alive",
 }
 
+RENDERER_SKIP_PROPERTIES = {
+    "backgroundAlpha",
+    "texturedBackground",
+    "automaticLightCreation",
+    "backingStore",
+    "preserveColorBuffer",
+    "preserveDepthBuffer",
+    "useImageBasedLighting",
+    "useSphericalHarmonics",
+}
+
 # Properties vtk.js Camera expects
 CAMERA_PROPERTIES = {
     "position",
@@ -215,6 +226,26 @@ class VtkJsTranslator:
             state_json = self.object_manager.GetState(obj_id)
             self._states_cache[obj_id] = json.loads(state_json)
         return self._states_cache[obj_id]
+
+    def _get_vtk_object(self, obj_id):
+        """Get the actual VTK Python object for an ID."""
+        return self.object_manager.GetObjectAtId(obj_id)
+
+    def _get_collection_items(self, ref_id, ref_class):
+        """Get items from a VTK collection using Python API."""
+        vtk_obj = self._get_vtk_object(ref_id)
+        if vtk_obj is None:
+            ref_state = self._get_state(ref_id)
+            return ref_state.get("Items", [])
+
+        items = []
+        for i in range(vtk_obj.GetNumberOfItems()):
+            item = vtk_obj.GetItemAsObject(i)
+            if item:
+                item_id = self.object_manager.GetId(item)
+                if item_id >= 0:
+                    items.append({"Id": item_id})
+        return items
 
     def _build_array_metadata(self, state):
         class_name = state.get("ClassName", "")
@@ -364,8 +395,8 @@ class VtkJsTranslator:
         dependencies = []
         calls = []
 
-        # For Camera, only include recognized properties to avoid corrupting state
         is_camera = vtkjs_type == "vtkCamera"
+        is_renderer = vtkjs_type == "vtkRenderer"
 
         for key, value in state.items():
             if key in SKIP_PROPERTIES:
@@ -379,7 +410,7 @@ class VtkJsTranslator:
                     ref_class = ref_state.get("ClassName", "")
 
                     if ref_class in COLLECTION_TYPES:
-                        items = ref_state.get("Items", [])
+                        items = self._get_collection_items(ref_id, ref_class)
                         for item_ref in items:
                             item_id = get_ref_id(item_ref)
                             if item_id:
@@ -396,8 +427,9 @@ class VtkJsTranslator:
                 pass
             else:
                 camel_key = to_camel_case(key)
-                # For camera, only include recognized properties
                 if is_camera and camel_key not in CAMERA_PROPERTIES:
+                    continue
+                if is_renderer and camel_key in RENDERER_SKIP_PROPERTIES:
                     continue
                 props[camel_key] = value
 

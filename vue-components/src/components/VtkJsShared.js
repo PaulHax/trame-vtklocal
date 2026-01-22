@@ -1,4 +1,4 @@
-import { ref, inject, onBeforeUnmount } from "vue";
+import { ref, inject, onMounted, onBeforeUnmount } from "vue";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 
@@ -6,6 +6,12 @@ import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
 import vtkRenderPass from "@kitware/vtk.js/Rendering/SceneGraph/RenderPass";
+import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
+import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
+import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
+import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
+import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
+import vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 
 export default {
   emits: ["updated", "viewStateChange", "onReady"],
@@ -33,6 +39,8 @@ export default {
     let stateQueue = [];
     let rwId = null;
     let visibilityHandler = null;
+    let freshRenderer = null;
+    let interactor = null;
 
     async function fetchArray(hash) {
       const session = client.getConnection().getSession();
@@ -74,6 +82,11 @@ export default {
         contextName
       );
 
+      // Create an interactor to control rendering during sync
+      interactor = vtkRenderWindowInteractor.newInstance();
+      interactor.setView(sharedRenderWindow);
+      interactor.initialize();
+
       rwId = String(props.renderWindow);
 
       // Subscribe to delta updates from server
@@ -105,11 +118,97 @@ export default {
       }
 
       ready.value = true;
-      emit("onReady", true);
+    }
+
+    function createFreshObjectsFromSynced() {
+      const allRenderers = renderWindow.getRenderers();
+
+      // Filter to only get synced renderers
+      const syncedRenderers = allRenderers.filter(
+        (ren) =>
+          ren.get("remoteId")?.remoteId !== undefined ||
+          ren.get("managedInstanceId")?.managedInstanceId !== undefined
+      );
+
+      // Remove all renderers
+      allRenderers.forEach((ren) => renderWindow.removeRenderer(ren));
+
+      // Create fresh renderer
+      freshRenderer = vtkRenderer.newInstance();
+
+      if (syncedRenderers.length > 0) {
+        const syncedRen = syncedRenderers[0];
+        freshRenderer.setBackground(...syncedRen.getBackground());
+
+        // Copy camera settings
+        const syncedCam = syncedRen.getActiveCamera();
+        if (syncedCam) {
+          const freshCam = vtkCamera.newInstance();
+          freshCam.setPosition(...syncedCam.getPosition());
+          freshCam.setFocalPoint(...syncedCam.getFocalPoint());
+          freshCam.setViewUp(...syncedCam.getViewUp());
+          freshCam.setClippingRange(...syncedCam.getClippingRange());
+          freshCam.setViewAngle(syncedCam.getViewAngle());
+          freshCam.setParallelProjection(syncedCam.getParallelProjection());
+          freshCam.setParallelScale(syncedCam.getParallelScale());
+          freshRenderer.setActiveCamera(freshCam);
+        }
+
+        // Copy actors
+        const syncedActors = syncedRen.getActors();
+        syncedActors.forEach((syncedActor) => {
+          const syncedMapper = syncedActor.getMapper();
+          const syncedPolyData = syncedMapper?.getInputData();
+
+          if (syncedPolyData) {
+            const freshPolyData = vtkPolyData.newInstance();
+            const syncedPoints = syncedPolyData.getPoints();
+            const syncedPolys = syncedPolyData.getPolys();
+
+            if (syncedPoints) {
+              freshPolyData.getPoints().setData(syncedPoints.getData(), 3);
+            }
+            if (syncedPolys) {
+              freshPolyData.getPolys().setData(syncedPolys.getData());
+            }
+
+            const freshMapper = vtkMapper.newInstance();
+            freshMapper.setInputData(freshPolyData);
+
+            const freshActor = vtkActor.newInstance();
+            freshActor.setMapper(freshMapper);
+            freshActor.setVisibility(syncedActor.getVisibility());
+            freshActor.setPosition(...syncedActor.getPosition());
+            freshActor.setScale(...syncedActor.getScale());
+
+            const syncedProp = syncedActor.getProperty();
+            const freshProp = freshActor.getProperty();
+            if (syncedProp) {
+              freshProp.setColor(...syncedProp.getColor());
+              freshProp.setOpacity(syncedProp.getOpacity());
+              freshProp.setRepresentation(syncedProp.getRepresentation());
+              freshProp.setAmbient(syncedProp.getAmbient());
+              freshProp.setDiffuse(syncedProp.getDiffuse());
+            }
+
+            freshRenderer.addActor(freshActor);
+          }
+        });
+      }
+
+      renderWindow.addRenderer(freshRenderer);
+
+      // Build view nodes for fresh objects
+      buildOnlyPass.traverse(sharedRenderWindow);
     }
 
     async function applyQueuedState() {
       if (!stateQueue.length || !syncRenderWindow) return false;
+
+      // Disable rendering during synchronization
+      if (interactor) {
+        interactor.setEnableRender(false);
+      }
 
       while (stateQueue.length) {
         const state = stateQueue.shift();
@@ -119,12 +218,17 @@ export default {
 
           const synced = await syncRenderWindow.synchronize(state);
           if (synced) {
-            buildOnlyPass.traverse(sharedRenderWindow);
+            createFreshObjectsFromSynced();
             emit("updated");
           }
         } catch (err) {
           console.error("VtkJsShared: synchronize error", err);
         }
+      }
+
+      // Re-enable rendering
+      if (interactor) {
+        interactor.setEnableRender(true);
       }
       return true;
     }
@@ -151,7 +255,7 @@ export default {
     }
 
     function getRenderer() {
-      return renderWindow?.getRenderersByReference?.()?.[0] || null;
+      return freshRenderer || renderWindow?.getRenderersByReference?.()?.[0] || null;
     }
 
     onBeforeUnmount(() => {
@@ -163,6 +267,11 @@ export default {
       if (visibilityHandler) {
         document.removeEventListener("visibilitychange", visibilityHandler);
         visibilityHandler = null;
+      }
+
+      if (interactor) {
+        interactor.delete();
+        interactor = null;
       }
 
       if (sharedRenderWindow) {
@@ -186,6 +295,10 @@ export default {
         );
         synchronizerContext = null;
       }
+    });
+
+    onMounted(() => {
+      emit("onReady", true);
     });
 
     return {

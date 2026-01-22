@@ -51,7 +51,7 @@ state.camera_mode = "orbit"
 state.basemap = "openfreemap_positron"
 state.trame__title = "MapLibre + VTK.js (trame-vtklocal)"
 state.orbit_speed = 1.0
-state.animation_paused = False
+state.animation_paused = True
 
 CITIES = [
     {"name": "New York", "lng": -74.006, "lat": 40.7128, "color": (1.0, 0.5, 0.0)},

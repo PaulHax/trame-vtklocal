@@ -503,18 +503,18 @@ INIT_SCRIPT_JS = """
                 const projMatrix = projData.mainMatrix;
 
                 const renderer = vtkView.getRenderer();
-                if (renderer) {
-                    const camera = renderer.getActiveCamera();
-                    const identity = new Float64Array([
-                        1, 0, 0, 0,
-                        0, 1, 0, 0,
-                        0, 0, 1, 0,
-                        0, 0, 0, 1
-                    ]);
-                    camera.setViewMatrix(identity);
-                    camera.setProjectionMatrix(projMatrix);
-                    camera.modified();
-                }
+                if (!renderer) return;
+
+                const camera = renderer.getActiveCamera();
+                const identity = new Float64Array([
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ]);
+                camera.setViewMatrix(identity);
+                camera.setProjectionMatrix(projMatrix);
+                camera.modified();
 
                 const rw = vtkView.getRenderWindow();
                 if (rw) {

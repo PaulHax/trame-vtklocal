@@ -93,9 +93,12 @@ export default {
             }
             stateQueue.push(deltaState);
             emit("viewStateChange", deltaState);
-            if (renderRequestedCallback) {
-              renderRequestedCallback();
-            }
+            // Process state immediately (async) so it's ready before next render
+            applyQueuedState().then(() => {
+              if (renderRequestedCallback) {
+                renderRequestedCallback();
+              }
+            });
           }
         });
 
@@ -202,7 +205,6 @@ export default {
             }
 
             renderWindow.addRenderer(freshRenderer);
-            buildOnlyPass.traverse(sharedRenderWindow);
             emit("updated");
           }
         } catch (err) {
@@ -214,8 +216,6 @@ export default {
 
     function renderShared(options = {}) {
       const { skipRender = false } = options;
-
-      applyQueuedState();
 
       if (!skipRender && sharedRenderWindow) {
         sharedRenderWindow.renderShared({});

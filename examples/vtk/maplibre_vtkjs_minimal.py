@@ -55,7 +55,10 @@ server.enable_module({
 
 JS_INIT = """
 (function() {
+    let mapInitialized = false;
     window.initMapVTK = async function() {
+        if (mapInitialized) return;
+
         const vtkViewRef = window.trame?.refs?.vtkView;
         const vtkView = vtkViewRef?.initializeForSharedContext ? vtkViewRef :
                         vtkViewRef?.$.exposed || vtkViewRef;
@@ -64,6 +67,8 @@ JS_INIT = """
             setTimeout(window.initMapVTK, 100);
             return;
         }
+
+        mapInitialized = true;
 
         const map = new maplibregl.Map({
             container: 'map-container',

@@ -39,6 +39,22 @@ export default {
     let rwId = null;
     let visibilityHandler = null;
     let freshRenderer = null;
+    let glContext = null;
+
+    // Reset GL state for shared context rendering.
+    // VTK's internal render passes set scissor/viewport to tiled regions,
+    // which can clip the external library's rendering. This resets to full canvas.
+    function resetGLStateForSharedContext() {
+      const gl = glContext;
+      if (!gl) return;
+
+      const width = gl.drawingBufferWidth;
+      const height = gl.drawingBufferHeight;
+
+      gl.disable(gl.SCISSOR_TEST);
+      gl.viewport(0, 0, width, height);
+      gl.scissor(0, 0, width, height);
+    }
 
     async function fetchArray(hash) {
       const session = client.getConnection().getSession();
@@ -60,6 +76,8 @@ export default {
 
     function initializeForSharedContext(canvas, gl, options = {}) {
       const { syncStateAtRender = false, onResyncRequired = null } = options;
+
+      glContext = gl;
 
       const contextName = `vtkjs-shared-${props.renderWindow}`;
       synchronizerContext =
@@ -123,13 +141,11 @@ export default {
       while (stateQueue.length) {
         const state = stateQueue.shift();
         try {
-          synchronizerContext.emptyCachedInstances();
-          synchronizerContext.emptyCachedArrays();
-
+          // Prepare GL state before synchronize because it internally calls render()
+          sharedRenderWindow?.prepareSharedRender?.();
           const synced = await syncRenderWindow.synchronize(state);
           if (synced) {
-            // Synced objects don't get OpenGL view nodes properly.
-            // Extract data and create fresh rendering pipeline.
+            // Use synced renderer directly instead of creating fresh objects
             const allRenderers = renderWindow.getRenderers();
             const syncedRenderers = allRenderers.filter(
               (ren) =>
@@ -137,74 +153,9 @@ export default {
                 ren.get("managedInstanceId")?.managedInstanceId !== undefined
             );
 
-            allRenderers.forEach((ren) => renderWindow.removeRenderer(ren));
-
-            freshRenderer = vtkRenderer.newInstance();
-
             if (syncedRenderers.length > 0) {
-              const syncedRen = syncedRenderers[0];
-              freshRenderer.setBackground(...syncedRen.getBackground());
-
-              const syncedCam = syncedRen.getActiveCamera();
-              if (syncedCam) {
-                const freshCam = vtkCamera.newInstance();
-                freshCam.setPosition(...syncedCam.getPosition());
-                freshCam.setFocalPoint(...syncedCam.getFocalPoint());
-                freshCam.setViewUp(...syncedCam.getViewUp());
-                freshCam.setClippingRange(...syncedCam.getClippingRange());
-                freshCam.setViewAngle(syncedCam.getViewAngle());
-                freshCam.setParallelProjection(syncedCam.getParallelProjection());
-                freshCam.setParallelScale(syncedCam.getParallelScale());
-                // Initialize with identity matrices for shared context rendering
-                const identity = new Float64Array([
-                  1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
-                ]);
-                freshCam.setViewMatrix(identity);
-                freshCam.setProjectionMatrix(identity);
-                freshRenderer.setActiveCamera(freshCam);
-              }
-
-              syncedRen.getActors().forEach((syncedActor) => {
-                const syncedMapper = syncedActor.getMapper();
-                const syncedPolyData = syncedMapper?.getInputData();
-
-                if (syncedPolyData) {
-                  const freshPolyData = vtkPolyData.newInstance();
-                  const syncedPoints = syncedPolyData.getPoints();
-                  const syncedPolys = syncedPolyData.getPolys();
-
-                  if (syncedPoints) {
-                    freshPolyData.getPoints().setData(syncedPoints.getData(), 3);
-                  }
-                  if (syncedPolys) {
-                    freshPolyData.getPolys().setData(syncedPolys.getData());
-                  }
-
-                  const freshMapper = vtkMapper.newInstance();
-                  freshMapper.setInputData(freshPolyData);
-
-                  const freshActor = vtkActor.newInstance();
-                  freshActor.setMapper(freshMapper);
-                  freshActor.setVisibility(syncedActor.getVisibility());
-                  freshActor.setPosition(...syncedActor.getPosition());
-                  freshActor.setScale(...syncedActor.getScale());
-
-                  const syncedProp = syncedActor.getProperty();
-                  const freshProp = freshActor.getProperty();
-                  if (syncedProp) {
-                    freshProp.setColor(...syncedProp.getColor());
-                    freshProp.setOpacity(syncedProp.getOpacity());
-                    freshProp.setRepresentation(syncedProp.getRepresentation());
-                    freshProp.setAmbient(syncedProp.getAmbient());
-                    freshProp.setDiffuse(syncedProp.getDiffuse());
-                  }
-
-                  freshRenderer.addActor(freshActor);
-                }
-              });
+              freshRenderer = syncedRenderers[0];
             }
-
-            renderWindow.addRenderer(freshRenderer);
             emit("updated");
           }
         } catch (err) {
@@ -219,6 +170,8 @@ export default {
 
       if (!skipRender && sharedRenderWindow) {
         sharedRenderWindow.renderShared({});
+        // Reset GL state after VTK render to avoid clipping external library
+        resetGLStateForSharedContext();
       }
     }
 
@@ -277,6 +230,7 @@ export default {
       onRenderRequested,
       getRenderWindow,
       getRenderer,
+      resetGLStateForSharedContext,
     };
   },
   template: `<div style="display: none;"></div>`,

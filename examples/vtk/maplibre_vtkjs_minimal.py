@@ -77,6 +77,7 @@ JS_INIT = """
             zoom: 6,
             antialias: true
         });
+        window._map = map;
 
         await new Promise(r => map.on('load', r));
         vtkView.onRenderRequested(() => map.triggerRepaint());
@@ -92,18 +93,8 @@ JS_INIT = """
                 });
             },
             render(gl, args) {
-                vtkView.renderShared({ skipRender: true });
-                const renderer = vtkView.getRenderer();
-                if (!renderer) return;
-
-                const proj = map.transform.getProjectionDataForCustomLayer?.() || args.defaultProjectionData;
-                const cam = renderer.getActiveCamera();
-                cam.setViewMatrix(new Float64Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]));
-                cam.setProjectionMatrix(proj.mainMatrix);
-                cam.modified();
-
-                const views = vtkView.getRenderWindow()?.getViews();
-                if (views?.[0]?.renderShared) views[0].renderShared({});
+                vtkView.renderShared({});
+                vtkView.resetGLStateForSharedContext?.();
             }
         });
 
@@ -113,14 +104,41 @@ JS_INIT = """
             map.addLayer(this);
         });
     };
+
+    // Auto-start when trame is ready
+    if (document.readyState === 'complete') {
+        setTimeout(window.initMapVTK, 100);
+    } else {
+        window.addEventListener('load', () => setTimeout(window.initMapVTK, 100));
+    }
 })();
 """
 
 server.enable_module({"scripts": [f"data:text/javascript,{url_quote(JS_INIT)}"]})
 
 
+def find_camera_in_state(obj, path=""):
+    if obj.get("type") == "vtkCamera":
+        return {"path": path, "camera": obj}
+    for i, dep in enumerate(obj.get("dependencies", [])):
+        result = find_camera_in_state(dep, f"{path}.dependencies[{i}]")
+        if result:
+            return result
+    return None
+
 @server.trigger("sync")
 def sync():
+    import json
+    from trame_vtklocal.module.vtkjs_translator import translate_scene
+    render_window.Render()
+    view.object_manager.UpdateStatesFromObjects()
+    state = translate_scene(view.object_manager, view._window_id)
+    camera_info = find_camera_in_state(state)
+    if camera_info:
+        print(f"[Python] Camera found at: {camera_info['path']}")
+        print(f"[Python] Camera properties: {json.dumps(camera_info['camera'].get('properties', {}), indent=2)}")
+    else:
+        print("[Python] No camera found in state")
     ctrl.view_update(inline_arrays=True)
 
 

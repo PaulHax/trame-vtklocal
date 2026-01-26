@@ -113,6 +113,7 @@ POLYDATA_ARRAYS = {
 }
 
 SKIP_PROPERTIES = {
+    # Core VTK object properties not needed in vtk.js
     "Id",
     "ClassName",
     "MTime",
@@ -120,6 +121,132 @@ SKIP_PROPERTIES = {
     "GlobalWarningDisplay",
     "ObjectName",
     "vtk-object-manager-kept-alive",
+    # CoordinateSystem enums are incompatible between Python VTK and vtk.js:
+    # - Python VTK (vtkProp3D): WORLD=0, PHYSICAL=1, DEVICE=2 (for VR positioning)
+    # - vtk.js: DISPLAY=0, WORLD=1 (DISPLAY is for 2D screen-space overlays)
+    # Python VTK uses vtkActor2D + vtkCoordinate for 2D overlays, not CoordinateSystem.
+    # Skipping lets vtk.js default to WORLD mode. This is a limitation - PHYSICAL and
+    # DEVICE coordinate systems (VR) are not supported.
+    "CoordinateSystem",
+    "CoordinateSystemDevice",
+    # Properties below exist in Python VTK but have no setters in vtk.js.
+    # Skipping them avoids console warnings and reduces network traffic.
+    # RenderWindow properties
+    "abortRender",
+    "alphaBitPlanes",
+    "anaglyphColorMask",
+    "anaglyphColorSaturation",
+    "borders",
+    "coverable",
+    "currentCursor",
+    "desiredUpdateRate",
+    "deviceIndex",
+    "doubleBuffer",
+    "erase",
+    "frameBlitMode",
+    "framebufferFlipY",
+    "fullScreen",
+    "globalMaximumNumberOfMultiSamples",
+    "inAbortCheck",
+    "lineSmoothing",
+    "multiSamples",
+    "pointSmoothing",
+    "polygonSmoothing",
+    "renderBufferTargetDepthSize",
+    "showWindow",
+    "stencilCapable",
+    "stereoCapableWindow",
+    "stereoRender",
+    "stereoType",
+    "swapBuffers",
+    "tileScale",
+    "tileViewport",
+    "useOffScreenBuffers",
+    "useSRGBColorSpace",
+    "windowName",
+    # Renderer properties
+    "allocatedRenderTime",
+    "aspect",
+    "displayPoint",
+    "ditherGradient",
+    "environmentRight",
+    "environmentUp",
+    "environmentalBG",
+    "environmentalBG2",
+    "gradientBackground",
+    "gradientEnvironmentalBG",
+    "gradientMode",
+    "pixelAspect",
+    "sSAOBias",
+    "sSAOBlur",
+    "sSAOKernelSize",
+    "sSAORadius",
+    "safeGetZ",
+    "useDepthPeelingForVolumes",
+    "useFXAA",
+    "useHiddenLineRemoval",
+    "useOIT",
+    "useSSAO",
+    "viewPoint",
+    "worldPoint",
+    # Property (actor appearance) properties
+    "allTextures",
+    "ambientColor",
+    "anisotropy",
+    "anisotropyRotation",
+    "coatColor",
+    "coatIOR",
+    "coatNormalScale",
+    "coatRoughness",
+    "coatStrength",
+    "diffuseColor",
+    "edgeOpacity",
+    "edgeTint",
+    "edgeWidth",
+    "emissiveFactor",
+    "lineStipplePattern",
+    "lineStippleRepeatFactor",
+    "normalScale",
+    "occlusionStrength",
+    "point2DShape",
+    "renderLinesAsTubes",
+    "renderPointsAsSpheres",
+    "selectionColor",
+    "selectionLineWidth",
+    "selectionPointSize",
+    "shading",
+    "showTexturesOnBackface",
+    "specularColor",
+    "useLineWidthForEdgeThickness",
+    "vertexColor",
+    "vertexVisibility",
+    # Mapper properties
+    "abortExecute",
+    "arrayComponent",
+    "arrayId",
+    "arrayName",
+    "ghostLevel",
+    "numberOfSubPieces",
+    "pauseShiftScale",
+    "piece",
+    "resolveCoincidentTopologyZShift",
+    "seamlessU",
+    "seamlessV",
+    "useProgramPointSize",
+    "vBOShiftScaleMethod",
+    # LookupTable properties
+    "annotatedValues",
+    "editable",
+    "globalReleaseDataFlag",
+    "ramp",
+    "tableRange",
+    # VR/Physical properties (not supported in vtk.js web context)
+    "physicalScale",
+    "physicalTranslation",
+    "physicalViewDirection",
+    "physicalViewUp",
+    # Misc
+    "enableTranslucentSurface",
 }
 
 RENDERER_SKIP_PROPERTIES = {
@@ -279,7 +406,7 @@ class VtkJsTranslator:
         fields = []
 
         for key, value in state.items():
-            if key in SKIP_PROPERTIES:
+            if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
                 continue
 
             if key in POLYDATA_ARRAYS:
@@ -354,7 +481,7 @@ class VtkJsTranslator:
         calls = []
 
         for key, value in state.items():
-            if key in SKIP_PROPERTIES:
+            if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
                 continue
 
             if key == "InputDataObjects":
@@ -399,7 +526,7 @@ class VtkJsTranslator:
         is_renderer = vtkjs_type == "vtkRenderer"
 
         for key, value in state.items():
-            if key in SKIP_PROPERTIES:
+            if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
                 continue
 
             ref_id = get_ref_id(value)

@@ -194,7 +194,7 @@ center_mapper = vtkPolyDataMapper()
 center_mapper.SetInputConnection(sphere_source.GetOutputPort())
 center_actor = vtkActor()
 center_actor.SetMapper(center_mapper)
-center_actor.GetProperty().SetColor(1.0, 0.0, 0.0)
+center_actor.GetProperty().SetColor(1.0, 0.5, 0.0)
 center_actor.GetProperty().SetAmbient(1.0)
 center_actor.GetProperty().SetDiffuse(0.0)
 center_actor.SetScale(center_scale * 50000, center_scale * 50000, center_scale * 50000)
@@ -285,7 +285,6 @@ async def animate_cones():
         marker_size = marker_scale * 50000
         center_actor.SetPosition(marker_x, marker_y, marker_size * 0.5)
         center_actor.SetScale(marker_size, marker_size, marker_size)
-
         update_trail(orbit_lng, orbit_lat, marker_size)
 
         if state.camera_mode == "orbit":
@@ -547,6 +546,13 @@ INIT_SCRIPT_JS = """
 
         window.trame.trigger('start_animation');
     };
+
+    // Auto-start when page is ready
+    if (document.readyState === 'complete') {
+        setTimeout(window.initMapLibreVTK, 100);
+    } else {
+        window.addEventListener('load', () => setTimeout(window.initMapLibreVTK, 100));
+    }
 })();
 """
 
@@ -570,16 +576,6 @@ with SinglePageLayout(server) as layout:
             hide_details=True,
             style="max-width: 150px;",
             classes="mr-2",
-        )
-        vuetify3.VDivider(vertical=True, classes="mx-2")
-        vuetify3.VSwitch(
-            v_model=("sync_mode",),
-            label=("sync_mode ? 'Sync' : 'Async'",),
-            color="success",
-            hide_details=True,
-            density="compact",
-            change="window.trame.refs.mapController.toggleSyncMode()",
-            classes="mr-4",
         )
         vuetify3.VDivider(vertical=True, classes="mx-2")
         with vuetify3.VBtnToggle(

@@ -195,9 +195,7 @@ with SinglePageLayout(server) as layout:
                     on_ready="window.initVtkView && window.initVtkView()",
                 )
                 ctrl.view_update = view.update
-                ctrl.view_partial_update = view.update_array_region
                 ctrl.mark_modified = view.mark_modified
-                ctrl.polydata_id = view.get_instance_id(polydata)
 
 
 INIT_SCRIPT_JS = """

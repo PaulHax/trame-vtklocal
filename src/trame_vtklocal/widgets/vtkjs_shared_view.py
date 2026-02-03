@@ -364,37 +364,6 @@ class VtkJsSharedView(HtmlElement):
             return renderers.GetItemAsObject(0)
         return None
 
-    def append_array(self, array_id, data, data_type, offset, total_size):
-        """Publish an incremental array update.
-
-        This is used for high-frequency geometry updates where only a portion
-        of the array changes. The client maintains a buffer and appends the
-        new data at the specified offset.
-
-        Args:
-            array_id: Unique identifier for the array (use consistent IDs for the same array)
-            data: The data to append (bytes or base64 string)
-            data_type: JavaScript typed array type (e.g., "Float32Array")
-            offset: Element offset where data should be written
-            total_size: Total number of elements in the complete array
-        """
-        if not self.server.protocol:
-            return
-
-        if isinstance(data, bytes):
-            data = base64.b64encode(data).decode("ascii")
-
-        self.server.protocol.publish(
-            "trame.vtk.array.append",
-            {
-                "arrayId": array_id,
-                "dataType": data_type,
-                "data": data,
-                "offset": offset,
-                "totalSize": total_size,
-            },
-        )
-
     def get_instance_id(self, vtk_object):
         """Get the vtk.js synchronized instance ID for a VTK object.
 
@@ -402,57 +371,10 @@ class VtkJsSharedView(HtmlElement):
             vtk_object: A VTK object that has been registered with the object manager
 
         Returns:
-            String ID that can be used with update_array_region
+            String ID used internally by mark_modified()
         """
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
-
-    def update_array_region(self, instance_id, array_path, data, offset=0, data_type="Float64Array"):
-        """Update a portion of an array on an existing vtk.js object.
-
-        This directly modifies the vtk.js object's array data and triggers a re-render.
-        Much more efficient than full state sync for high-frequency updates.
-
-        Note: If called before any full sync has occurred, this will automatically
-        trigger a full state sync first to ensure the vtk.js objects exist.
-
-        Args:
-            instance_id: The vtk.js instance ID (from get_instance_id)
-            array_path: Which array to update ("points", "polys", "lines", "verts", "strips")
-            data: The data to write (bytes, numpy array, or base64 string)
-            offset: Element offset where data should be written (default 0)
-            data_type: JavaScript typed array type (default "Float64Array")
-
-        Example:
-            # Update points 10-12 of a PolyData
-            trail_id = view.get_instance_id(trail_polydata)
-            point_data = np.array([[x1,y1,z1], [x2,y2,z2]], dtype=np.float64).tobytes()
-            view.update_array_region(
-                instance_id=trail_id,
-                array_path="points",
-                data=point_data,
-                offset=10 * 3,  # 10 points * 3 components
-            )
-        """
-        if not self.server.protocol:
-            return
-
-        if not self._initial_sync_done:
-            self.request_resync()
-
-        if isinstance(data, bytes):
-            data = base64.b64encode(data).decode("ascii")
-
-        self.server.protocol.publish(
-            "trame.vtk.array.partial",
-            {
-                "instanceId": instance_id,
-                "arrayPath": array_path,
-                "offset": offset,
-                "data": data,
-                "dataType": data_type,
-            },
-        )
 
 
 __all__ = ["VtkJsSharedView"]

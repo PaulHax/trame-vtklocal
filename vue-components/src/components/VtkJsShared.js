@@ -48,15 +48,12 @@ export default {
     let buildOnlyPass = null;
     let renderRequestedCallback = null;
     let wsSubscription = null;
-    let wsAppendSubscription = null;
     let wsPartialUpdateSubscription = null;
     let stateQueue = [];
     let rwId = null;
     let visibilityHandler = null;
     let freshRenderer = null;
     let glContext = null;
-
-    const incrementalArrayCache = new Map();
 
     // Reset GL state for shared context rendering.
     // VTK's internal render passes set scissor/viewport to tiled regions,
@@ -89,33 +86,6 @@ export default {
         return content;
       }
       return content;
-    }
-
-    function processIncrementalArray(arrayId, dataType, appendData, appendOffset, totalSize) {
-      let cached = incrementalArrayCache.get(arrayId);
-
-      const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
-      const bytesPerElement = TypedArrayCtor.BYTES_PER_ELEMENT;
-
-      if (!cached || cached.buffer.byteLength < totalSize * bytesPerElement) {
-        const newBuffer = new ArrayBuffer(totalSize * bytesPerElement);
-        const newArray = new TypedArrayCtor(newBuffer);
-
-        if (cached) {
-          newArray.set(cached.array);
-        }
-        cached = { buffer: newBuffer, array: newArray };
-        incrementalArrayCache.set(arrayId, cached);
-      }
-
-      const appendArray = new TypedArrayCtor(appendData);
-      cached.array.set(appendArray, appendOffset);
-
-      return cached.buffer;
-    }
-
-    function clearIncrementalCache() {
-      incrementalArrayCache.clear();
     }
 
     function initializeForSharedContext(canvas, gl, options = {}) {
@@ -162,15 +132,6 @@ export default {
               }
             });
           }
-        });
-
-      // Subscribe to incremental array updates (separate cache, not connected to vtk.js)
-      wsAppendSubscription = client
-        .getConnection()
-        .getSession()
-        .subscribe("trame.vtk.array.append", ([update]) => {
-          const { arrayId, dataType, data, offset, totalSize } = update;
-          processIncrementalArray(arrayId, dataType, data, offset, totalSize);
         });
 
       // Subscribe to partial array updates (directly updates vtk.js objects)
@@ -337,11 +298,6 @@ export default {
         wsSubscription = null;
       }
 
-      if (wsAppendSubscription && client) {
-        client.getConnection().getSession().unsubscribe(wsAppendSubscription);
-        wsAppendSubscription = null;
-      }
-
       if (wsPartialUpdateSubscription && client) {
         client.getConnection().getSession().unsubscribe(wsPartialUpdateSubscription);
         wsPartialUpdateSubscription = null;
@@ -351,8 +307,6 @@ export default {
         document.removeEventListener("visibilitychange", visibilityHandler);
         visibilityHandler = null;
       }
-
-      clearIncrementalCache();
 
       if (sharedRenderWindow) {
         sharedRenderWindow.delete();

@@ -207,6 +207,10 @@ trail_polydata = vtkPolyData()
 trail_polydata.SetPoints(trail_points)
 trail_polydata.SetLines(trail_lines)
 
+trail_points.SetNumberOfPoints(MAX_TRAIL_POINTS)
+for i in range(MAX_TRAIL_POINTS):
+    trail_points.SetPoint(i, 0, 0, 0)
+
 trail_tube = vtkTubeFilter()
 trail_tube.SetInputData(trail_polydata)
 trail_tube.SetNumberOfSides(8)
@@ -223,38 +227,48 @@ trail_actor.GetProperty().SetAmbient(1.0)
 trail_actor.GetProperty().SetDiffuse(0.0)
 renderer.AddActor(trail_actor)
 
-trail_scale_factor = [None]
+trail_state = {
+    "scale_factor": None,
+    "write_idx": 0,
+    "count": 0,
+    "last_cell_config": None,
+}
 
 
 def update_trail(lng, lat, scale):
-    """Add a point to the orbit trail."""
+    """Add a point to the orbit trail using ring buffer (O(1) per frame)."""
     x, y, z, _ = lng_lat_to_mercator(lng, lat)
     z_height = scale * 0.3
 
-    if trail_scale_factor[0] is None or abs(trail_scale_factor[0] - scale) > scale * 0.1:
-        trail_scale_factor[0] = scale
+    if trail_state["scale_factor"] is None or abs(trail_state["scale_factor"] - scale) > scale * 0.1:
+        trail_state["scale_factor"] = scale
         trail_tube.SetRadius(scale * 0.25)
 
-    num_points = trail_points.GetNumberOfPoints()
+    write_idx = trail_state["write_idx"]
+    trail_points.SetPoint(write_idx, x, y, z_height)
 
-    if num_points >= MAX_TRAIL_POINTS:
-        for i in range(num_points - 1):
-            trail_points.SetPoint(i, trail_points.GetPoint(i + 1))
-        trail_points.SetPoint(num_points - 1, x, y, z_height)
-    else:
-        trail_points.InsertNextPoint(x, y, z_height)
-        num_points += 1
+    trail_state["write_idx"] = (write_idx + 1) % MAX_TRAIL_POINTS
+    if trail_state["count"] < MAX_TRAIL_POINTS:
+        trail_state["count"] += 1
 
-    trail_lines.Reset()
-    if num_points > 1:
-        trail_lines.InsertNextCell(num_points)
-        for i in range(num_points):
-            trail_lines.InsertCellPoint(i)
+    count = trail_state["count"]
+    if count < 2:
+        return
 
+    start_idx = (trail_state["write_idx"] - count + MAX_TRAIL_POINTS) % MAX_TRAIL_POINTS
+    cell_config = (count, start_idx)
+    if trail_state["last_cell_config"] != cell_config:
+        trail_state["last_cell_config"] = cell_config
+        trail_lines.Reset()
+        trail_lines.InsertNextCell(count)
+        for i in range(count):
+            idx = (start_idx + i) % MAX_TRAIL_POINTS
+            trail_lines.InsertCellPoint(idx)
+
+    trail_points.Modified()
     trail_polydata.Modified()
-    if num_points >= 2:
-        trail_tube.Update()
-        trail_mapper.Update()
+    trail_tube.Update()
+    trail_mapper.Update()
 
 
 async def animate_cones():

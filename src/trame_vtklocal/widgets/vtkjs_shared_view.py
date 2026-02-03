@@ -6,6 +6,7 @@ The external library owns the WebGL context and VTK renders into it.
 """
 
 import base64
+import numpy as np
 from trame_client.widgets.core import AbstractElement
 from trame_vtklocal import module
 
@@ -133,6 +134,8 @@ class VtkJsSharedView(HtmlElement):
         self._inline_array_cache = {}
         self._sent_hashes = set()
         self._debug_arrays = debug_arrays
+        self._initial_sync_done = False
+        self._pending_changes = []  # [(vtk_obj, instance_id, array_path, start, count)]
 
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self.__ref}"'
@@ -162,6 +165,7 @@ class VtkJsSharedView(HtmlElement):
 
     def _on_client_connected(self, **kwargs):
         """Send full state when client (re)connects."""
+        self._initial_sync_done = False
         self.request_resync()
 
     def _get_vtkjs_state(self):
@@ -179,6 +183,7 @@ class VtkJsSharedView(HtmlElement):
         browser sleep/wake, visibility change, or detected missing content).
         """
         self._sent_hashes.clear()
+        self._pending_changes.clear()
 
         if not self.server.protocol:
             return
@@ -189,22 +194,156 @@ class VtkJsSharedView(HtmlElement):
             full_state.setdefault("extra", {}).update(extra)
 
         self.server.protocol.publish("trame.vtk.delta", full_state)
+        self._initial_sync_done = True
 
-    def update(self, inline_arrays=False, extra=None, **kwargs):
+    def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
+        """Mark a range of an array as modified for partial update.
+
+        Call this after modifying VTK array data. The next update() will
+        send only the marked regions instead of doing a full sync.
+
+        Args:
+            vtk_object: The VTK object (e.g., vtkPolyData) that was modified
+            array_path: Which array changed ("points", "lines", "polys")
+            start: Starting element index (not byte offset)
+            count: Number of elements changed (None = to end of array)
+            data: Optional pre-computed bytes to send (skips VTK extraction)
+            data_type: Required if data provided. Use "Float32Array" for points
+                (matches vtk.js internal format), "BigInt64Array" for cell arrays.
+
+        Example:
+            # Simple - extracts from VTK:
+            points.SetPoint(10, x, y, z)
+            view.mark_modified(polydata, "points", start=10, count=1)
+
+            # Fast - pass pre-computed data (use float32 for points):
+            point_bytes = np.array([x, y, z], dtype=np.float32).tobytes()
+            view.mark_modified(polydata, "points", start=10, data=point_bytes, data_type="Float32Array")
+
+            view.update()  # Sends only the marked changes
+        """
+        instance_id = self.get_instance_id(vtk_object)
+        self._pending_changes.append((vtk_object, instance_id, array_path, start, count, data, data_type))
+
+    def _flush_pending_changes(self):
+        """Send all pending partial updates."""
+        if not self._pending_changes or not self.server.protocol:
+            return False
+
+        if not self._initial_sync_done:
+            self.request_resync()
+
+        for vtk_obj, instance_id, array_path, start, count, raw_data, raw_type in self._pending_changes:
+            if raw_data is not None:
+                # Fast path: use pre-computed data
+                data = raw_data
+                data_type = raw_type
+                # Calculate element offset (JS TypedArray.set uses element index, not bytes)
+                if array_path == "points":
+                    element_offset = start * 3  # 3 components per point
+                else:
+                    element_offset = start  # 1 element per cell data entry
+            else:
+                # Simple path: extract from VTK
+                data, data_type, bytes_per_elem = self._extract_array_region(
+                    vtk_obj, array_path, start, count
+                )
+                if data is None:
+                    continue
+                # Calculate element offset from bytes_per_elem
+                if array_path == "points":
+                    element_offset = start * 3  # 3 components per point
+                else:
+                    element_offset = start
+
+            if isinstance(data, bytes):
+                data = base64.b64encode(data).decode("ascii")
+
+            self.server.protocol.publish(
+                "trame.vtk.array.partial",
+                {
+                    "instanceId": instance_id,
+                    "arrayPath": array_path,
+                    "offset": element_offset,
+                    "data": data,
+                    "dataType": data_type,
+                },
+            )
+
+        self._pending_changes.clear()
+        return True
+
+    def _extract_array_region(self, vtk_object, array_path, start, count):
+        """Extract a region of array data from a VTK object.
+
+        Returns:
+            Tuple of (bytes, data_type_str, bytes_per_element) or (None, None, None)
+        """
+        if array_path == "points" and hasattr(vtk_object, "GetPoints"):
+            pts = vtk_object.GetPoints()
+            if pts:
+                data = pts.GetData()
+                if data:
+                    arr = np.array(data)
+                    n_components = 3
+                    if count is None:
+                        count = len(arr) - start
+                    end = start + count
+                    # Use Float32 to match vtk.js internal storage format
+                    region = arr[start:end].flatten().astype(np.float32)
+                    return region.tobytes(), "Float32Array", 4 * n_components
+
+        elif array_path == "lines" and hasattr(vtk_object, "GetLines"):
+            lines = vtk_object.GetLines()
+            if lines:
+                data = lines.GetData()
+                if data:
+                    arr = np.array(data)
+                    if count is None:
+                        count = len(arr) - start
+                    end = start + count
+                    region = arr[start:end]
+                    return region.astype(np.int64).tobytes(), "BigInt64Array", 8
+
+        elif array_path == "polys" and hasattr(vtk_object, "GetPolys"):
+            polys = vtk_object.GetPolys()
+            if polys:
+                data = polys.GetData()
+                if data:
+                    arr = np.array(data)
+                    if count is None:
+                        count = len(arr) - start
+                    end = start + count
+                    region = arr[start:end]
+                    return region.astype(np.int64).tobytes(), "BigInt64Array", 8
+
+        return None, None, None
+
+    def update(self, inline_arrays=False, extra=None, push_pending=True, **kwargs):
         """
         Push geometry updates to client via delta channel.
 
         Args:
             inline_arrays: If True, inline array content in the state.
                 Uses hash tracking to skip arrays already sent to client.
+                Unchanged arrays (same hash) won't have content re-sent.
             extra: Optional dict to include in state (e.g., orbitCamera for MapLibre).
+            push_pending: If True (default), send any pending partial updates first.
         """
         if not self.server.protocol:
             return
 
+        # Send partial array updates if any
+        if push_pending and self._pending_changes:
+            self._flush_pending_changes()
+
+        # Get current state
         delta_state = self._get_vtkjs_state()
+
         if inline_arrays:
             _inline_arrays(delta_state, self.object_manager, self._sent_hashes)
+            self._initial_sync_done = True
+
         if extra:
             delta_state.setdefault("extra", {}).update(extra)
 
@@ -224,6 +363,96 @@ class VtkJsSharedView(HtmlElement):
         if renderers.GetNumberOfItems() > 0:
             return renderers.GetItemAsObject(0)
         return None
+
+    def append_array(self, array_id, data, data_type, offset, total_size):
+        """Publish an incremental array update.
+
+        This is used for high-frequency geometry updates where only a portion
+        of the array changes. The client maintains a buffer and appends the
+        new data at the specified offset.
+
+        Args:
+            array_id: Unique identifier for the array (use consistent IDs for the same array)
+            data: The data to append (bytes or base64 string)
+            data_type: JavaScript typed array type (e.g., "Float32Array")
+            offset: Element offset where data should be written
+            total_size: Total number of elements in the complete array
+        """
+        if not self.server.protocol:
+            return
+
+        if isinstance(data, bytes):
+            data = base64.b64encode(data).decode("ascii")
+
+        self.server.protocol.publish(
+            "trame.vtk.array.append",
+            {
+                "arrayId": array_id,
+                "dataType": data_type,
+                "data": data,
+                "offset": offset,
+                "totalSize": total_size,
+            },
+        )
+
+    def get_instance_id(self, vtk_object):
+        """Get the vtk.js synchronized instance ID for a VTK object.
+
+        Args:
+            vtk_object: A VTK object that has been registered with the object manager
+
+        Returns:
+            String ID that can be used with update_array_region
+        """
+        vtk_id = self.object_manager.GetId(vtk_object)
+        return str(vtk_id)
+
+    def update_array_region(self, instance_id, array_path, data, offset=0, data_type="Float64Array"):
+        """Update a portion of an array on an existing vtk.js object.
+
+        This directly modifies the vtk.js object's array data and triggers a re-render.
+        Much more efficient than full state sync for high-frequency updates.
+
+        Note: If called before any full sync has occurred, this will automatically
+        trigger a full state sync first to ensure the vtk.js objects exist.
+
+        Args:
+            instance_id: The vtk.js instance ID (from get_instance_id)
+            array_path: Which array to update ("points", "polys", "lines", "verts", "strips")
+            data: The data to write (bytes, numpy array, or base64 string)
+            offset: Element offset where data should be written (default 0)
+            data_type: JavaScript typed array type (default "Float64Array")
+
+        Example:
+            # Update points 10-12 of a PolyData
+            trail_id = view.get_instance_id(trail_polydata)
+            point_data = np.array([[x1,y1,z1], [x2,y2,z2]], dtype=np.float64).tobytes()
+            view.update_array_region(
+                instance_id=trail_id,
+                array_path="points",
+                data=point_data,
+                offset=10 * 3,  # 10 points * 3 components
+            )
+        """
+        if not self.server.protocol:
+            return
+
+        if not self._initial_sync_done:
+            self.request_resync()
+
+        if isinstance(data, bytes):
+            data = base64.b64encode(data).decode("ascii")
+
+        self.server.protocol.publish(
+            "trame.vtk.array.partial",
+            {
+                "instanceId": instance_id,
+                "arrayPath": array_path,
+                "offset": offset,
+                "data": data,
+                "dataType": data_type,
+            },
+        )
 
 
 __all__ = ["VtkJsSharedView"]

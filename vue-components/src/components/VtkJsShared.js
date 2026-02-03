@@ -12,6 +12,19 @@ import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
 import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
 import vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 
+const TYPED_ARRAY_CONSTRUCTORS = {
+  Int8Array,
+  Uint8Array,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float32Array,
+  Float64Array,
+  BigInt64Array,
+  BigUint64Array,
+};
+
 export default {
   emits: ["updated", "viewStateChange", "onReady"],
   props: {
@@ -35,11 +48,15 @@ export default {
     let buildOnlyPass = null;
     let renderRequestedCallback = null;
     let wsSubscription = null;
+    let wsAppendSubscription = null;
+    let wsPartialUpdateSubscription = null;
     let stateQueue = [];
     let rwId = null;
     let visibilityHandler = null;
     let freshRenderer = null;
     let glContext = null;
+
+    const incrementalArrayCache = new Map();
 
     // Reset GL state for shared context rendering.
     // VTK's internal render passes set scissor/viewport to tiled regions,
@@ -72,6 +89,33 @@ export default {
         return content;
       }
       return content;
+    }
+
+    function processIncrementalArray(arrayId, dataType, appendData, appendOffset, totalSize) {
+      let cached = incrementalArrayCache.get(arrayId);
+
+      const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
+      const bytesPerElement = TypedArrayCtor.BYTES_PER_ELEMENT;
+
+      if (!cached || cached.buffer.byteLength < totalSize * bytesPerElement) {
+        const newBuffer = new ArrayBuffer(totalSize * bytesPerElement);
+        const newArray = new TypedArrayCtor(newBuffer);
+
+        if (cached) {
+          newArray.set(cached.array);
+        }
+        cached = { buffer: newBuffer, array: newArray };
+        incrementalArrayCache.set(arrayId, cached);
+      }
+
+      const appendArray = new TypedArrayCtor(appendData);
+      cached.array.set(appendArray, appendOffset);
+
+      return cached.buffer;
+    }
+
+    function clearIncrementalCache() {
+      incrementalArrayCache.clear();
     }
 
     function initializeForSharedContext(canvas, gl, options = {}) {
@@ -117,6 +161,103 @@ export default {
                 renderRequestedCallback();
               }
             });
+          }
+        });
+
+      // Subscribe to incremental array updates (separate cache, not connected to vtk.js)
+      wsAppendSubscription = client
+        .getConnection()
+        .getSession()
+        .subscribe("trame.vtk.array.append", ([update]) => {
+          const { arrayId, dataType, data, offset, totalSize } = update;
+          processIncrementalArray(arrayId, dataType, data, offset, totalSize);
+        });
+
+      // Subscribe to partial array updates (directly updates vtk.js objects)
+      wsPartialUpdateSubscription = client
+        .getConnection()
+        .getSession()
+        .subscribe("trame.vtk.array.partial", async ([update]) => {
+          if (!synchronizerContext) return;
+
+          // Ensure any pending state sync completes first
+          if (stateQueue.length > 0) {
+            await applyQueuedState();
+          }
+
+          const { instanceId, arrayPath, offset, data, dataType } = update;
+
+          const instance = synchronizerContext.getInstance(instanceId);
+          if (!instance) {
+            console.warn(`[VtkJsShared] Instance ${instanceId} not found for partial update`);
+            return;
+          }
+
+          let target = instance;
+          if (arrayPath === "points" && instance.getPoints) {
+            target = instance.getPoints();
+          } else if (arrayPath === "polys" && instance.getPolys) {
+            target = instance.getPolys();
+          } else if (arrayPath === "lines" && instance.getLines) {
+            target = instance.getLines();
+          } else if (arrayPath === "verts" && instance.getVerts) {
+            target = instance.getVerts();
+          } else if (arrayPath === "strips" && instance.getStrips) {
+            target = instance.getStrips();
+          }
+
+          if (!target || typeof target.getData !== "function") {
+            console.warn(`[VtkJsShared] Cannot find array at path ${arrayPath} on instance ${instanceId}`);
+            return;
+          }
+
+          const values = target.getData();
+          if (!values) {
+            console.warn(`[VtkJsShared] No data array found at ${arrayPath}`);
+            return;
+          }
+
+          const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
+          let newData;
+          if (typeof data === "string") {
+            const binaryStr = atob(data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+              bytes[i] = binaryStr.charCodeAt(i);
+            }
+            newData = new TypedArrayCtor(bytes.buffer);
+          } else {
+            newData = new TypedArrayCtor(data);
+          }
+
+          // Convert to target array type if different (e.g., Float64 → Float32)
+          const TargetCtor = values.constructor;
+          if (TypedArrayCtor !== TargetCtor) {
+            newData = new TargetCtor(newData);
+          }
+
+          // Validate offset and length before setting
+          if (offset + newData.length > values.length) {
+            console.warn(
+              `[VtkJsShared] Partial update out of bounds: offset=${offset}, ` +
+              `newData.length=${newData.length}, values.length=${values.length}`
+            );
+            return;
+          }
+
+          values.set(newData, offset);
+
+          if (target.modified) {
+            target.modified();
+          }
+
+          // Mark the polydata as modified to trigger mapper VBO rebuild
+          if (instance.modified) {
+            instance.modified();
+          }
+
+          if (renderRequestedCallback) {
+            renderRequestedCallback();
           }
         });
 
@@ -196,10 +337,22 @@ export default {
         wsSubscription = null;
       }
 
+      if (wsAppendSubscription && client) {
+        client.getConnection().getSession().unsubscribe(wsAppendSubscription);
+        wsAppendSubscription = null;
+      }
+
+      if (wsPartialUpdateSubscription && client) {
+        client.getConnection().getSession().unsubscribe(wsPartialUpdateSubscription);
+        wsPartialUpdateSubscription = null;
+      }
+
       if (visibilityHandler) {
         document.removeEventListener("visibilitychange", visibilityHandler);
         visibilityHandler = null;
       }
+
+      clearIncrementalCache();
 
       if (sharedRenderWindow) {
         sharedRenderWindow.delete();

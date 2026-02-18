@@ -3,15 +3,20 @@ import { ref, inject, onMounted, onBeforeUnmount, watchEffect } from "vue";
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
-import vtkMapperPure from "@kitware/vtk.js/Rendering/Core/Mapper";
-import vtkActorPure from "@kitware/vtk.js/Rendering/Core/Actor";
-import vtkRendererPure from "@kitware/vtk.js/Rendering/Core/Renderer";
-import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
+import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
 import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera";
-import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
 import vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
+
+import {
+  createSyncContext,
+  getSyncedRenderers,
+  extractGeometry,
+  cleanupSyncContext,
+  extractCameraParams,
+  applyCameraParams,
+} from "./vtkJsSync";
 
 export default {
   emits: ["updated", "camera"],
@@ -39,24 +44,7 @@ export default {
     let interactor = null;
     let resizeObserver = null;
     let synchronizerContext = null;
-
-    async function fetchArray(hash) {
-      const session = client.getConnection().getSession();
-      const content = await session.call("vtkjs.get.array", [hash, null]);
-      if (content.arrayBuffer) {
-        return await content.arrayBuffer();
-      }
-      if (content instanceof Uint8Array) {
-        return content.buffer.slice(
-          content.byteOffset,
-          content.byteOffset + content.byteLength
-        );
-      }
-      if (content instanceof ArrayBuffer) {
-        return content;
-      }
-      return content;
-    }
+    let freshRenderer = null;
 
     async function fetchState() {
       const session = client.getConnection().getSession();
@@ -81,14 +69,11 @@ export default {
       const state = await fetchState();
       if (!state || !syncRenderWindow) return;
 
-      // Disable rendering during synchronization to prevent premature renders
-      // before OpenGL view nodes are created
       if (interactor) {
         interactor.setEnableRender(false);
       }
 
       try {
-        // Clear caches to force fresh object creation and array fetching
         synchronizerContext.emptyCachedInstances();
         synchronizerContext.emptyCachedArrays();
 
@@ -102,90 +87,53 @@ export default {
 
         emit("updated");
 
-        // Synced objects don't get OpenGL view nodes.
-        // Extract data from synced objects and create fresh rendering pipeline.
-        const allRenderers = renderWindow.getRenderers();
-
-        // Filter to only get synced renderers (those with remoteId from sync)
-        const syncedRenderers = allRenderers.filter(ren =>
-          ren.get('remoteId')?.remoteId !== undefined ||
-          ren.get('managedInstanceId')?.managedInstanceId !== undefined
+        const syncedRenderers = getSyncedRenderers(renderWindow);
+        renderWindow.getRenderers().forEach((ren) =>
+          renderWindow.removeRenderer(ren)
         );
 
-        // Remove all renderers
-        allRenderers.forEach(ren => renderWindow.removeRenderer(ren));
-
-        const freshRenderer = vtkRendererPure.newInstance();
+        if (!freshRenderer) {
+          freshRenderer = vtkRenderer.newInstance();
+          if (syncedRenderers.length > 0) {
+            const syncedCam = syncedRenderers[0].getActiveCamera();
+            if (syncedCam) {
+              const freshCam = vtkCamera.newInstance();
+              applyCameraParams(freshCam, extractCameraParams(syncedCam));
+              freshRenderer.setActiveCamera(freshCam);
+            }
+          }
+        }
 
         if (syncedRenderers.length > 0) {
-          const syncedRen = syncedRenderers[0];
-          freshRenderer.setBackground(...syncedRen.getBackground());
-
-          const syncedCam = syncedRen.getActiveCamera();
-          if (syncedCam) {
-            const freshCam = vtkCamera.newInstance();
-            freshCam.setPosition(...syncedCam.getPosition());
-            freshCam.setFocalPoint(...syncedCam.getFocalPoint());
-            freshCam.setViewUp(...syncedCam.getViewUp());
-            freshCam.setClippingRange(...syncedCam.getClippingRange());
-            freshCam.setViewAngle(syncedCam.getViewAngle());
-            freshCam.setParallelProjection(syncedCam.getParallelProjection());
-            freshCam.setParallelScale(syncedCam.getParallelScale());
-            freshRenderer.setActiveCamera(freshCam);
-          }
-
-          const syncedActors = syncedRen.getActors();
-          syncedActors.forEach((syncedActor) => {
-            const syncedMapper = syncedActor.getMapper();
-            const syncedPolyData = syncedMapper?.getInputData();
-
-            if (syncedPolyData) {
-              const freshPolyData = vtkPolyData.newInstance();
-              const syncedPoints = syncedPolyData.getPoints();
-              const syncedPolys = syncedPolyData.getPolys();
-
-              if (syncedPoints) {
-                freshPolyData.getPoints().setData(syncedPoints.getData(), 3);
-              }
-              if (syncedPolys) {
-                freshPolyData.getPolys().setData(syncedPolys.getData());
-              }
-
-              const freshMapper = vtkMapperPure.newInstance();
-              freshMapper.setInputData(freshPolyData);
-
-              const freshActor = vtkActorPure.newInstance();
-              freshActor.setMapper(freshMapper);
-              freshActor.setVisibility(syncedActor.getVisibility());
-              freshActor.setPosition(...syncedActor.getPosition());
-
-              const syncedProp = syncedActor.getProperty();
-              const freshProp = freshActor.getProperty();
-              if (syncedProp) {
-                freshProp.setColor(...syncedProp.getColor());
-                freshProp.setOpacity(syncedProp.getOpacity());
-                freshProp.setRepresentation(syncedProp.getRepresentation());
-              }
-
-              freshRenderer.addActor(freshActor);
-            }
-          });
+          extractGeometry(syncedRenderers[0], freshRenderer);
         }
 
         renderWindow.addRenderer(freshRenderer);
 
-        // Re-enable rendering and trigger a render
         if (interactor) {
           interactor.setEnableRender(true);
         }
         renderWindow.render();
       } catch (err) {
         console.error("VtkJsLocal: synchronize error", err);
-        // Re-enable rendering even on error
         if (interactor) {
           interactor.setEnableRender(true);
         }
       }
+    }
+
+    function setCamera(params) {
+      if (!freshRenderer) return;
+      const cam = freshRenderer.getActiveCamera();
+      if (!cam) return;
+      applyCameraParams(cam, params);
+      if (renderWindow) renderWindow.render();
+    }
+
+    function resetCamera() {
+      if (!freshRenderer) return;
+      freshRenderer.resetCamera();
+      if (renderWindow) renderWindow.render();
     }
 
     function render() {
@@ -196,9 +144,6 @@ export default {
 
     onMounted(async () => {
       const contextName = `vtkjs-local-${props.renderWindow}`;
-      synchronizerContext =
-        vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
-      synchronizerContext.setFetchArrayFunction(fetchArray);
 
       openGLRenderWindow = vtkOpenGLRenderWindow.newInstance();
       openGLRenderWindow.setContainer(container.value);
@@ -206,7 +151,9 @@ export default {
       renderWindow = vtkRenderWindow.newInstance();
       renderWindow.addView(openGLRenderWindow);
 
-      syncRenderWindow = vtkSynchronizableRenderWindow.decorate(renderWindow, contextName);
+      const ctx = createSyncContext(client, contextName, renderWindow);
+      synchronizerContext = ctx.synchronizerContext;
+      syncRenderWindow = ctx.syncRenderWindow;
 
       interactor = vtkRenderWindowInteractor.newInstance();
       interactor.setInteractorStyle(
@@ -215,6 +162,15 @@ export default {
       interactor.setView(openGLRenderWindow);
       interactor.initialize();
       interactor.bindEvents(container.value);
+
+      interactor.onEndInteraction(() => {
+        if (freshRenderer) {
+          const cam = freshRenderer.getActiveCamera();
+          if (cam) {
+            emit("camera", extractCameraParams(cam));
+          }
+        }
+      });
 
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(container.value);
@@ -246,12 +202,8 @@ export default {
         renderWindow = null;
       }
 
-      if (synchronizerContext) {
-        vtkSynchronizableRenderWindow.clearSynchronizerContext(
-          `vtkjs-local-${props.renderWindow}`
-        );
-        synchronizerContext = null;
-      }
+      cleanupSyncContext(`vtkjs-local-${props.renderWindow}`);
+      synchronizerContext = null;
     });
 
     watchEffect(() => {
@@ -266,6 +218,8 @@ export default {
     return {
       container,
       update,
+      setCamera,
+      resetCamera,
       render,
       resize,
     };

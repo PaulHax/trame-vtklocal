@@ -77,6 +77,10 @@ class VtkJsDemo:
         if self.html_view:
             self.html_view.update()
 
+    def reset_camera(self):
+        if self.html_view:
+            self.html_view.reset_camera()
+
     def _ui(self):
         with DivLayout(self.server) as layout:
             html.Style("body { margin: 0; }")
@@ -108,6 +112,8 @@ class VtkJsDemo:
                         html.Option("Blue", value="blue"),
                     ],
                 )
+                html.Br()
+                html.Button("Reset Camera", click=self.reset_camera)
 
         return layout
 

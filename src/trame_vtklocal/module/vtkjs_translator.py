@@ -19,7 +19,6 @@ vtk.js format (nested):
 """
 
 import json
-import time
 
 _scene_mtime_counter = [0]
 

@@ -4,13 +4,13 @@ import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
-import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
 import vtkRenderPass from "@kitware/vtk.js/Rendering/SceneGraph/RenderPass";
-import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
-import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
-import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
-import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
-import vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
+
+import {
+  createSyncContext,
+  getSyncedRenderers,
+  cleanupSyncContext,
+} from "./vtkJsSync";
 
 const TYPED_ARRAY_CONSTRUCTORS = {
   Int8Array,
@@ -55,9 +55,6 @@ export default {
     let freshRenderer = null;
     let glContext = null;
 
-    // Reset GL state for shared context rendering.
-    // VTK's internal render passes set scissor/viewport to tiled regions,
-    // which can clip the external library's rendering. This resets to full canvas.
     function resetGLStateForSharedContext() {
       const gl = glContext;
       if (!gl) return;
@@ -70,33 +67,12 @@ export default {
       gl.scissor(0, 0, width, height);
     }
 
-    async function fetchArray(hash) {
-      const session = client.getConnection().getSession();
-      const content = await session.call("vtkjs.get.array", [hash, null]);
-      if (content.arrayBuffer) {
-        return await content.arrayBuffer();
-      }
-      if (content instanceof Uint8Array) {
-        return content.buffer.slice(
-          content.byteOffset,
-          content.byteOffset + content.byteLength
-        );
-      }
-      if (content instanceof ArrayBuffer) {
-        return content;
-      }
-      return content;
-    }
-
     function initializeForSharedContext(canvas, gl, options = {}) {
       const { syncStateAtRender = false, onResyncRequired = null } = options;
 
       glContext = gl;
 
       const contextName = `vtkjs-shared-${props.renderWindow}`;
-      synchronizerContext =
-        vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
-      synchronizerContext.setFetchArrayFunction(fetchArray);
 
       sharedRenderWindow = vtkSharedRenderWindow.createFromContext(canvas, gl);
 
@@ -107,14 +83,12 @@ export default {
         preDelegateOperations: ["buildPass"],
       });
 
-      syncRenderWindow = vtkSynchronizableRenderWindow.decorate(
-        renderWindow,
-        contextName
-      );
+      const ctx = createSyncContext(client, contextName, renderWindow);
+      synchronizerContext = ctx.synchronizerContext;
+      syncRenderWindow = ctx.syncRenderWindow;
 
       rwId = String(props.renderWindow);
 
-      // Subscribe to delta updates from server
       wsSubscription = client
         .getConnection()
         .getSession()
@@ -125,7 +99,6 @@ export default {
             }
             stateQueue.push(deltaState);
             emit("viewStateChange", deltaState);
-            // Process state immediately (async) so it's ready before next render
             applyQueuedState().then(() => {
               if (renderRequestedCallback) {
                 renderRequestedCallback();
@@ -134,14 +107,12 @@ export default {
           }
         });
 
-      // Subscribe to partial array updates (directly updates vtk.js objects)
       wsPartialUpdateSubscription = client
         .getConnection()
         .getSession()
         .subscribe("trame.vtk.array.partial", async ([update]) => {
           if (!synchronizerContext) return;
 
-          // Ensure any pending state sync completes first
           if (stateQueue.length > 0) {
             await applyQueuedState();
           }
@@ -191,13 +162,11 @@ export default {
             newData = new TypedArrayCtor(data);
           }
 
-          // Convert to target array type if different (e.g., Float64 → Float32)
           const TargetCtor = values.constructor;
           if (TypedArrayCtor !== TargetCtor) {
             newData = new TargetCtor(newData);
           }
 
-          // Validate offset and length before setting
           if (offset + newData.length > values.length) {
             console.warn(
               `[VtkJsShared] Partial update out of bounds: offset=${offset}, ` +
@@ -212,7 +181,6 @@ export default {
             target.modified();
           }
 
-          // Mark the polydata as modified to trigger mapper VBO rebuild
           if (instance.modified) {
             instance.modified();
           }
@@ -222,7 +190,6 @@ export default {
           }
         });
 
-      // Handle visibility change for browser sleep/wake
       if (onResyncRequired) {
         visibilityHandler = () => {
           if (document.visibilityState === "visible") {
@@ -243,18 +210,10 @@ export default {
       while (stateQueue.length) {
         const state = stateQueue.shift();
         try {
-          // Prepare GL state before synchronize because it internally calls render()
           sharedRenderWindow?.prepareSharedRender?.();
           const synced = await syncRenderWindow.synchronize(state);
           if (synced) {
-            // Use synced renderer directly instead of creating fresh objects
-            const allRenderers = renderWindow.getRenderers();
-            const syncedRenderers = allRenderers.filter(
-              (ren) =>
-                ren.get("remoteId")?.remoteId !== undefined ||
-                ren.get("managedInstanceId")?.managedInstanceId !== undefined
-            );
-
+            const syncedRenderers = getSyncedRenderers(renderWindow);
             if (syncedRenderers.length > 0) {
               freshRenderer = syncedRenderers[0];
             }
@@ -272,7 +231,6 @@ export default {
 
       if (!skipRender && sharedRenderWindow) {
         sharedRenderWindow.renderShared({});
-        // Reset GL state after VTK render to avoid clipping external library
         resetGLStateForSharedContext();
       }
     }
@@ -323,12 +281,8 @@ export default {
         buildOnlyPass = null;
       }
 
-      if (synchronizerContext) {
-        vtkSynchronizableRenderWindow.clearSynchronizerContext(
-          `vtkjs-shared-${props.renderWindow}`
-        );
-        synchronizerContext = null;
-      }
+      cleanupSyncContext(`vtkjs-shared-${props.renderWindow}`);
+      synchronizerContext = null;
     });
 
     return {

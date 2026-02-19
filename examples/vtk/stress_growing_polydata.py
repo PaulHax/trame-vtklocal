@@ -157,10 +157,7 @@ async def animate():
             if num_points < state.max_points:
                 add_trail_points(state.points_per_frame)
 
-                if state.update_mode == "sync":
-                    ctrl.view_update(inline_arrays=True)
-                else:
-                    ctrl.view_update(inline_arrays=False)
+                ctrl.view_update()
 
         frame_end = time.time()
         frame_time = (frame_end - frame_start) * 1000

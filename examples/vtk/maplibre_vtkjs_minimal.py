@@ -139,7 +139,7 @@ def sync():
         print(f"[Python] Camera properties: {json.dumps(camera_info['camera'].get('properties', {}), indent=2)}")
     else:
         print("[Python] No camera found in state")
-    ctrl.view_update(inline_arrays=True)
+    ctrl.view_update()
 
 
 @server.trigger("resync")

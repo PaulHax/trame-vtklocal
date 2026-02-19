@@ -33,7 +33,7 @@ class VtkJsLocalView(VtkJsBaseView):
         self.api.update()
 
         if self._sync_mode == "push":
-            self._push_sync.update(inline_arrays=True)
+            self._push_sync.update()
         else:
             self.server.js_call(self._ref, "update")
 

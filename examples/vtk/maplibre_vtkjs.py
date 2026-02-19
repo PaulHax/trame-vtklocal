@@ -303,7 +303,6 @@ async def animate_cones():
 
         if state.camera_mode == "orbit":
             ctrl.view_update(
-                inline_arrays=state.sync_mode,
                 extra={
                     "orbitCamera": {
                         "center": [orbit_lng, orbit_lat],
@@ -314,7 +313,7 @@ async def animate_cones():
                 },
             )
         else:
-            ctrl.view_update(inline_arrays=state.sync_mode)
+            ctrl.view_update()
 
         server.js_call("mapController", "triggerRepaint")
         await asyncio.sleep(1 / 30)

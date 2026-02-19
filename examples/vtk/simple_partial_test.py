@@ -98,7 +98,7 @@ async def animate():
     global animation_time
 
     # Ensure full initial sync before partial updates
-    ctrl.view_update(inline_arrays=True)
+    ctrl.view_update()
     state.flush()
     await asyncio.sleep(0.2)
 
@@ -112,7 +112,7 @@ async def animate():
 
                 if state.update_mode == "full_sync":
                     # Full state sync every frame
-                    ctrl.view_update(inline_arrays=True)
+                    ctrl.view_update()
 
                 elif state.update_mode == "partial_simple":
                     # Simple API - library extracts data from VTK
@@ -154,7 +154,7 @@ def on_reset():
     lines.Reset()
     polydata.Modified()
     state.current_points = 0
-    ctrl.view_update(inline_arrays=True)
+    ctrl.view_update()
 
 
 with SinglePageLayout(server) as layout:

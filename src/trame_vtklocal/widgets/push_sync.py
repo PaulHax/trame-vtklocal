@@ -28,16 +28,16 @@ class PushSync:
         self._server.protocol.publish("trame.vtk.delta", full_state)
         self._initial_sync_done = True
 
-    def update(self, inline_arrays=False, extra=None, push_pending=True):
+    def update(self, extra=None, push_pending=True):
         if not self._server.protocol:
             return
 
-        if push_pending and self._pending_changes:
+        flushed_partials = push_pending and bool(self._pending_changes)
+        if flushed_partials:
             self.flush_pending_changes()
 
         delta_state = self._get_vtkjs_state()
-
-        if inline_arrays:
+        if not flushed_partials:
             _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
             self._initial_sync_done = True
 

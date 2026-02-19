@@ -44,9 +44,9 @@ class VtkJsSharedView(VtkJsBaseView):
         if self._push_sync:
             self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
 
-    def update(self, inline_arrays=False, extra=None, push_pending=True, **kwargs):
+    def update(self, extra=None, push_pending=True, **kwargs):
         if self._sync_mode == "push":
-            self._push_sync.update(inline_arrays=inline_arrays, extra=extra, push_pending=push_pending)
+            self._push_sync.update(extra=extra, push_pending=push_pending)
         else:
             self._render_window.Render()
             self.api.update()

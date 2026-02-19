@@ -206,7 +206,7 @@ async def animate():
     frame_count = 0
 
     # Initial full sync
-    ctrl.view_update(inline_arrays=True)
+    ctrl.view_update()
     state.flush()
     await asyncio.sleep(0.3)
 
@@ -254,7 +254,7 @@ async def animate():
 
         # Trail has dynamic topology - always need full sync
         # (properties_only mode is useful when mesh is static)
-        ctrl.view_update(inline_arrays=True, extra=orbit_camera)
+        ctrl.view_update(extra=orbit_camera)
 
         elapsed = (time.perf_counter() - start_time) * 1000
         update_times.append(elapsed)

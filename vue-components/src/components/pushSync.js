@@ -46,13 +46,10 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
 
   const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
   let newData;
-  if (typeof data === "string") {
-    const binaryStr = atob(data);
-    const bytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
-    newData = new TypedArrayCtor(bytes.buffer);
+  if (data instanceof ArrayBuffer) {
+    newData = new TypedArrayCtor(data);
+  } else if (ArrayBuffer.isView(data)) {
+    newData = new TypedArrayCtor(data.buffer, data.byteOffset, data.byteLength / TypedArrayCtor.BYTES_PER_ELEMENT);
   } else {
     newData = new TypedArrayCtor(data);
   }

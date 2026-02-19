@@ -1,4 +1,3 @@
-import base64
 import numpy as np
 from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
 
@@ -75,9 +74,6 @@ class PushSync:
                     element_offset = start * 3
                 else:
                     element_offset = start
-
-            if isinstance(data, bytes):
-                data = base64.b64encode(data).decode("ascii")
 
             self._server.protocol.publish(
                 "trame.vtk.array.partial",

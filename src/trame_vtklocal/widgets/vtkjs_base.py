@@ -1,4 +1,3 @@
-import base64
 import numpy as np
 from trame_client.widgets.core import AbstractElement
 from trame_vtklocal import module
@@ -25,7 +24,7 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
     if not state or not object_manager:
         return
 
-    def get_blob_base64(hash_str):
+    def get_blob_bytes(hash_str):
         if hash_str.startswith("cell:"):
             parts = hash_str.split(":")
             conn_hash = parts[1]
@@ -46,11 +45,9 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
                 result.append(int(cell_size))
                 result.extend(int(x) for x in connectivity[start:end])
 
-            data = np.array(result, dtype=np.uint32).tobytes()
-            return base64.b64encode(data).decode("ascii")
+            return np.array(result, dtype=np.uint32).tobytes()
 
-        blob = object_manager.GetBlob(hash_str)
-        return base64.b64encode(bytes(blob)).decode("ascii")
+        return bytes(object_manager.GetBlob(hash_str))
 
     def walk(node):
         if isinstance(node, list):
@@ -64,7 +61,7 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
         if data_hash and node.get("dataType") and "content" not in node:
             should_inline = sent_hashes is None or data_hash not in sent_hashes
             if should_inline:
-                content = get_blob_base64(data_hash)
+                content = get_blob_bytes(data_hash)
                 if content:
                     node["content"] = content
                     if sent_hashes is not None:

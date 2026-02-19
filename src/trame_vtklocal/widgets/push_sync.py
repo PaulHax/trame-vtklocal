@@ -8,19 +8,17 @@ class PushSync:
         self._object_manager = object_manager
         self._get_vtkjs_state = get_vtkjs_state
         self._get_instance_id = get_instance_id
-        self._sent_hashes = set()
         self._initial_sync_done = False
         self._pending_changes = []
 
     def request_resync(self, extra=None):
-        self._sent_hashes.clear()
         self._pending_changes.clear()
 
         if not self._server.protocol:
             return
 
         full_state = self._get_vtkjs_state()
-        _inline_arrays(full_state, self._object_manager, self._sent_hashes)
+        _inline_arrays(full_state, self._object_manager)
         if extra:
             full_state.setdefault("extra", {}).update(extra)
 
@@ -37,7 +35,7 @@ class PushSync:
 
         delta_state = self._get_vtkjs_state()
         if not flushed_partials:
-            _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
+            _inline_arrays(delta_state, self._object_manager)
             self._initial_sync_done = True
 
         if extra:

@@ -12,6 +12,9 @@ import {
   cleanupSyncContext,
 } from "./vtkJsSync";
 
+import { withSyncCapability } from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/SyncExtension";
+import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
+
 import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
 
@@ -44,6 +47,7 @@ export default {
     let repaintCallback = null;
     let syncStateAtRenderFlag = false;
     let sync = null;
+    let syncCapability = null;
     let rwId = null;
     let freshRenderer = null;
     let glContext = null;
@@ -86,6 +90,7 @@ export default {
       syncRenderWindow = ctx.syncRenderWindow;
 
       rwId = String(props.renderWindow);
+      syncCapability = withSyncCapability(syncRenderWindow, synchronizerContext, vtkObjectManager);
 
       if (props.syncMode === "pull") {
         sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
@@ -117,6 +122,33 @@ export default {
 
       ready.value = true;
       emit("onReady", true);
+    }
+
+    function applyQueuedStateSync() {
+      if (!sync || !sync.drainQueue) return false;
+
+      const states = sync.drainQueue();
+      if (!states.length || !syncCapability) return false;
+
+      emit("beforeSceneLoaded");
+
+      let synced = false;
+      for (const state of states) {
+        if (syncCapability.synchronizeSync(state, true)) {
+          synced = true;
+        }
+      }
+
+      if (synced) {
+        const syncedRenderers = getSyncedRenderers(renderWindow);
+        if (syncedRenderers.length > 0) {
+          freshRenderer = syncedRenderers[0];
+        }
+        emit("updated");
+      }
+
+      emit("afterSceneLoaded");
+      return synced;
     }
 
     async function applyQueuedState() {
@@ -155,10 +187,12 @@ export default {
       emit("afterSceneLoaded");
     }
 
-    async function renderShared(options = {}) {
+    function renderShared(options = {}) {
       const { skipRender = false } = options;
 
-      await applyQueuedState();
+      if (syncStateAtRenderFlag) {
+        applyQueuedStateSync();
+      }
 
       if (!skipRender && sharedRenderWindow) {
         sharedRenderWindow.renderShared({});
@@ -209,6 +243,7 @@ export default {
     return {
       initializeForSharedContext,
       update,
+      applyQueuedStateSync,
       renderShared,
       onRenderRequested,
       setRepaintCallback,

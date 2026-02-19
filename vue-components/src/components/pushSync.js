@@ -148,5 +148,10 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     return stateQueue.length;
   }
 
-  return { applyQueuedState, cleanup, clearQueue, getQueueLength };
+  function drainQueue() {
+    const states = stateQueue.splice(0);
+    return states;
+  }
+
+  return { applyQueuedState, cleanup, clearQueue, getQueueLength, drainQueue };
 }

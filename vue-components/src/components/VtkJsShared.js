@@ -12,6 +12,7 @@ import {
   cleanupSyncContext,
 } from "./vtkJsSync";
 
+import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
 
 export default {
@@ -23,6 +24,10 @@ export default {
     },
     wsClient: {
       type: Object,
+    },
+    syncMode: {
+      type: String,
+      default: "push",
     },
   },
   setup(props, { emit }) {
@@ -38,7 +43,7 @@ export default {
     let renderRequestedCallback = null;
     let repaintCallback = null;
     let syncStateAtRenderFlag = false;
-    let pushSync = null;
+    let sync = null;
     let rwId = null;
     let freshRenderer = null;
     let glContext = null;
@@ -82,40 +87,44 @@ export default {
 
       rwId = String(props.renderWindow);
 
-      pushSync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
-        onStateReceived(deltaState) {
-          emit("viewStateChange", deltaState);
-          if (syncStateAtRenderFlag) {
-            if (repaintCallback) {
-              repaintCallback();
-            }
-          } else {
-            applyQueuedState().then(() => {
-              if (renderRequestedCallback) {
-                renderRequestedCallback();
+      if (props.syncMode === "pull") {
+        sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
+      } else {
+        sync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
+          onStateReceived(deltaState) {
+            emit("viewStateChange", deltaState);
+            if (syncStateAtRenderFlag) {
+              if (repaintCallback) {
+                repaintCallback();
               }
-            });
-          }
-        },
-        onPartialUpdate(update, syncCtx) {
-          applyPartialArrayUpdate(update, syncCtx);
-          if (renderRequestedCallback) {
-            renderRequestedCallback();
-          }
-        },
-        onResyncRequired,
-      });
+            } else {
+              applyQueuedState().then(() => {
+                if (renderRequestedCallback) {
+                  renderRequestedCallback();
+                }
+              });
+            }
+          },
+          onPartialUpdate(update, syncCtx) {
+            applyPartialArrayUpdate(update, syncCtx);
+            if (renderRequestedCallback) {
+              renderRequestedCallback();
+            }
+          },
+          onResyncRequired,
+        });
+      }
 
       ready.value = true;
       emit("onReady", true);
     }
 
     async function applyQueuedState() {
-      if (!pushSync || !pushSync.getQueueLength()) return false;
+      if (!sync || !sync.getQueueLength || !sync.getQueueLength()) return false;
 
       emit("beforeSceneLoaded");
 
-      const synced = await pushSync.applyQueuedState();
+      const synced = await sync.applyQueuedState();
 
       if (synced) {
         const syncedRenderers = getSyncedRenderers(renderWindow);
@@ -127,6 +136,23 @@ export default {
 
       emit("afterSceneLoaded");
       return synced;
+    }
+
+    async function update() {
+      if (!sync || !sync.update) return;
+
+      emit("beforeSceneLoaded");
+
+      const state = await sync.update();
+      if (state) {
+        const syncedRenderers = getSyncedRenderers(renderWindow);
+        if (syncedRenderers.length > 0) {
+          freshRenderer = syncedRenderers[0];
+        }
+        emit("updated");
+      }
+
+      emit("afterSceneLoaded");
     }
 
     async function renderShared(options = {}) {
@@ -156,9 +182,9 @@ export default {
     }
 
     onBeforeUnmount(() => {
-      if (pushSync) {
-        pushSync.cleanup();
-        pushSync = null;
+      if (sync) {
+        sync.cleanup();
+        sync = null;
       }
 
       if (sharedRenderWindow) {
@@ -182,6 +208,7 @@ export default {
 
     return {
       initializeForSharedContext,
+      update,
       renderShared,
       onRenderRequested,
       setRepaintCallback,

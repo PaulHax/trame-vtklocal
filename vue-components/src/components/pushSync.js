@@ -1,0 +1,155 @@
+export const TYPED_ARRAY_CONSTRUCTORS = {
+  Int8Array,
+  Uint8Array,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float32Array,
+  Float64Array,
+  BigInt64Array,
+  BigUint64Array,
+};
+
+export function applyPartialArrayUpdate(update, synchronizerContext) {
+  const { instanceId, arrayPath, offset, data, dataType } = update;
+
+  const instance = synchronizerContext.getInstance(instanceId);
+  if (!instance) {
+    console.warn(`[pushSync] Instance ${instanceId} not found for partial update`);
+    return false;
+  }
+
+  let target = instance;
+  if (arrayPath === "points" && instance.getPoints) {
+    target = instance.getPoints();
+  } else if (arrayPath === "polys" && instance.getPolys) {
+    target = instance.getPolys();
+  } else if (arrayPath === "lines" && instance.getLines) {
+    target = instance.getLines();
+  } else if (arrayPath === "verts" && instance.getVerts) {
+    target = instance.getVerts();
+  } else if (arrayPath === "strips" && instance.getStrips) {
+    target = instance.getStrips();
+  }
+
+  if (!target || typeof target.getData !== "function") {
+    console.warn(`[pushSync] Cannot find array at path ${arrayPath} on instance ${instanceId}`);
+    return false;
+  }
+
+  const values = target.getData();
+  if (!values) {
+    console.warn(`[pushSync] No data array found at ${arrayPath}`);
+    return false;
+  }
+
+  const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
+  let newData;
+  if (typeof data === "string") {
+    const binaryStr = atob(data);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    newData = new TypedArrayCtor(bytes.buffer);
+  } else {
+    newData = new TypedArrayCtor(data);
+  }
+
+  const TargetCtor = values.constructor;
+  if (TypedArrayCtor !== TargetCtor) {
+    newData = new TargetCtor(newData);
+  }
+
+  if (offset + newData.length > values.length) {
+    console.warn(
+      `[pushSync] Partial update out of bounds: offset=${offset}, ` +
+      `newData.length=${newData.length}, values.length=${values.length}`
+    );
+    return false;
+  }
+
+  values.set(newData, offset);
+
+  if (target.modified) {
+    target.modified();
+  }
+
+  if (instance.modified) {
+    instance.modified();
+  }
+
+  return true;
+}
+
+export function createPushSync(client, syncRenderWindow, synchronizerContext, rwId, callbacks = {}) {
+  const { onStateReceived, onPartialUpdate, onResyncRequired } = callbacks;
+
+  let stateQueue = [];
+  let visibilityHandler = null;
+
+  const session = client.getConnection().getSession();
+
+  const wsSubscription = session.subscribe("trame.vtk.delta", ([deltaState]) => {
+    if (!rwId || deltaState.id === rwId) {
+      stateQueue.push(deltaState);
+      if (onStateReceived) {
+        onStateReceived(deltaState);
+      }
+    }
+  });
+
+  const wsPartialUpdateSubscription = session.subscribe("trame.vtk.array.partial", async ([update]) => {
+    if (!synchronizerContext) return;
+
+    if (onPartialUpdate) {
+      onPartialUpdate(update, synchronizerContext);
+    } else {
+      applyPartialArrayUpdate(update, synchronizerContext);
+    }
+  });
+
+  if (onResyncRequired) {
+    visibilityHandler = () => {
+      if (document.visibilityState === "visible") {
+        stateQueue.length = 0;
+        onResyncRequired();
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+  }
+
+  async function applyQueuedState() {
+    if (!stateQueue.length || !syncRenderWindow) return false;
+
+    while (stateQueue.length) {
+      const state = stateQueue.shift();
+      await syncRenderWindow.synchronize(state);
+    }
+    return true;
+  }
+
+  function cleanup() {
+    if (wsSubscription) {
+      session.unsubscribe(wsSubscription);
+    }
+    if (wsPartialUpdateSubscription) {
+      session.unsubscribe(wsPartialUpdateSubscription);
+    }
+    if (visibilityHandler) {
+      document.removeEventListener("visibilitychange", visibilityHandler);
+      visibilityHandler = null;
+    }
+  }
+
+  function clearQueue() {
+    stateQueue.length = 0;
+  }
+
+  function getQueueLength() {
+    return stateQueue.length;
+  }
+
+  return { applyQueuedState, cleanup, clearQueue, getQueueLength };
+}

@@ -12,18 +12,7 @@ import {
   cleanupSyncContext,
 } from "./vtkJsSync";
 
-const TYPED_ARRAY_CONSTRUCTORS = {
-  Int8Array,
-  Uint8Array,
-  Int16Array,
-  Uint16Array,
-  Int32Array,
-  Uint32Array,
-  Float32Array,
-  Float64Array,
-  BigInt64Array,
-  BigUint64Array,
-};
+import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
 
 export default {
   emits: ["updated", "viewStateChange", "onReady", "beforeSceneLoaded", "afterSceneLoaded"],
@@ -49,11 +38,8 @@ export default {
     let renderRequestedCallback = null;
     let repaintCallback = null;
     let syncStateAtRenderFlag = false;
-    let wsSubscription = null;
-    let wsPartialUpdateSubscription = null;
-    let stateQueue = [];
+    let pushSync = null;
     let rwId = null;
-    let visibilityHandler = null;
     let freshRenderer = null;
     let glContext = null;
 
@@ -96,149 +82,51 @@ export default {
 
       rwId = String(props.renderWindow);
 
-      wsSubscription = client
-        .getConnection()
-        .getSession()
-        .subscribe("trame.vtk.delta", ([deltaState]) => {
-          if (!rwId || deltaState.id === rwId) {
-            if (!rwId) {
-              rwId = deltaState.id;
+      pushSync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
+        onStateReceived(deltaState) {
+          emit("viewStateChange", deltaState);
+          if (syncStateAtRenderFlag) {
+            if (repaintCallback) {
+              repaintCallback();
             }
-            stateQueue.push(deltaState);
-            emit("viewStateChange", deltaState);
-            if (syncStateAtRenderFlag) {
-              if (repaintCallback) {
-                repaintCallback();
-              }
-            } else {
-              applyQueuedState().then(() => {
-                if (renderRequestedCallback) {
-                  renderRequestedCallback();
-                }
-              });
-            }
-          }
-        });
-
-      wsPartialUpdateSubscription = client
-        .getConnection()
-        .getSession()
-        .subscribe("trame.vtk.array.partial", async ([update]) => {
-          if (!synchronizerContext) return;
-
-          if (stateQueue.length > 0) {
-            await applyQueuedState();
-          }
-
-          const { instanceId, arrayPath, offset, data, dataType } = update;
-
-          const instance = synchronizerContext.getInstance(instanceId);
-          if (!instance) {
-            console.warn(`[VtkJsShared] Instance ${instanceId} not found for partial update`);
-            return;
-          }
-
-          let target = instance;
-          if (arrayPath === "points" && instance.getPoints) {
-            target = instance.getPoints();
-          } else if (arrayPath === "polys" && instance.getPolys) {
-            target = instance.getPolys();
-          } else if (arrayPath === "lines" && instance.getLines) {
-            target = instance.getLines();
-          } else if (arrayPath === "verts" && instance.getVerts) {
-            target = instance.getVerts();
-          } else if (arrayPath === "strips" && instance.getStrips) {
-            target = instance.getStrips();
-          }
-
-          if (!target || typeof target.getData !== "function") {
-            console.warn(`[VtkJsShared] Cannot find array at path ${arrayPath} on instance ${instanceId}`);
-            return;
-          }
-
-          const values = target.getData();
-          if (!values) {
-            console.warn(`[VtkJsShared] No data array found at ${arrayPath}`);
-            return;
-          }
-
-          const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
-          let newData;
-          if (typeof data === "string") {
-            const binaryStr = atob(data);
-            const bytes = new Uint8Array(binaryStr.length);
-            for (let i = 0; i < binaryStr.length; i++) {
-              bytes[i] = binaryStr.charCodeAt(i);
-            }
-            newData = new TypedArrayCtor(bytes.buffer);
           } else {
-            newData = new TypedArrayCtor(data);
+            applyQueuedState().then(() => {
+              if (renderRequestedCallback) {
+                renderRequestedCallback();
+              }
+            });
           }
-
-          const TargetCtor = values.constructor;
-          if (TypedArrayCtor !== TargetCtor) {
-            newData = new TargetCtor(newData);
-          }
-
-          if (offset + newData.length > values.length) {
-            console.warn(
-              `[VtkJsShared] Partial update out of bounds: offset=${offset}, ` +
-              `newData.length=${newData.length}, values.length=${values.length}`
-            );
-            return;
-          }
-
-          values.set(newData, offset);
-
-          if (target.modified) {
-            target.modified();
-          }
-
-          if (instance.modified) {
-            instance.modified();
-          }
-
+        },
+        onPartialUpdate(update, syncCtx) {
+          applyPartialArrayUpdate(update, syncCtx);
           if (renderRequestedCallback) {
             renderRequestedCallback();
           }
-        });
-
-      if (onResyncRequired) {
-        visibilityHandler = () => {
-          if (document.visibilityState === "visible") {
-            stateQueue.length = 0;
-            onResyncRequired();
-          }
-        };
-        document.addEventListener("visibilitychange", visibilityHandler);
-      }
+        },
+        onResyncRequired,
+      });
 
       ready.value = true;
       emit("onReady", true);
     }
 
     async function applyQueuedState() {
-      if (!stateQueue.length || !syncRenderWindow) return false;
+      if (!pushSync || !pushSync.getQueueLength()) return false;
 
       emit("beforeSceneLoaded");
-      while (stateQueue.length) {
-        const state = stateQueue.shift();
-        try {
-          sharedRenderWindow?.prepareSharedRender?.();
-          const synced = await syncRenderWindow.synchronize(state);
-          if (synced) {
-            const syncedRenderers = getSyncedRenderers(renderWindow);
-            if (syncedRenderers.length > 0) {
-              freshRenderer = syncedRenderers[0];
-            }
-            emit("updated");
-          }
-        } catch (err) {
-          console.error("VtkJsShared: synchronize error", err);
+
+      const synced = await pushSync.applyQueuedState();
+
+      if (synced) {
+        const syncedRenderers = getSyncedRenderers(renderWindow);
+        if (syncedRenderers.length > 0) {
+          freshRenderer = syncedRenderers[0];
         }
+        emit("updated");
       }
+
       emit("afterSceneLoaded");
-      return true;
+      return synced;
     }
 
     async function renderShared(options = {}) {
@@ -268,19 +156,9 @@ export default {
     }
 
     onBeforeUnmount(() => {
-      if (wsSubscription && client) {
-        client.getConnection().getSession().unsubscribe(wsSubscription);
-        wsSubscription = null;
-      }
-
-      if (wsPartialUpdateSubscription && client) {
-        client.getConnection().getSession().unsubscribe(wsPartialUpdateSubscription);
-        wsPartialUpdateSubscription = null;
-      }
-
-      if (visibilityHandler) {
-        document.removeEventListener("visibilitychange", visibilityHandler);
-        visibilityHandler = null;
+      if (pushSync) {
+        pushSync.cleanup();
+        pushSync = null;
       }
 
       if (sharedRenderWindow) {

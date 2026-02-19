@@ -18,6 +18,9 @@ import {
   applyCameraParams,
 } from "./vtkJsSync";
 
+import { createPullSync } from "./pullSync";
+import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
+
 export default {
   emits: ["updated", "camera"],
   props: {
@@ -27,6 +30,10 @@ export default {
     },
     wsClient: {
       type: Object,
+    },
+    syncMode: {
+      type: String,
+      default: "pull",
     },
     interactorSettings: {
       type: Array,
@@ -45,11 +52,7 @@ export default {
     let resizeObserver = null;
     let synchronizerContext = null;
     let freshRenderer = null;
-
-    async function fetchState() {
-      const session = client.getConnection().getSession();
-      return await session.call("vtkjs.get.state", [props.renderWindow]);
-    }
+    let sync = null;
 
     function resize() {
       if (!container.value || !openGLRenderWindow) return;
@@ -65,8 +68,8 @@ export default {
       renderWindow.render();
     }
 
-    async function update() {
-      const state = await fetchState();
+    async function updatePull() {
+      const state = await sync.update();
       if (!state || !syncRenderWindow) return;
 
       if (interactor) {
@@ -74,17 +77,6 @@ export default {
       }
 
       try {
-        synchronizerContext.emptyCachedInstances();
-        synchronizerContext.emptyCachedArrays();
-
-        const synced = await syncRenderWindow.synchronize(state);
-        if (!synced) {
-          if (interactor) {
-            interactor.setEnableRender(true);
-          }
-          return;
-        }
-
         emit("updated");
 
         const syncedRenderers = getSyncedRenderers(renderWindow);
@@ -122,6 +114,26 @@ export default {
       }
     }
 
+    async function updatePush() {
+      const synced = await sync.applyQueuedState();
+      if (synced) {
+        const syncedRenderers = getSyncedRenderers(renderWindow);
+        if (syncedRenderers.length > 0) {
+          freshRenderer = syncedRenderers[0];
+        }
+        emit("updated");
+      }
+      renderWindow.render();
+    }
+
+    async function update() {
+      if (props.syncMode === "push") {
+        await updatePush();
+      } else {
+        await updatePull();
+      }
+    }
+
     function setCamera(params) {
       if (!freshRenderer) return;
       const cam = freshRenderer.getActiveCamera();
@@ -155,6 +167,22 @@ export default {
       synchronizerContext = ctx.synchronizerContext;
       syncRenderWindow = ctx.syncRenderWindow;
 
+      const rwId = String(props.renderWindow);
+
+      if (props.syncMode === "push") {
+        sync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
+          onStateReceived() {
+            update();
+          },
+          onPartialUpdate(partialUpdate, syncCtx) {
+            applyPartialArrayUpdate(partialUpdate, syncCtx);
+            renderWindow.render();
+          },
+        });
+      } else {
+        sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
+      }
+
       interactor = vtkRenderWindowInteractor.newInstance();
       interactor.setInteractorStyle(
         vtkInteractorStyleTrackballCamera.newInstance()
@@ -176,11 +204,18 @@ export default {
       resizeObserver.observe(container.value);
 
       resize();
-      await update();
+      if (props.syncMode === "pull") {
+        await update();
+      }
       resize();
     });
 
     onBeforeUnmount(() => {
+      if (sync) {
+        sync.cleanup();
+        sync = null;
+      }
+
       if (resizeObserver) {
         resizeObserver.disconnect();
         resizeObserver = null;

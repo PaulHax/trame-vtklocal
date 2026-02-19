@@ -21,6 +21,8 @@ class VtkJsSharedView(VtkJsBaseView):
             "updated",
             ("view_state_change", "viewStateChange"),
             ("on_ready", "onReady"),
+            ("before_scene_loaded", "beforeSceneLoaded"),
+            ("after_scene_loaded", "afterSceneLoaded"),
         ]
 
         self.server.controller.on_client_connected.add(self._on_client_connected)
@@ -155,6 +157,9 @@ class VtkJsSharedView(VtkJsBaseView):
 
     def on_render_requested(self, callback_name, **kwargs):
         self.server.js_call(self._ref, "onRenderRequested", callback_name)
+
+    def push_camera(self):
+        pass
 
     def get_renderer(self):
         renderers = self._render_window.GetRenderers()

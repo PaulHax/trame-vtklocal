@@ -26,7 +26,7 @@ const TYPED_ARRAY_CONSTRUCTORS = {
 };
 
 export default {
-  emits: ["updated", "viewStateChange", "onReady"],
+  emits: ["updated", "viewStateChange", "onReady", "beforeSceneLoaded", "afterSceneLoaded"],
   props: {
     renderWindow: {
       type: Number,
@@ -47,6 +47,8 @@ export default {
     let synchronizerContext = null;
     let buildOnlyPass = null;
     let renderRequestedCallback = null;
+    let repaintCallback = null;
+    let syncStateAtRenderFlag = false;
     let wsSubscription = null;
     let wsPartialUpdateSubscription = null;
     let stateQueue = [];
@@ -67,9 +69,14 @@ export default {
       gl.scissor(0, 0, width, height);
     }
 
+    function setRepaintCallback(fn) {
+      repaintCallback = fn;
+    }
+
     function initializeForSharedContext(canvas, gl, options = {}) {
       const { syncStateAtRender = false, onResyncRequired = null } = options;
 
+      syncStateAtRenderFlag = syncStateAtRender;
       glContext = gl;
 
       const contextName = `vtkjs-shared-${props.renderWindow}`;
@@ -99,11 +106,17 @@ export default {
             }
             stateQueue.push(deltaState);
             emit("viewStateChange", deltaState);
-            applyQueuedState().then(() => {
-              if (renderRequestedCallback) {
-                renderRequestedCallback();
+            if (syncStateAtRenderFlag) {
+              if (repaintCallback) {
+                repaintCallback();
               }
-            });
+            } else {
+              applyQueuedState().then(() => {
+                if (renderRequestedCallback) {
+                  renderRequestedCallback();
+                }
+              });
+            }
           }
         });
 
@@ -207,6 +220,7 @@ export default {
     async function applyQueuedState() {
       if (!stateQueue.length || !syncRenderWindow) return false;
 
+      emit("beforeSceneLoaded");
       while (stateQueue.length) {
         const state = stateQueue.shift();
         try {
@@ -223,11 +237,14 @@ export default {
           console.error("VtkJsShared: synchronize error", err);
         }
       }
+      emit("afterSceneLoaded");
       return true;
     }
 
-    function renderShared(options = {}) {
+    async function renderShared(options = {}) {
       const { skipRender = false } = options;
+
+      await applyQueuedState();
 
       if (!skipRender && sharedRenderWindow) {
         sharedRenderWindow.renderShared({});
@@ -289,6 +306,7 @@ export default {
       initializeForSharedContext,
       renderShared,
       onRenderRequested,
+      setRepaintCallback,
       getRenderWindow,
       getRenderer,
       resetGLStateForSharedContext,

@@ -14,13 +14,14 @@ class VtkJsLocalView(VtkJsBaseView):
             "camera",
         ]
 
-    def update(self):
+    def update(self, push_camera=False, **kwargs):
         self._render_window.Render()
         self.api.update()
         self.server.js_call(self._ref, "update")
+        if push_camera:
+            self._push_camera()
 
-    def push_camera(self):
-        """Push server camera state to client."""
+    def _push_camera(self):
         renderer = self._render_window.GetRenderers().GetFirstRenderer()
         if not renderer:
             return

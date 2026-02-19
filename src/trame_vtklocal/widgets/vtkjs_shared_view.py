@@ -158,9 +158,6 @@ class VtkJsSharedView(VtkJsBaseView):
     def on_render_requested(self, callback_name, **kwargs):
         self.server.js_call(self._ref, "onRenderRequested", callback_name)
 
-    def push_camera(self):
-        pass
-
     def get_renderer(self):
         renderers = self._render_window.GetRenderers()
         if renderers.GetNumberOfItems() > 0:

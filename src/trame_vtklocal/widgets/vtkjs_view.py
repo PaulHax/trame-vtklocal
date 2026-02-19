@@ -42,11 +42,5 @@ class VtkJsLocalView(VtkJsBaseView):
     def reset_camera(self):
         self.server.js_call(self._ref, "resetCamera")
 
-    def render(self):
-        self.server.js_call(self._ref, "render")
-
-    def resize(self):
-        self.server.js_call(self._ref, "resize")
-
 
 __all__ = ["VtkJsLocalView"]

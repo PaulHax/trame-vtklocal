@@ -131,8 +131,6 @@ SKIP_PROPERTIES = {
     # Properties below exist in Python VTK but have no setters in vtk.js.
     # Skipping them avoids console warnings and reduces network traffic.
     # RenderWindow properties
-    "position",
-    "size",
     "abortRender",
     "alphaBitPlanes",
     "anaglyphColorMask",
@@ -166,7 +164,6 @@ SKIP_PROPERTIES = {
     "useSRGBColorSpace",
     "windowName",
     # Renderer properties
-    "ambient",
     "allocatedRenderTime",
     "aspect",
     "displayPoint",
@@ -241,7 +238,6 @@ SKIP_PROPERTIES = {
     "editable",
     "globalReleaseDataFlag",
     "ramp",
-    "scale",
     "tableRange",
     # VR/Physical properties (not supported in vtk.js web context)
     "physicalScale",

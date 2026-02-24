@@ -94,7 +94,6 @@ JS_INIT = """
             },
             render(gl, args) {
                 vtkView.renderShared({});
-                vtkView.resetGLStateForSharedContext?.();
             }
         });
 

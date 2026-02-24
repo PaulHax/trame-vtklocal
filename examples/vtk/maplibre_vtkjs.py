@@ -533,7 +533,6 @@ INIT_SCRIPT_JS = """
                     const views = rw.getViews();
                     if (views.length > 0 && views[0].renderShared) {
                         views[0].renderShared({});
-                        vtkView.resetGLStateForSharedContext();
                     }
                 }
             }

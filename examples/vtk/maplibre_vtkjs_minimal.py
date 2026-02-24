@@ -32,7 +32,7 @@ x, y, scale = lng_lat_to_mercator(-104.9903, 39.7392)
 cone_scale = scale * 100000
 
 cone = vtkConeSource()
-cone.SetDirection(0, 0, 1)
+cone.SetDirection(1, 0, 0)
 mapper = vtkPolyDataMapper()
 mapper.SetInputConnection(cone.GetOutputPort())
 actor = vtkActor()

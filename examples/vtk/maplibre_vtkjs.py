@@ -489,13 +489,7 @@ INIT_SCRIPT_JS = """
             onAdd: function(mapInstance, gl) {
                 console.log('VTK layer onAdd called');
                 const canvas = mapInstance.getCanvas();
-                const options = syncMode ? {
-                    syncStateAtRender: true,
-                    onResyncRequired: () => {
-                        console.log('[VTK] Requesting resync after visibility change');
-                        window.trame.trigger('vtk_request_resync');
-                    }
-                } : {};
+                const options = syncMode ? { syncStateAtRender: true } : {};
                 vtkView.initializeForSharedContext(canvas, gl, options);
             },
             render: function(gl, args) {
@@ -640,13 +634,6 @@ with SinglePageLayout(server) as layout:
                 view_state_change="window.onVtkViewStateChange && window.onVtkViewStateChange($event)",
             )
             ctrl.view_update = view.update
-            ctrl.view_resync = view.request_resync
-
-
-@server.trigger("vtk_request_resync")
-def on_vtk_request_resync():
-    """Called by client when it needs full array data (e.g., after browser wake)."""
-    ctrl.view_resync()
 
 
 import sys

@@ -344,9 +344,6 @@ INIT_SCRIPT_JS = """
                 const canvas = mapInstance.getCanvas();
                 vtkView.initializeForSharedContext(canvas, gl, {
                     syncStateAtRender: true,
-                    onResyncRequired: () => {
-                        window.trame.trigger('vtk_request_resync');
-                    }
                 });
             },
             render: function(gl, args) {
@@ -462,13 +459,7 @@ with SinglePageLayout(server) as layout:
                 view_state_change="window.onVtkViewStateChange && window.onVtkViewStateChange($event)",
             )
             ctrl.view_update = view.update
-            ctrl.view_resync = view.request_resync
             ctrl.mark_modified = view.mark_modified
-
-
-@server.trigger("vtk_request_resync")
-def on_vtk_request_resync():
-    ctrl.view_resync()
 
 
 if __name__ == "__main__":

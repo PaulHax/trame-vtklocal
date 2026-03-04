@@ -97,11 +97,6 @@ def add_point(t):
 async def animate():
     global animation_time
 
-    # Ensure full initial sync before partial updates
-    ctrl.view_update()
-    state.flush()
-    await asyncio.sleep(0.2)
-
     while True:
         if trail_state["count"] < MAX_POINTS:
             animation_time += 0.15
@@ -117,7 +112,7 @@ async def animate():
                 elif state.update_mode == "partial_simple":
                     # Simple API - library extracts data from VTK
                     ctrl.mark_modified(polydata, "points", start=idx, count=1)
-                    ctrl.view_update()
+                    ctrl.view_flush()
 
                 elif state.update_mode == "partial_fast":
                     # Fast API - pass pre-computed bytes (use float32 to match vtk.js)
@@ -126,7 +121,7 @@ async def animate():
                         polydata, "points", start=idx,
                         data=point_bytes, data_type="Float32Array"
                     )
-                    ctrl.view_update()
+                    ctrl.view_flush()
 
                 state.flush()
 
@@ -144,17 +139,25 @@ def start_animation():
 
 
 @server.trigger("reset")
-def on_reset():
-    global animation_time
+async def on_reset():
+    global animation_task, animation_time
+    if animation_task is not None:
+        animation_task.cancel()
+        animation_task = None
     trail_state["count"] = 0
     animation_time = 0.0
     for i in range(MAX_POINTS):
         points.SetPoint(i, 0, 0, 0)
     points.Modified()
     lines.Reset()
+    lines.InsertNextCell(MAX_POINTS)
+    for i in range(MAX_POINTS):
+        lines.InsertCellPoint(i)
     polydata.Modified()
     state.current_points = 0
     ctrl.view_update()
+    state.flush()
+    animation_task = asyncio.create_task(animate())
 
 
 with SinglePageLayout(server) as layout:
@@ -195,6 +198,7 @@ with SinglePageLayout(server) as layout:
                     on_ready="window.initVtkView && window.initVtkView()",
                 )
                 ctrl.view_update = view.update
+                ctrl.view_flush = view.flush
                 ctrl.mark_modified = view.mark_modified
 
 
@@ -240,9 +244,6 @@ INIT_SCRIPT_JS = """
 
         vtkView.initializeForSharedContext(canvas, gl, {
             syncStateAtRender: true,
-            onResyncRequired: () => {
-                window.trame.trigger('vtk_request_resync');
-            }
         });
 
         vtkView.onRenderRequested(() => {
@@ -263,11 +264,6 @@ INIT_SCRIPT_JS = """
     }
 })();
 """
-
-
-@server.trigger("vtk_request_resync")
-def on_vtk_request_resync():
-    view.request_resync()
 
 
 server.enable_module({"scripts": [f"data:text/javascript,{url_quote(INIT_SCRIPT_JS)}"]})

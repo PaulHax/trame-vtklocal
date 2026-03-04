@@ -89,7 +89,6 @@ JS_INIT = """
             onAdd(m, gl) {
                 vtkView.initializeForSharedContext(m.getCanvas(), gl, {
                     syncStateAtRender: true,
-                    onResyncRequired: () => window.trame.trigger('resync')
                 });
             },
             render(gl, args) {
@@ -141,11 +140,6 @@ def sync():
     ctrl.view_update()
 
 
-@server.trigger("resync")
-def resync():
-    ctrl.view_resync()
-
-
 with DivLayout(server):
     html.Div(id="map-container", style="position: absolute; inset: 0;")
     view = VtkJsSharedView(
@@ -155,6 +149,5 @@ with DivLayout(server):
         on_ready="window.initMapVTK?.()",
     )
     ctrl.view_update = view.update
-    ctrl.view_resync = view.request_resync
 
 server.start()

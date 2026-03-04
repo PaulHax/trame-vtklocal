@@ -265,7 +265,6 @@ with SinglePageLayout(server) as layout:
                     on_ready="window.initVtkView && window.initVtkView()",
                 )
                 ctrl.view_update = view.update
-                ctrl.view_resync = view.request_resync
 
 
 INIT_SCRIPT_JS = """
@@ -314,9 +313,6 @@ INIT_SCRIPT_JS = """
 
         vtkView.initializeForSharedContext(canvas, gl, {
             syncStateAtRender: true,
-            onResyncRequired: () => {
-                window.trame.trigger('vtk_request_resync');
-            }
         });
 
         renderWindow = vtkView.getRenderWindow();
@@ -341,11 +337,6 @@ INIT_SCRIPT_JS = """
     }
 })();
 """
-
-
-@server.trigger("vtk_request_resync")
-def on_vtk_request_resync():
-    ctrl.view_resync()
 
 
 server.enable_module({"scripts": [f"data:text/javascript,{url_quote(INIT_SCRIPT_JS)}"]})

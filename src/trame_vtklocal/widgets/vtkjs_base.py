@@ -49,6 +49,8 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
 
         return bytes(object_manager.GetBlob(hash_str))
 
+    current_hashes = set()
+
     def walk(node):
         if isinstance(node, list):
             for item in node:
@@ -59,6 +61,7 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
 
         data_hash = node.get("hash")
         if data_hash and node.get("dataType") and "content" not in node:
+            current_hashes.add(data_hash)
             should_inline = sent_hashes is None or data_hash not in sent_hashes
             if should_inline:
                 content = get_blob_bytes(data_hash)
@@ -75,6 +78,12 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
                 walk(dep)
 
     walk(state)
+
+    # Prune sent_hashes to only contain hashes in the current state.
+    # Old hashes must be removed so they get re-inlined if they reappear,
+    # since the client GC may have evicted them from its cache.
+    if sent_hashes is not None:
+        sent_hashes &= current_hashes
 
 
 class VtkJsBaseView(HtmlElement):

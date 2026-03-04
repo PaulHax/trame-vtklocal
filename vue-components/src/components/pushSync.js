@@ -49,7 +49,12 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   if (data instanceof ArrayBuffer) {
     newData = new TypedArrayCtor(data);
   } else if (ArrayBuffer.isView(data)) {
-    newData = new TypedArrayCtor(data.buffer, data.byteOffset, data.byteLength / TypedArrayCtor.BYTES_PER_ELEMENT);
+    // msgpack may place binary data at unaligned offsets within a shared buffer
+    if (data.byteOffset % TypedArrayCtor.BYTES_PER_ELEMENT === 0) {
+      newData = new TypedArrayCtor(data.buffer, data.byteOffset, data.byteLength / TypedArrayCtor.BYTES_PER_ELEMENT);
+    } else {
+      newData = new TypedArrayCtor(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    }
   } else {
     newData = new TypedArrayCtor(data);
   }
@@ -81,14 +86,16 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
 }
 
 export function createPushSync(client, syncRenderWindow, synchronizerContext, rwId, callbacks = {}) {
-  const { onStateReceived, onPartialUpdate, onResyncRequired } = callbacks;
+  const { onStateReceived, onPartialUpdate } = callbacks;
 
   let stateQueue = [];
   let visibilityHandler = null;
+  let acceptBroadcasts = false;
 
   const session = client.getConnection().getSession();
 
   const wsSubscription = session.subscribe("trame.vtk.delta", ([deltaState]) => {
+    if (!acceptBroadcasts) return;
     if (!rwId || deltaState.id === rwId) {
       stateQueue.push(deltaState);
       if (onStateReceived) {
@@ -98,7 +105,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
   });
 
   const wsPartialUpdateSubscription = session.subscribe("trame.vtk.array.partial", async ([update]) => {
-    if (!synchronizerContext) return;
+    if (!acceptBroadcasts || !synchronizerContext) return;
 
     if (onPartialUpdate) {
       onPartialUpdate(update, synchronizerContext);
@@ -107,15 +114,25 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     }
   });
 
-  if (onResyncRequired) {
-    visibilityHandler = () => {
-      if (document.visibilityState === "visible") {
-        stateQueue.length = 0;
-        onResyncRequired();
-      }
-    };
-    document.addEventListener("visibilitychange", visibilityHandler);
+  async function requestResync() {
+    acceptBroadcasts = false;
+    const state = await session.call("vtkjs.push.resync", [rwId]);
+    stateQueue.length = 0;
+    stateQueue.push(state);
+    acceptBroadcasts = true;
+    if (onStateReceived) {
+      onStateReceived(state);
+    }
   }
+
+  visibilityHandler = () => {
+    if (document.visibilityState === "visible") {
+      requestResync();
+    }
+  };
+  document.addEventListener("visibilitychange", visibilityHandler);
+
+  requestResync();
 
   async function applyQueuedState() {
     if (!stateQueue.length || !syncRenderWindow) return false;
@@ -140,10 +157,6 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     }
   }
 
-  function clearQueue() {
-    stateQueue.length = 0;
-  }
-
   function getQueueLength() {
     return stateQueue.length;
   }
@@ -153,5 +166,5 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     return states;
   }
 
-  return { applyQueuedState, cleanup, clearQueue, getQueueLength, drainQueue };
+  return { applyQueuedState, cleanup, getQueueLength, drainQueue, requestResync };
 }

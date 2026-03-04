@@ -51,7 +51,7 @@ export default {
     }
 
     function initializeForSharedContext(canvas, gl, options = {}) {
-      const { syncStateAtRender = false, onResyncRequired = null } = options;
+      const { syncStateAtRender = false } = options;
 
       syncStateAtRenderFlag = syncStateAtRender;
 
@@ -81,10 +81,12 @@ export default {
             }
           },
           onPartialUpdate(update, syncCtx) {
+            if (syncStateAtRenderFlag && sync?.getQueueLength?.() > 0) {
+              applyQueuedStateSync();
+            }
             applyPartialArrayUpdate(update, syncCtx);
             if (renderRequestedCallback) renderRequestedCallback();
           },
-          onResyncRequired,
         });
       }
 
@@ -102,7 +104,13 @@ export default {
 
       let synced = false;
       for (const state of states) {
-        if (syncCapability.synchronizeSync(state, true)) synced = true;
+        try {
+          if (syncCapability.synchronizeSync(state, true)) synced = true;
+        } catch (e) {
+          console.warn("[VtkJsShared] Resync needed:", e.message);
+          sync.requestResync();
+          return false;
+        }
       }
 
       return emitIfSynced(synced);
@@ -139,6 +147,10 @@ export default {
       }
     }
 
+    function getQueueLength() {
+      return sync?.getQueueLength?.() ?? 0;
+    }
+
     function getRenderWindow() {
       return renderWindow;
     }
@@ -165,6 +177,7 @@ export default {
       applyQueuedStateSync,
       renderShared,
       onRenderRequested,
+      getQueueLength,
       getRenderWindow,
       getRenderer,
     };

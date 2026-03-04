@@ -3,16 +3,18 @@ from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
 
 
 class PushSync:
-    def __init__(self, server, object_manager, get_vtkjs_state, get_instance_id):
+    def __init__(self, server, object_manager, get_vtkjs_state, get_instance_id, api=None):
         self._server = server
         self._object_manager = object_manager
         self._get_vtkjs_state = get_vtkjs_state
         self._get_instance_id = get_instance_id
-        self._initial_sync_done = False
+        self._api = api
         self._pending_changes = []
+        self._sent_hashes = set()
 
     def request_resync(self, extra=None):
         self._pending_changes.clear()
+        self._sent_hashes.clear()
 
         if not self._server.protocol:
             return
@@ -22,37 +24,32 @@ class PushSync:
         if extra:
             full_state.setdefault("extra", {}).update(extra)
 
+        if self._api:
+            self._api._convert_bytes_to_attachments(full_state)
         self._server.protocol.publish("trame.vtk.delta", full_state)
-        self._initial_sync_done = True
 
-    def update(self, extra=None, push_pending=True):
+    def update(self, extra=None):
         if not self._server.protocol:
             return
 
-        flushed_partials = push_pending and bool(self._pending_changes)
-        if flushed_partials:
-            self.flush_pending_changes()
-
+        self._pending_changes.clear()
         delta_state = self._get_vtkjs_state()
-        if not flushed_partials:
-            _inline_arrays(delta_state, self._object_manager)
-            self._initial_sync_done = True
+        _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
 
         if extra:
             delta_state.setdefault("extra", {}).update(extra)
 
+        if self._api:
+            self._api._convert_bytes_to_attachments(delta_state)
         self._server.protocol.publish("trame.vtk.delta", delta_state)
 
     def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
         instance_id = self._get_instance_id(vtk_object)
         self._pending_changes.append((vtk_object, instance_id, array_path, start, count, data, data_type))
 
-    def flush_pending_changes(self):
+    def flush(self):
         if not self._pending_changes or not self._server.protocol:
             return False
-
-        if not self._initial_sync_done:
-            self.request_resync()
 
         for vtk_obj, instance_id, array_path, start, count, raw_data, raw_type in self._pending_changes:
             if raw_data is not None:
@@ -86,10 +83,6 @@ class PushSync:
 
         self._pending_changes.clear()
         return True
-
-    def on_client_connected(self, **kwargs):
-        self._initial_sync_done = False
-        self.request_resync()
 
     @staticmethod
     def extract_array_region(vtk_object, array_path, start, count):

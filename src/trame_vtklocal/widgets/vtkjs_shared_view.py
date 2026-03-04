@@ -31,8 +31,9 @@ class VtkJsSharedView(VtkJsBaseView):
                 self.object_manager,
                 self._get_vtkjs_state,
                 self.get_instance_id,
+                api=self.api,
             )
-            self.server.controller.on_client_connected.add(self._push_sync.on_client_connected)
+            self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
 
         VtkJsSharedView._shared_views[self._view_id] = self
 
@@ -44,13 +45,17 @@ class VtkJsSharedView(VtkJsBaseView):
         if self._push_sync:
             self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
 
-    def update(self, extra=None, push_pending=True, **kwargs):
+    def update(self, extra=None):
         if self._sync_mode == "push":
-            self._push_sync.update(extra=extra, push_pending=push_pending)
+            self._push_sync.update(extra=extra)
         else:
             self._render_window.Render()
             self.api.update()
             self.server.js_call(self._ref, "update")
+
+    def flush(self):
+        if self._push_sync:
+            self._push_sync.flush()
 
     def render_shared(self, options=None, **kwargs):
         self.server.js_call(self._ref, "renderShared", options or {})

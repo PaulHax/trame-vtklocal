@@ -43,6 +43,7 @@ class ObjectManagerAPI(LinkProtocol):
         self._last_publish_states = {}
         self._last_publish_hash = set()
         self._push_camera = False
+        self._push_sent_hashes_sets = []
 
         self._debug_state = False
         self._debug_state_counter = 1
@@ -178,6 +179,44 @@ class ObjectManagerAPI(LinkProtocol):
             import json
             json.dump(state, f, indent=2)
         return state
+
+    def register_push_sent_hashes(self, sent_hashes_set):
+        self._push_sent_hashes_sets.append(sent_hashes_set)
+
+    @export_rpc("vtkjs.push.resync")
+    def push_resync(self, obj_id):
+        from .vtkjs_translator import translate_scene
+        from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
+
+        for s in self._push_sent_hashes_sets:
+            s.clear()
+
+        render_window = self.vtk_object_manager.GetObjectAtId(int(obj_id))
+        if render_window:
+            render_window.Render()
+        self.vtk_object_manager.UpdateStatesFromObjects()
+        state = translate_scene(self.vtk_object_manager, int(obj_id))
+        _inline_arrays(state, self.vtk_object_manager)
+        self._convert_bytes_to_attachments(state)
+        return state
+
+    def _convert_bytes_to_attachments(self, node):
+        if isinstance(node, list):
+            for item in node:
+                self._convert_bytes_to_attachments(item)
+            return
+        if not isinstance(node, dict):
+            return
+
+        if isinstance(node.get("content"), (bytes, memoryview)):
+            node["content"] = self.addAttachment(memoryview(node["content"]))
+
+        if "properties" in node and isinstance(node["properties"], dict):
+            for value in node["properties"].values():
+                self._convert_bytes_to_attachments(value)
+        if "dependencies" in node:
+            for dep in node["dependencies"]:
+                self._convert_bytes_to_attachments(dep)
 
     @export_rpc("vtkjs.get.array")
     def get_vtkjs_array(self, hash_str, convert_to=None):

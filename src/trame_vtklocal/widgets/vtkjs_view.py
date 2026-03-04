@@ -26,7 +26,7 @@ class VtkJsLocalView(VtkJsBaseView):
                 self._get_vtkjs_state,
                 self.get_instance_id,
             )
-            self.server.controller.on_client_connected.add(self._push_sync.on_client_connected)
+            self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
 
     def update(self, push_camera=False, **kwargs):
         self._render_window.Render()

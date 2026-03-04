@@ -248,7 +248,13 @@ SKIP_PROPERTIES = {
     "enableTranslucentSurface",
 }
 
+RENDERWINDOW_SKIP_PROPERTIES = {
+    "position",
+    "size",
+}
+
 RENDERER_SKIP_PROPERTIES = {
+    "ambient",
     "backgroundAlpha",
     "texturedBackground",
     "automaticLightCreation",
@@ -257,6 +263,10 @@ RENDERER_SKIP_PROPERTIES = {
     "preserveDepthBuffer",
     "useImageBasedLighting",
     "useSphericalHarmonics",
+}
+
+LOOKUPTABLE_SKIP_PROPERTIES = {
+    "scale",
 }
 
 # Properties vtk.js Camera expects
@@ -523,6 +533,8 @@ class VtkJsTranslator:
 
         is_camera = vtkjs_type == "vtkCamera"
         is_renderer = vtkjs_type == "vtkRenderer"
+        is_renderwindow = vtkjs_type == "vtkRenderWindow"
+        is_lookuptable = vtkjs_type == "vtkLookupTable"
 
         for key, value in state.items():
             if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
@@ -555,7 +567,11 @@ class VtkJsTranslator:
                 camel_key = to_camel_case(key)
                 if is_camera and camel_key not in CAMERA_PROPERTIES:
                     continue
+                if is_renderwindow and camel_key in RENDERWINDOW_SKIP_PROPERTIES:
+                    continue
                 if is_renderer and camel_key in RENDERER_SKIP_PROPERTIES:
+                    continue
+                if is_lookuptable and camel_key in LOOKUPTABLE_SKIP_PROPERTIES:
                     continue
                 props[camel_key] = value
 

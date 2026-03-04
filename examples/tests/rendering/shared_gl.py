@@ -6,6 +6,7 @@ Exposes JS helpers for Playwright to verify state is applied during renderShared
     pytest tests/test_shared_gl_context.py -v --headed
 """
 
+import numpy as np
 import vtk
 from urllib.parse import quote as url_quote
 
@@ -36,7 +37,7 @@ def create_vtk_pipeline():
     renderer.ResetCamera()
     rw.Render()
 
-    return rw, actor
+    return rw, actor, cone
 
 
 JS_CODE = r"""
@@ -79,6 +80,22 @@ JS_CODE = r"""
         return !vtkView.applyQueuedStateSync();
     };
 
+    window.testGetDeltaQueueLength = function() {
+        return vtkView.getQueueLength();
+    };
+
+    window.__consoleErrors = [];
+    const origError = console.error;
+    console.error = function() {
+        window.__consoleErrors.push(Array.from(arguments).join(' '));
+        origError.apply(console, arguments);
+    };
+    const origWarn = console.warn;
+    console.warn = function() {
+        window.__consoleErrors.push(Array.from(arguments).join(' '));
+        origWarn.apply(console, arguments);
+    };
+
     if (document.readyState === 'complete') {
         setTimeout(window.initSharedGLTest, 100);
     } else {
@@ -93,7 +110,7 @@ JS_CODE = r"""
 class SharedGLTest:
     def __init__(self, server=None):
         self.server = enable_testing(get_server(server), "rendering_ready")
-        self.render_window, self.actor = create_vtk_pipeline()
+        self.render_window, self.actor, self.cone = create_vtk_pipeline()
         self._build_ui()
 
     def _build_ui(self):
@@ -125,6 +142,8 @@ class SharedGLTest:
             )
 
         ctrl.view_update = view.update
+        ctrl.view_flush = view.flush
+        ctrl.mark_modified = view.mark_modified
 
         @server.trigger("sync")
         def sync():
@@ -135,6 +154,34 @@ class SharedGLTest:
         def change_color():
             self.actor.GetProperty().SetColor(0, 1, 0)
             self.render_window.Render()
+            view.update()
+
+        @server.trigger("partial_move")
+        def partial_move():
+            self.cone.Update()
+            polydata = self.cone.GetOutput()
+            pts = polydata.GetPoints()
+            arr = np.array(pts.GetData())
+            arr += 0.5
+            for i in range(len(arr)):
+                pts.SetPoint(i, *arr[i])
+            pts.Modified()
+            polydata.Modified()
+            view.mark_modified(polydata, "points", start=0, count=len(arr))
+            view.flush()
+
+        @server.trigger("mark_then_update")
+        def mark_then_update():
+            self.cone.Update()
+            polydata = self.cone.GetOutput()
+            pts = polydata.GetPoints()
+            arr = np.array(pts.GetData())
+            arr -= 0.5
+            for i in range(len(arr)):
+                pts.SetPoint(i, *arr[i])
+            pts.Modified()
+            polydata.Modified()
+            view.mark_modified(polydata, "points", start=0, count=len(arr))
             view.update()
 
 

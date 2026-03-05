@@ -185,6 +185,11 @@ class ObjectManagerAPI(LinkProtocol):
 
     @export_rpc("vtkjs.push.resync")
     def push_resync(self, obj_id):
+        """Return full scene state with all arrays inlined for the requesting client.
+
+        Always includes camera state (unlike incremental deltas which may skip
+        camera via _push_camera) since the client needs full state to initialize.
+        """
         from .vtkjs_translator import translate_scene
         from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
 

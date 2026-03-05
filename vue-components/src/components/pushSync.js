@@ -64,6 +64,8 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
     newData = new TargetCtor(newData);
   }
 
+  if (!newData.length) return true;
+
   if (offset < 0 || offset + newData.length > values.length) {
     console.warn(
       `[pushSync] Partial update out of bounds: offset=${offset}, ` +
@@ -91,6 +93,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
   let stateQueue = [];
   let visibilityHandler = null;
   let acceptBroadcasts = false;
+  let resyncPending = false;
 
   const session = client.getConnection().getSession();
 
@@ -105,7 +108,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
   });
 
   const wsPartialUpdateSubscription = session.subscribe("trame.vtk.array.partial", async ([update]) => {
-    if (!acceptBroadcasts || !synchronizerContext) return;
+    if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
 
     if (onPartialUpdate) {
       onPartialUpdate(update, synchronizerContext);
@@ -116,6 +119,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
   async function requestResync() {
     acceptBroadcasts = false;
+    resyncPending = true;
     const state = await session.call("vtkjs.push.resync", [rwId]);
     stateQueue.length = 0;
     stateQueue.push(state);
@@ -141,6 +145,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
       const state = stateQueue.shift();
       await syncRenderWindow.synchronize(state);
     }
+    resyncPending = false;
     return true;
   }
 
@@ -163,6 +168,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
   function drainQueue() {
     const states = stateQueue.splice(0);
+    if (states.length) resyncPending = false;
     return states;
   }
 

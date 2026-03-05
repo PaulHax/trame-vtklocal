@@ -75,7 +75,10 @@ export default {
             if (syncStateAtRenderFlag) {
               if (renderRequestedCallback) renderRequestedCallback();
             } else {
-              applyQueuedState().then(() => {
+              applyQueuedState().catch((err) => {
+                console.warn("[VtkJsShared] State sync failed:", err.message);
+                sync?.requestResync?.();
+              }).then(() => {
                 if (renderRequestedCallback) renderRequestedCallback();
               });
             }

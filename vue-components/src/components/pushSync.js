@@ -64,7 +64,7 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
     newData = new TargetCtor(newData);
   }
 
-  if (offset + newData.length > values.length) {
+  if (offset < 0 || offset + newData.length > values.length) {
     console.warn(
       `[pushSync] Partial update out of bounds: offset=${offset}, ` +
       `newData.length=${newData.length}, values.length=${values.length}`

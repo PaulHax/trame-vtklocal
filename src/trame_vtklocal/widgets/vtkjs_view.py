@@ -25,6 +25,7 @@ class VtkJsLocalView(VtkJsBaseView):
                 self.object_manager,
                 self._get_vtkjs_state,
                 self.get_instance_id,
+                api=self.api,
             )
             self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
 

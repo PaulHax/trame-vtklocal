@@ -6,13 +6,11 @@ class VtkJsSharedView(VtkJsBaseView):
     _ref_prefix = "_vtkjssharedview"
     _shared_views = {}
 
-    def __init__(self, render_window, sync_mode="push", debug_arrays=False, **kwargs):
+    def __init__(self, render_window, sync_mode="push", **kwargs):
         super().__init__("vtk-js-shared", render_window, **kwargs)
 
         self._view_id = str(self._window_id)
         self._sync_mode = sync_mode
-        self._inline_array_cache = {}
-        self._debug_arrays = debug_arrays
         self._push_sync = None
 
         self._event_names += [

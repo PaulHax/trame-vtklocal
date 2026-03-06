@@ -25,7 +25,6 @@ from vtkmodules.vtkRenderingCore import (
 )
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
-from vtkmodules.vtkFiltersCore import vtkTubeFilter
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 
 
@@ -44,18 +43,57 @@ server = get_server()
 server.client_type = "vue3"
 state, ctrl = server.state, server.controller
 
-state.sync_mode = "partial"  # "full" or "partial"
 state.trame__title = "MapLibre + VTK.js (Partial Updates)"
 state.orbit_speed = 1.0
-state.animation_paused = True
+state.animation_paused = False
 state.update_count = 0
 state.avg_update_ms = 0
+state.camera_mode = "orbit"
 
 CITIES = [
     {"name": "New York", "lng": -74.006, "lat": 40.7128, "color": (1.0, 0.5, 0.0)},
     {"name": "Chicago", "lng": -87.6298, "lat": 41.8781, "color": (0.5, 1.0, 0.0)},
     {"name": "Denver", "lng": -104.9903, "lat": 39.7392, "color": (0.0, 0.5, 1.0)},
 ]
+
+def set_map_camera(center, zoom, bearing=0, pitch=0, animate=True, duration=1000):
+    server.js_call(
+        "mapController",
+        "setCamera",
+        {"center": center, "zoom": zoom, "bearing": bearing, "pitch": pitch,
+         "animate": animate, "duration": duration},
+    )
+
+
+def fit_map_bounds(bounds, padding=100, animate=True):
+    server.js_call("mapController", "fitBounds", bounds, padding, animate)
+
+
+def focus_city(city_name):
+    city = next((c for c in CITIES if c["name"] == city_name), None)
+    if city:
+        set_map_camera(center=[city["lng"], city["lat"]], zoom=8)
+
+
+def fit_all_cities():
+    bounds = [
+        [min(c["lng"] for c in CITIES), min(c["lat"] for c in CITIES)],
+        [max(c["lng"] for c in CITIES), max(c["lat"] for c in CITIES)],
+    ]
+    fit_map_bounds(bounds, padding=100)
+
+
+@state.change("camera_mode")
+def on_camera_mode_change(camera_mode, **kwargs):
+    if camera_mode == "new_york":
+        focus_city("New York")
+    elif camera_mode == "chicago":
+        focus_city("Chicago")
+    elif camera_mode == "denver":
+        focus_city("Denver")
+    elif camera_mode == "fit_all":
+        fit_all_cities()
+
 
 renderer = vtkRenderer()
 renderer.SetBackground(0, 0, 0)
@@ -111,7 +149,7 @@ center_actor.GetProperty().SetDiffuse(0.0)
 center_actor.SetScale(center_scale * 50000, center_scale * 50000, center_scale * 50000)
 renderer.AddActor(center_actor)
 
-# Trail setup - dynamic topology (ring buffer)
+# Trail setup - raw line with fixed topology for partial updates
 MAX_TRAIL_POINTS = 60
 trail_points = vtkPoints()
 trail_lines = vtkCellArray()
@@ -119,37 +157,28 @@ trail_polydata = vtkPolyData()
 trail_polydata.SetPoints(trail_points)
 trail_polydata.SetLines(trail_lines)
 
-# Pre-allocate points array but don't set positions yet
+# Pre-allocate all points at the origin
 trail_points.SetNumberOfPoints(MAX_TRAIL_POINTS)
 for i in range(MAX_TRAIL_POINTS):
     trail_points.SetPoint(i, 0, 0, 0)
 
-# Lines will be rebuilt dynamically based on current point count
-
-# TubeFilter for thick trail (like original example)
-trail_tube = vtkTubeFilter()
-trail_tube.SetInputData(trail_polydata)
-trail_tube.SetNumberOfSides(8)
-trail_tube.CappingOn()
-_, _, _, initial_scale = lng_lat_to_mercator(ORBIT_CENTER[0], ORBIT_CENTER[1])
-trail_tube.SetRadius(initial_scale * 50000 * 0.25)
+# Fixed polyline connecting all points (hidden ones overlap at leading edge)
+trail_lines.InsertNextCell(MAX_TRAIL_POINTS)
+for i in range(MAX_TRAIL_POINTS):
+    trail_lines.InsertCellPoint(i)
 
 trail_mapper = vtkPolyDataMapper()
-trail_mapper.SetInputConnection(trail_tube.GetOutputPort())
+trail_mapper.SetInputData(trail_polydata)
 
 trail_actor = vtkActor()
 trail_actor.SetMapper(trail_mapper)
 trail_actor.GetProperty().SetColor(1.0, 0.3, 0.0)
 trail_actor.GetProperty().SetAmbient(1.0)
 trail_actor.GetProperty().SetDiffuse(0.0)
+trail_actor.GetProperty().SetLineWidth(3)
 renderer.AddActor(trail_actor)
 
-trail_state = {
-    "write_idx": 0,
-    "count": 0,
-    "last_cell_config": None,
-    "scale_factor": None,
-}
+visible_trail_count = 0
 
 renderer.ResetCamera()
 renderWindow.Render()
@@ -159,44 +188,28 @@ animation_task = None
 
 
 def update_trail(lng, lat, scale):
-    """Add a point to the orbit trail using ring buffer with dynamic topology."""
+    """Add a point to the orbit trail. Returns (x, y, z, point_index)."""
+    global visible_trail_count
     x, y, _, _ = lng_lat_to_mercator(lng, lat)
     z_height = scale * 0.3
 
-    # Update tube radius if scale changed significantly
-    if trail_state["scale_factor"] is None or abs(trail_state["scale_factor"] - scale) > scale * 0.1:
-        trail_state["scale_factor"] = scale
-        trail_tube.SetRadius(scale * 0.25)
-
-    write_idx = trail_state["write_idx"]
-    trail_points.SetPoint(write_idx, x, y, z_height)
-
-    trail_state["write_idx"] = (write_idx + 1) % MAX_TRAIL_POINTS
-    if trail_state["count"] < MAX_TRAIL_POINTS:
-        trail_state["count"] += 1
-
-    count = trail_state["count"]
-    if count < 2:
-        return write_idx
-
-    # Rebuild line topology to connect points in ring buffer order
-    start_idx = (trail_state["write_idx"] - count + MAX_TRAIL_POINTS) % MAX_TRAIL_POINTS
-    cell_config = (count, start_idx)
-
-    if trail_state["last_cell_config"] != cell_config:
-        trail_state["last_cell_config"] = cell_config
-        trail_lines.Reset()
-        trail_lines.InsertNextCell(count)
-        for i in range(count):
-            idx = (start_idx + i) % MAX_TRAIL_POINTS
-            trail_lines.InsertCellPoint(idx)
+    if visible_trail_count < MAX_TRAIL_POINTS:
+        # Growing phase: reveal next point
+        idx = visible_trail_count
+        trail_points.SetPoint(idx, x, y, z_height)
+        # Collapse remaining hidden points onto leading edge
+        for i in range(idx + 1, MAX_TRAIL_POINTS):
+            trail_points.SetPoint(i, x, y, z_height)
+        visible_trail_count += 1
+    else:
+        # Sliding window: shift all points left, add new at end
+        for i in range(MAX_TRAIL_POINTS - 1):
+            trail_points.SetPoint(i, *trail_points.GetPoint(i + 1))
+        trail_points.SetPoint(MAX_TRAIL_POINTS - 1, x, y, z_height)
 
     trail_points.Modified()
     trail_polydata.Modified()
-    trail_tube.Update()
-    trail_mapper.Update()
-
-    return write_idx
+    return x, y, z_height
 
 
 async def animate():
@@ -239,22 +252,23 @@ async def animate():
         center_actor.SetScale(marker_size, marker_size, marker_size)
 
         # Update trail
-        updated_idx = update_trail(orbit_lng, orbit_lat, marker_size)
+        tx, ty, tz = update_trail(orbit_lng, orbit_lat, marker_size)
 
         start_time = time.perf_counter()
 
-        orbit_camera = {
-            "orbitCamera": {
-                "center": [orbit_lng, orbit_lat],
-                "zoom": ORBIT_ZOOM,
-                "bearing": 0,
-                "pitch": 0,
-            }
-        }
-
-        # Trail has dynamic topology - always need full sync
-        # (properties_only mode is useful when mesh is static)
-        ctrl.view_update(extra=orbit_camera)
+        if state.camera_mode == "orbit":
+            ctrl.view_update(
+                extra={
+                    "orbitCamera": {
+                        "center": [orbit_lng, orbit_lat],
+                        "zoom": ORBIT_ZOOM,
+                        "bearing": 0,
+                        "pitch": 0,
+                    }
+                },
+            )
+        else:
+            ctrl.view_update()
 
         elapsed = (time.perf_counter() - start_time) * 1000
         update_times.append(elapsed)
@@ -290,10 +304,17 @@ INIT_SCRIPT_JS = """
     let vtkView = null;
     let vtkLayerConfig = null;
     let pendingOrbitCamera = null;
+    let ignoreOrbitCameraUntil = 0;
 
     window.onVtkViewStateChange = (state) => {
         if (state?.extra?.orbitCamera) {
+            if (Date.now() < ignoreOrbitCameraUntil) {
+                pendingOrbitCamera = null;
+                return;
+            }
             pendingOrbitCamera = state.extra.orbitCamera;
+        } else {
+            pendingOrbitCamera = null;
         }
     };
 
@@ -302,7 +323,24 @@ INIT_SCRIPT_JS = """
     window.trame.refs.mapController = {
         triggerRepaint() {
             if (map) map.triggerRepaint();
-        }
+        },
+        setCamera({ center, zoom, bearing = 0, pitch = 0, animate = true, duration = 1000 }) {
+            if (!map) return;
+            pendingOrbitCamera = null;
+            ignoreOrbitCameraUntil = Date.now() + (animate ? duration : 100);
+            const options = { center, zoom, bearing, pitch };
+            if (animate) {
+                map.flyTo({ ...options, duration });
+            } else {
+                map.jumpTo(options);
+            }
+        },
+        fitBounds(bounds, padding = 100, animate = true) {
+            if (!map) return;
+            pendingOrbitCamera = null;
+            ignoreOrbitCameraUntil = Date.now() + (animate ? 1000 : 100);
+            map.fitBounds(bounds, { padding, animate });
+        },
     };
 
     window.initMapLibreVTK = async function() {
@@ -405,18 +443,17 @@ with SinglePageLayout(server) as layout:
     layout.title.set_text("MapLibre + VTK.js (Partial Updates)")
 
     with layout.toolbar:
-        vuetify3.VSelect(
-            v_model=("sync_mode",),
-            items=(
-                "[{title: 'Partial Update', value: 'partial'}, "
-                "{title: 'Full Sync', value: 'full'}]",
-            ),
-            label="Mode",
+        with vuetify3.VBtnToggle(
+            v_model=("camera_mode",),
+            mandatory=True,
             density="compact",
-            hide_details=True,
-            style="max-width: 150px;",
-            classes="mr-2",
-        )
+            color="primary",
+        ):
+            vuetify3.VBtn("Orbit", value="orbit", size="small")
+            vuetify3.VBtn("New York", value="new_york", size="small")
+            vuetify3.VBtn("Chicago", value="chicago", size="small")
+            vuetify3.VBtn("Denver", value="denver", size="small")
+            vuetify3.VBtn("Fit All", value="fit_all", size="small")
         vuetify3.VDivider(vertical=True, classes="mx-2")
         vuetify3.VBtn(
             "{{ animation_paused ? 'Play' : 'Pause' }}",
@@ -437,9 +474,8 @@ with SinglePageLayout(server) as layout:
         )
         vuetify3.VSpacer()
         html.Span(
-            "{{ sync_mode === 'partial' ? 'Partial' : 'Full' }}: "
-            "{{ avg_update_ms.toFixed(2) }}ms avg",
-            style="font-family: monospace; color: #666;",
+            "Push: {{ avg_update_ms.toFixed(2) }}ms",
+            style="font-family: monospace; color: #666; min-width: 140px; text-align: right; display: inline-block;",
         )
 
     with layout.content:
@@ -459,7 +495,6 @@ with SinglePageLayout(server) as layout:
                 view_state_change="window.onVtkViewStateChange && window.onVtkViewStateChange($event)",
             )
             ctrl.view_update = view.update
-            ctrl.mark_modified = view.mark_modified
 
 
 if __name__ == "__main__":

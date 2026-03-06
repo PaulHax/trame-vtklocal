@@ -1,12 +1,16 @@
 """
 Simple test for partial array updates.
-Uses raw points/lines without tube filter so vtk.js has the actual polydata.
+A line grows by adding points, then shrinks by removing them, forever.
+Points are pre-allocated; grow reveals them at their sine-wave position,
+shrink collapses all hidden points onto the last visible one.
 """
 
 import asyncio
 import math
 import argparse
 from urllib.parse import quote as url_quote
+
+import numpy as np
 
 from trame.app import get_server
 from trame.widgets import html, vuetify3
@@ -24,14 +28,13 @@ from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 
-import numpy as np
-
 server = get_server()
 server.client_type = "vue3"
 state, ctrl = server.state, server.controller
 
 state.trame__title = "Simple Partial Update Test"
 state.current_points = 0
+state.growing = True
 state.update_mode = "partial_simple"  # "full_sync", "partial_simple", "partial_fast"
 
 renderer = vtkRenderer()
@@ -48,11 +51,20 @@ polydata = vtkPolyData()
 polydata.SetPoints(points)
 polydata.SetLines(lines)
 
-points.SetNumberOfPoints(MAX_POINTS)
+# Pre-compute positions along a sine wave
+all_positions = []
 for i in range(MAX_POINTS):
-    points.SetPoint(i, 0, 0, 0)
+    x = -1.0 + 2.0 * i / (MAX_POINTS - 1)  # -1 to +1
+    y = 0.3 * math.sin(4.0 * math.pi * i / (MAX_POINTS - 1))
+    all_positions.append((x, y, 0.0))
 
-# Pre-initialize lines with all points connected (for partial update mode)
+# Pre-allocate all points collapsed at the first position
+points.SetNumberOfPoints(MAX_POINTS)
+x0, y0, z0 = all_positions[0]
+for i in range(MAX_POINTS):
+    points.SetPoint(i, x0, y0, z0)
+
+# Single polyline connecting all points
 lines.InsertNextCell(MAX_POINTS)
 for i in range(MAX_POINTS):
     lines.InsertCellPoint(i)
@@ -66,106 +78,134 @@ actor.GetProperty().SetColor(0.2, 0.8, 1.0)
 actor.GetProperty().SetLineWidth(3)
 renderer.AddActor(actor)
 
+# Frame camera to full extent, then collapse back
+for i in range(MAX_POINTS):
+    points.SetPoint(i, *all_positions[i])
 renderer.ResetCamera()
+for i in range(MAX_POINTS):
+    points.SetPoint(i, x0, y0, z0)
+points.Modified()
 renderWindow.Render()
 
-trail_state = {"count": 0}
-animation_time = 0.0
+visible_count = 1  # Start with 1 point visible
+growing = True
 
 
-def add_point(t):
-    global animation_time
-    count = trail_state["count"]
-    if count >= MAX_POINTS:
+def grow_one():
+    """Reveal the next point and collapse remaining hidden points onto it."""
+    global visible_count
+    if visible_count >= MAX_POINTS:
         return None
 
-    x = math.cos(t) * (0.5 + 0.3 * math.sin(t * 2))
-    y = math.sin(t) * (0.5 + 0.3 * math.sin(t * 2))
-    z = 0.1 * math.sin(t * 3)
+    idx = visible_count
+    x, y, z = all_positions[idx]
+    points.SetPoint(idx, x, y, z)
+    # Collapse all remaining hidden points onto the new leading edge
+    for i in range(idx + 1, MAX_POINTS):
+        points.SetPoint(i, x, y, z)
+    visible_count += 1
+    state.current_points = visible_count
 
-    points.SetPoint(count, x, y, z)
-    trail_state["count"] = count + 1
-    state.current_points = count + 1
-
-    # Lines are pre-initialized with all 100 points, so no need to rebuild
     points.Modified()
     polydata.Modified()
+    return (x, y, z), idx
 
-    return (x, y, z), count
+
+def shrink_one():
+    """Hide the last visible point by collapsing ALL hidden points onto the new tail."""
+    global visible_count
+    if visible_count <= 1:
+        return None
+
+    visible_count -= 1
+    # Collapse ALL points from visible_count onward to the new tail position
+    px, py, pz = all_positions[visible_count - 1]
+    for i in range(visible_count, MAX_POINTS):
+        points.SetPoint(i, px, py, pz)
+    state.current_points = visible_count
+
+    points.Modified()
+    polydata.Modified()
+    return (px, py, pz), visible_count
 
 
 async def animate():
-    global animation_time
+    global growing
 
     while True:
-        if trail_state["count"] < MAX_POINTS:
-            animation_time += 0.15
-            result = add_point(animation_time)
-
+        if growing:
+            result = grow_one()
             if result:
                 (x, y, z), idx = result
+                send_grow_update(x, y, z, idx)
+            if visible_count >= MAX_POINTS:
+                growing = False
+                state.growing = False
+        else:
+            result = shrink_one()
+            if result:
+                (px, py, pz), start_idx = result
+                send_shrink_update(px, py, pz, start_idx)
+            if visible_count <= 1:
+                growing = True
+                state.growing = True
 
-                if state.update_mode == "full_sync":
-                    # Full state sync every frame
-                    ctrl.view_update()
-
-                elif state.update_mode == "partial_simple":
-                    # Simple API - library extracts data from VTK
-                    ctrl.mark_modified(polydata, "points", start=idx, count=1)
-                    ctrl.view_flush()
-
-                elif state.update_mode == "partial_fast":
-                    # Fast API - pass pre-computed bytes (use float32 to match vtk.js)
-                    point_bytes = np.array([x, y, z], dtype=np.float32).tobytes()
-                    ctrl.mark_modified(
-                        polydata, "points", start=idx,
-                        data=point_bytes, data_type="Float32Array"
-                    )
-                    ctrl.view_flush()
-
-                state.flush()
-
+        state.flush()
         await asyncio.sleep(1.0 / 30)
+
+
+def send_grow_update(x, y, z, idx):
+    """Growing: point idx revealed, all points from idx onward set to (x,y,z)."""
+    count = MAX_POINTS - idx
+    if state.update_mode == "full_sync":
+        ctrl.view_update()
+    elif state.update_mode == "partial_simple":
+        ctrl.mark_modified(polydata, "points", start=idx, count=count)
+        ctrl.view_flush()
+    elif state.update_mode == "partial_fast":
+        point_bytes = np.tile(
+            np.array([x, y, z], dtype=np.float32), count
+        ).tobytes()
+        ctrl.mark_modified(
+            polydata, "points", start=idx,
+            data=point_bytes, data_type="Float32Array"
+        )
+        ctrl.view_flush()
+
+
+def send_shrink_update(px, py, pz, start_idx):
+    """Shrinking: all points from start_idx onward collapsed to (px, py, pz)."""
+    count = MAX_POINTS - start_idx
+    if state.update_mode == "full_sync":
+        ctrl.view_update()
+    elif state.update_mode == "partial_simple":
+        ctrl.mark_modified(polydata, "points", start=start_idx, count=count)
+        ctrl.view_flush()
+    elif state.update_mode == "partial_fast":
+        point_bytes = np.tile(
+            np.array([px, py, pz], dtype=np.float32), count
+        ).tobytes()
+        ctrl.mark_modified(
+            polydata, "points", start=start_idx,
+            data=point_bytes, data_type="Float32Array"
+        )
+        ctrl.view_flush()
 
 
 animation_task = None
 
 
 @server.trigger("start_animation")
-def start_animation():
+def start_animation(**kwargs):
     global animation_task
     if animation_task is None:
         animation_task = asyncio.create_task(animate())
-
-
-@server.trigger("reset")
-async def on_reset():
-    global animation_task, animation_time
-    if animation_task is not None:
-        animation_task.cancel()
-        animation_task = None
-    trail_state["count"] = 0
-    animation_time = 0.0
-    for i in range(MAX_POINTS):
-        points.SetPoint(i, 0, 0, 0)
-    points.Modified()
-    lines.Reset()
-    lines.InsertNextCell(MAX_POINTS)
-    for i in range(MAX_POINTS):
-        lines.InsertCellPoint(i)
-    polydata.Modified()
-    state.current_points = 0
-    ctrl.view_update()
-    state.flush()
-    animation_task = asyncio.create_task(animate())
 
 
 with SinglePageLayout(server) as layout:
     layout.title.set_text("Simple Partial Update Test")
 
     with layout.toolbar:
-        vuetify3.VBtn("Reset", click=(on_reset,), variant="text", size="small")
-        vuetify3.VDivider(vertical=True, classes="mx-2")
         vuetify3.VSelect(
             v_model=("update_mode",),
             items=("[{title: 'Full Sync', value: 'full_sync'}, {title: 'Partial (Simple)', value: 'partial_simple'}, {title: 'Partial (Fast)', value: 'partial_fast'}]",),
@@ -186,6 +226,7 @@ with SinglePageLayout(server) as layout:
             ):
                 html.Div("Mode: {{ update_mode }}")
                 html.Div("Points: {{ current_points }} / 100")
+                html.Div("{{ growing ? 'Growing...' : 'Shrinking...' }}")
 
             with html.Div(
                 id="vtk-container",

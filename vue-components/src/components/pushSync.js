@@ -87,6 +87,50 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   return true;
 }
 
+/**
+ * Walk a state tree and pre-cache any inline array content into the
+ * synchronizer context so that the async synchronize() path finds them
+ * in the cache instead of trying to fetch via RPC.
+ */
+function cacheInlineArrays(state, synchronizerContext) {
+  if (!state || typeof state !== "object") return;
+
+  function walk(node) {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+
+    const { hash, dataType, content } = node;
+    if (hash && dataType && content != null) {
+      const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
+      let typedArray;
+      if (content instanceof ArrayBuffer) {
+        typedArray = new TypedArrayCtor(content);
+      } else if (ArrayBuffer.isView(content)) {
+        if (content.byteOffset % TypedArrayCtor.BYTES_PER_ELEMENT === 0) {
+          typedArray = new TypedArrayCtor(content.buffer, content.byteOffset, content.byteLength / TypedArrayCtor.BYTES_PER_ELEMENT);
+        } else {
+          typedArray = new TypedArrayCtor(content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength));
+        }
+      }
+      if (typedArray) {
+        synchronizerContext.cacheArray(hash, typedArray, synchronizerContext);
+      }
+    }
+
+    if (node.properties && typeof node.properties === "object") {
+      Object.values(node.properties).forEach(walk);
+    }
+    if (node.dependencies) {
+      node.dependencies.forEach(walk);
+    }
+  }
+
+  walk(state);
+}
+
 export function createPushSync(client, syncRenderWindow, synchronizerContext, rwId, callbacks = {}) {
   const { onStateReceived, onPartialUpdate } = callbacks;
 
@@ -143,6 +187,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
     while (stateQueue.length) {
       const state = stateQueue.shift();
+      cacheInlineArrays(state, synchronizerContext);
       await syncRenderWindow.synchronize(state);
     }
     resyncPending = false;

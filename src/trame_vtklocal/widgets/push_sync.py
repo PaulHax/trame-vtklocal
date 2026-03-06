@@ -41,6 +41,7 @@ class PushSync:
 
         if self._api:
             self._api._convert_bytes_to_attachments(delta_state)
+
         self._server.protocol.publish("trame.vtk.delta", delta_state)
 
     def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):

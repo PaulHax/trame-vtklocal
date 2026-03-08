@@ -1,4 +1,4 @@
-import { ref, inject, onBeforeUnmount } from "vue";
+import { ref, inject, onMounted, onBeforeUnmount } from "vue";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 
@@ -40,6 +40,7 @@ export default {
     let sharedRenderWindow = null;
     let renderWindow = null;
     let renderRequestedCallback = null;
+    let repaintCallback = null;
     let syncStateAtRenderFlag = false;
     let sync = null;
     let syncCapability = null;
@@ -69,17 +70,24 @@ export default {
       if (props.syncMode === "pull") {
         sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
       } else {
+        let sharedRafPending = false;
         sync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
           onStateReceived(deltaState) {
             emit("viewStateChange", deltaState);
-            if (syncStateAtRenderFlag) {
+            if (repaintCallback) {
+              repaintCallback(deltaState);
+            } else if (syncStateAtRenderFlag) {
               if (renderRequestedCallback) renderRequestedCallback();
-            } else {
-              applyQueuedState().catch((err) => {
-                console.warn("[VtkJsShared] State sync failed:", err.message);
-                sync?.requestResync?.();
-              }).then(() => {
-                if (renderRequestedCallback) renderRequestedCallback();
+            } else if (!sharedRafPending) {
+              sharedRafPending = true;
+              requestAnimationFrame(() => {
+                sharedRafPending = false;
+                applyQueuedState().catch((err) => {
+                  console.warn("[VtkJsShared] State sync failed:", err.message);
+                  sync?.requestResync?.();
+                }).then(() => {
+                  if (renderRequestedCallback) renderRequestedCallback();
+                });
               });
             }
           },
@@ -164,6 +172,20 @@ export default {
         || null;
     }
 
+    function setRepaintCallback(callback) {
+      repaintCallback = callback;
+    }
+
+    function connectAndSync() {
+      if (sync?.requestResync) {
+        sync.requestResync();
+      }
+    }
+
+    onMounted(() => {
+      emit("onReady");
+    });
+
     onBeforeUnmount(() => {
       sync?.cleanup();
       sync = null;
@@ -183,6 +205,8 @@ export default {
       getQueueLength,
       getRenderWindow,
       getRenderer,
+      setRepaintCallback,
+      connectAndSync,
     };
   },
   template: `<div style="display: none;"></div>`,

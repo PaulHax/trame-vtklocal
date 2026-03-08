@@ -18,7 +18,11 @@ vtk.js format (nested):
 - arrays: object with array metadata including hash, dataType, etc.
 """
 
+import hashlib
 import json
+
+import numpy as np
+from vtkmodules.util.numpy_support import numpy_to_vtk
 
 _scene_mtime_counter = [0]
 
@@ -101,6 +105,22 @@ PROPERTY_RELATIONS = {
     "vtkTexture": {
         "LookupTable": ("setLookupTable", None),
     },
+}
+
+ATTRIBUTE_REGISTRATIONS = {
+    "Scalars": "setScalars",
+    "Vectors": "setVectors",
+    "Normals": "setNormals",
+    "TCoords": "setTCoords",
+    "Tensors": "setTensors",
+    "GlobalIds": "setGlobalIds",
+    "PedigreeIds": "setPedigreeIds",
+}
+
+FIELD_DATA_GETTERS = {
+    "PointData": "GetPointData",
+    "CellData": "GetCellData",
+    "FieldData": "GetFieldData",
 }
 
 POLYDATA_ARRAYS = {
@@ -457,18 +477,13 @@ class VtkJsTranslator:
                                     props[key.lower()] = array_meta
 
             elif key in ("PointData", "CellData", "FieldData"):
-                ref_id = get_ref_id(value)
-                if ref_id:
-                    field_state = self._get_state(ref_id)
-                    field_arrays = field_state.get("Arrays", [])
-                    for arr_ref in field_arrays:
-                        arr_id = get_ref_id(arr_ref)
-                        if arr_id:
-                            arr_state = self._get_state(arr_id)
-                            arr_meta = self._build_array_metadata(arr_state)
-                            if arr_meta:
-                                arr_meta["location"] = to_camel_case(key)
-                                fields.append(arr_meta)
+                # Read arrays directly from VTK Python objects since
+                # vtkObjectManager doesn't serialize DataSetAttributes arrays
+                vtk_polydata = self._get_vtk_object(state["Id"])
+                if vtk_polydata:
+                    fields.extend(
+                        self._extract_field_arrays(vtk_polydata, key)
+                    )
             elif not is_ref(value):
                 props[to_camel_case(key)] = value
 
@@ -483,6 +498,69 @@ class VtkJsTranslator:
             "dependencies": dependencies,
             "calls": calls,
         }
+
+    def _extract_field_arrays(self, vtk_polydata, field_name):
+        """Extract arrays from PointData/CellData/FieldData using VTK Python API.
+
+        vtkObjectManager doesn't serialize vtkDataSetAttributes arrays,
+        so we read them directly and register blobs manually.
+        """
+        getter = FIELD_DATA_GETTERS.get(field_name)
+        if not getter:
+            return []
+
+        field_data = getattr(vtk_polydata, getter)()
+        if not field_data or field_data.GetNumberOfArrays() == 0:
+            return []
+
+        location = to_camel_case(field_name)
+
+        # Build attribute map: array_name -> registration method
+        attr_map = {}
+        for vtk_attr, reg_method in ATTRIBUTE_REGISTRATIONS.items():
+            get_attr = f"Get{vtk_attr}"
+            if hasattr(field_data, get_attr):
+                attr_arr = getattr(field_data, get_attr)()
+                if attr_arr:
+                    attr_map[attr_arr.GetName()] = reg_method
+
+        results = []
+        for i in range(field_data.GetNumberOfArrays()):
+            arr = field_data.GetArray(i)
+            if not arr:
+                continue
+
+            num_tuples = arr.GetNumberOfTuples()
+            num_components = arr.GetNumberOfComponents()
+            if num_tuples == 0:
+                continue
+
+            # Use ravel() for zero-copy view when data is contiguous
+            np_arr = np.array(arr).ravel()
+            raw_bytes = np_arr.view(np.uint8)
+            hash_val = hashlib.md5(raw_bytes).hexdigest()
+
+            # RegisterBlob requires a vtkTypeUInt8Array (= vtkUnsignedCharArray).
+            blob = numpy_to_vtk(raw_bytes, deep=True)
+            self.object_manager.RegisterBlob(hash_val, blob)
+
+            data_type = arr.GetDataType()
+            js_type = VTK_DATATYPE_MAP.get(data_type, "Float32Array")
+            name = arr.GetName() or ""
+
+            meta = {
+                "hash": hash_val,
+                "dataType": js_type,
+                "numberOfComponents": num_components,
+                "size": num_tuples * num_components,
+                "name": name,
+                "location": location,
+            }
+            if name in attr_map:
+                meta["registration"] = attr_map[name]
+            results.append(meta)
+
+        return results
 
     def _translate_mapper(self, state, vtkjs_type):
         props = {}
@@ -574,6 +652,13 @@ class VtkJsTranslator:
                 if is_lookuptable and camel_key in LOOKUPTABLE_SKIP_PROPERTIES:
                     continue
                 props[camel_key] = value
+
+        # vtk.js uses background[3] as alpha; merge BackgroundAlpha into background
+        if is_renderer and "background" in props:
+            bg = props["background"]
+            alpha = state.get("BackgroundAlpha", 1.0)
+            if isinstance(bg, list) and len(bg) == 3:
+                props["background"] = bg + [alpha]
 
         return {
             "id": str(state["Id"]),

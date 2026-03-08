@@ -30,12 +30,12 @@ class VtkJsLocalView(VtkJsBaseView):
             self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
 
     def update(self, push_camera=False, **kwargs):
-        self._render_window.Render()
-        self.api.update()
-
         if self._sync_mode == "push":
+            # _get_vtkjs_state() already calls Render() + UpdateStatesFromObjects()
             self._push_sync.update()
         else:
+            self._render_window.Render()
+            self.api.update()
             self.server.js_call(self._ref, "update")
 
         if push_camera:

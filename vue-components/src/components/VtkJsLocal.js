@@ -170,9 +170,16 @@ export default {
       const rwId = String(props.renderWindow);
 
       if (props.syncMode === "push") {
+        let rafPending = false;
         sync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
           onStateReceived() {
-            update();
+            if (!rafPending) {
+              rafPending = true;
+              requestAnimationFrame(() => {
+                rafPending = false;
+                update();
+              });
+            }
           },
           onPartialUpdate(partialUpdate, syncCtx) {
             applyPartialArrayUpdate(partialUpdate, syncCtx);

@@ -36,16 +36,19 @@ def _inline_arrays(state, object_manager, sent_hashes=None):
             connectivity = np.frombuffer(memoryview(conn_blob), dtype=np.int64)
             offsets = np.frombuffer(memoryview(off_blob), dtype=np.int64)
 
-            num_cells = len(offsets) - 1
-            result = []
-            for i in range(num_cells):
-                start = offsets[i]
-                end = offsets[i + 1]
-                cell_size = end - start
-                result.append(int(cell_size))
-                result.extend(int(x) for x in connectivity[start:end])
-
-            return np.array(result, dtype=np.uint32).tobytes()
+            sizes = np.diff(offsets).astype(np.uint32)
+            conn_uint32 = connectivity.astype(np.uint32)
+            # Build vtk.js cell array: [size, id0, id1, ..., size, id0, id1, ...]
+            # Pre-allocate output: total = num_cells (sizes) + len(connectivity) (ids)
+            result = np.empty(len(sizes) + len(conn_uint32), dtype=np.uint32)
+            # Insert sizes at the correct positions using cumulative offsets
+            cell_starts = np.arange(len(sizes), dtype=np.int64) + offsets[:-1]
+            result[cell_starts] = sizes
+            # Build mask for connectivity positions
+            mask = np.ones(len(result), dtype=bool)
+            mask[cell_starts] = False
+            result[mask] = conn_uint32
+            return result.tobytes()
 
         return bytes(object_manager.GetBlob(hash_str))
 

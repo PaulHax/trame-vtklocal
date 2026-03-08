@@ -175,9 +175,6 @@ class ObjectManagerAPI(LinkProtocol):
 
         self.vtk_object_manager.UpdateStatesFromObjects()
         state = translate_scene(self.vtk_object_manager, obj_id)
-        with open("/tmp/vtkjs_state.json", "w") as f:
-            import json
-            json.dump(state, f, indent=2)
         return state
 
     def register_push_sent_hashes(self, sent_hashes_set):
@@ -244,16 +241,15 @@ class ObjectManagerAPI(LinkProtocol):
             connectivity = np.frombuffer(memoryview(conn_blob), dtype=np.int64)
             offsets = np.frombuffer(memoryview(off_blob), dtype=np.int64)
 
-            num_cells = len(offsets) - 1
-            result = []
-            for i in range(num_cells):
-                start = offsets[i]
-                end = offsets[i + 1]
-                cell_size = end - start
-                result.append(int(cell_size))
-                result.extend(int(x) for x in connectivity[start:end])
-
-            data = np.array(result, dtype=np.uint32).tobytes()
+            sizes = np.diff(offsets).astype(np.uint32)
+            conn_uint32 = connectivity.astype(np.uint32)
+            result = np.empty(len(sizes) + len(conn_uint32), dtype=np.uint32)
+            cell_starts = np.arange(len(sizes), dtype=np.int64) + offsets[:-1]
+            result[cell_starts] = sizes
+            mask = np.ones(len(result), dtype=bool)
+            mask[cell_starts] = False
+            result[mask] = conn_uint32
+            data = result.tobytes()
             return self.addAttachment(memoryview(data))
 
         blob = self.vtk_object_manager.GetBlob(hash_str)

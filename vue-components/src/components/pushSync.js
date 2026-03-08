@@ -185,11 +185,13 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
   async function applyQueuedState() {
     if (!stateQueue.length || !syncRenderWindow) return false;
 
-    while (stateQueue.length) {
-      const state = stateQueue.shift();
-      cacheInlineArrays(state, synchronizerContext);
-      await syncRenderWindow.synchronize(state);
+    // Cache inline arrays from all queued states so blobs aren't lost,
+    // then synchronize only the latest state to minimize latency.
+    const states = stateQueue.splice(0);
+    for (const s of states) {
+      cacheInlineArrays(s, synchronizerContext);
     }
+    await syncRenderWindow.synchronize(states[states.length - 1]);
     resyncPending = false;
     return true;
   }

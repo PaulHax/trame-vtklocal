@@ -61,6 +61,14 @@ export function extractGeometry(syncedRenderer, targetRenderer) {
       if (syncedPolys) {
         freshPolyData.getPolys().setData(syncedPolys.getData());
       }
+      const syncedLines = syncedPolyData.getLines();
+      if (syncedLines) {
+        freshPolyData.getLines().setData(syncedLines.getData());
+      }
+      const syncedVerts = syncedPolyData.getVerts();
+      if (syncedVerts) {
+        freshPolyData.getVerts().setData(syncedVerts.getData());
+      }
 
       const freshMapper = vtkMapper.newInstance();
       freshMapper.setInputData(freshPolyData);

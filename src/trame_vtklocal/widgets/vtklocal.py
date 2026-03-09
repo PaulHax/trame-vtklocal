@@ -25,6 +25,7 @@ class HtmlElement(AbstractElement):
             # Remove the server reference from kwargs to avoid multuple args with same name.
             kwargs.pop("trame_server", None)
             self.server.enable_module(module, **kwargs)
+            module.setup_wasm(self.server, **kwargs)
 
 
 def encode_blobs(blob_map):

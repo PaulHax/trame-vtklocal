@@ -287,6 +287,15 @@ RENDERER_SKIP_PROPERTIES = {
 
 LOOKUPTABLE_SKIP_PROPERTIES = {
     "scale",
+    "tableValue",
+}
+
+MAPPER_SKIP_PROPERTIES = {
+    "numberOfPieces",
+}
+
+PROPERTY_SKIP_PROPERTIES = {
+    "lineJoin",
 }
 
 # Properties vtk.js Camera expects
@@ -593,7 +602,10 @@ class VtkJsTranslator:
                         dependencies.append(lut_dep)
                         calls.append(["setLookupTable", [wrap_id(lut_id)]])
             elif not is_ref(value):
-                props[to_camel_case(key)] = value
+                camel_key = to_camel_case(key)
+                if camel_key in MAPPER_SKIP_PROPERTIES:
+                    continue
+                props[camel_key] = value
 
         return {
             "id": str(state["Id"]),
@@ -613,6 +625,7 @@ class VtkJsTranslator:
         is_renderer = vtkjs_type == "vtkRenderer"
         is_renderwindow = vtkjs_type == "vtkRenderWindow"
         is_lookuptable = vtkjs_type == "vtkLookupTable"
+        is_property = vtkjs_type == "vtkProperty"
 
         for key, value in state.items():
             if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
@@ -650,6 +663,8 @@ class VtkJsTranslator:
                 if is_renderer and camel_key in RENDERER_SKIP_PROPERTIES:
                     continue
                 if is_lookuptable and camel_key in LOOKUPTABLE_SKIP_PROPERTIES:
+                    continue
+                if is_property and camel_key in PROPERTY_SKIP_PROPERTIES:
                     continue
                 props[camel_key] = value
 

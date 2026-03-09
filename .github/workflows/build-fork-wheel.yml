@@ -1,0 +1,61 @@
+name: Build Fork Wheel
+
+on:
+  push:
+    branches: [shared-context]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub release'
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: trame-vtklocal
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Clone and build vtk-js fork
+        run: |
+          git clone --depth 1 --branch shared-context https://github.com/PaulHax/vtk-js.git
+          cd vtk-js && npm ci && npm run build:esm
+
+      - name: Build vue-components
+        working-directory: trame-vtklocal/vue-components
+        run: npm ci && npm run build
+
+      - name: Build wheel
+        working-directory: trame-vtklocal
+        run: pip install build && python -m build --wheel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trame-vtklocal-fork-wheel
+          path: trame-vtklocal/dist/*.whl
+
+      - name: Get version tag
+        id: version
+        working-directory: trame-vtklocal
+        run: |
+          VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=v${VERSION}-shared-context.${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/shared-context' || github.event.inputs.create_release == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag || github.ref_name }}
+          files: trame-vtklocal/dist/*.whl
+          prerelease: true

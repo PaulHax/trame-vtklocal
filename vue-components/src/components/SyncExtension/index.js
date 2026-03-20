@@ -17,7 +17,6 @@ import { allArraysHaveInlineData } from './validation';
 import { updateRenderWindowSync } from './syncUpdaters';
 
 // Re-export components for direct access
-export { base64ToArrayBuffer, createTypedArray } from './base64';
 export { allArraysHaveInlineData } from './validation';
 export {
   genericUpdaterSync,

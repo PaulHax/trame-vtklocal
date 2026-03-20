@@ -10,7 +10,7 @@ import { capitalize } from "@kitware/vtk.js/macros";
 import vtkPoints from "@kitware/vtk.js/Common/Core/Points";
 import vtkCellArray from "@kitware/vtk.js/Common/Core/CellArray";
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
-import { base64ToArrayBuffer, createTypedArray } from "./base64";
+import { TYPED_ARRAYS } from "@kitware/vtk.js/macros";
 import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/BehaviorManager";
 
 // ----------------------------------------------------------------------------
@@ -162,7 +162,6 @@ function storeInlineArray(arrayMetadata, context, inlineValues, options) {
 
   let values = inlineValues.get(hash);
   if (!values) {
-    // Handle both binary (ArrayBuffer/Uint8Array) and base64 string
     const content = arrayMetadata.content;
     let buffer;
     if (content instanceof ArrayBuffer) {
@@ -173,9 +172,12 @@ function storeInlineArray(arrayMetadata, context, inlineValues, options) {
         content.byteOffset + content.byteLength
       );
     } else {
-      buffer = base64ToArrayBuffer(content);
+      throw new Error(
+        `Array ${hash} has non-binary content. Expected ArrayBuffer or TypedArray.`
+      );
     }
-    values = createTypedArray(arrayMetadata.dataType, buffer);
+    const TypedArrayClass = TYPED_ARRAYS[arrayMetadata.dataType] || Float32Array;
+    values = new TypedArrayClass(buffer);
     inlineValues.set(hash, values);
   }
 
@@ -352,7 +354,6 @@ export function genericUpdaterSync(
       const hash = arrayMetadata.hash;
       let values = inlineValues?.get(hash);
       if (!values && arrayMetadata.content) {
-        // Handle both binary (ArrayBuffer/Uint8Array) and base64 string
         const content = arrayMetadata.content;
         let buffer;
         if (content instanceof ArrayBuffer) {
@@ -363,9 +364,12 @@ export function genericUpdaterSync(
             content.byteOffset + content.byteLength
           );
         } else {
-          buffer = base64ToArrayBuffer(content);
+          throw new Error(
+            `Array ${arrayMetadata.hash} has non-binary content. Expected ArrayBuffer or TypedArray.`
+          );
         }
-        values = createTypedArray(arrayMetadata.dataType, buffer);
+        const TypedArrayClass = TYPED_ARRAYS[arrayMetadata.dataType] || Float32Array;
+        values = new TypedArrayClass(buffer);
         if (inlineValues && hash) {
           inlineValues.set(hash, values);
         }

@@ -170,7 +170,11 @@ class ObjectManagerAPI(LinkProtocol):
 
     @export_rpc("vtkjs.get.state")
     def get_vtkjs_state(self, obj_id):
-        """Get state translated to vtk.js format."""
+        """Get state translated to vtk.js format.
+
+        Returns state with array hashes only (no inline data).
+        The client fetches missing arrays via vtkjs.get.array as needed.
+        """
         from .vtkjs_translator import translate_scene
 
         self.vtk_object_manager.UpdateStatesFromObjects()

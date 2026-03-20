@@ -1,7 +1,4 @@
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
-import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
-import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
-import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
 
 export function createFetchArray(client) {
   return async function fetchArray(hash) {
@@ -40,55 +37,6 @@ export function getSyncedRenderers(renderWindow) {
       ren.get("remoteId")?.remoteId !== undefined ||
       ren.get("managedInstanceId")?.managedInstanceId !== undefined
   );
-}
-
-export function extractGeometry(syncedRenderer, targetRenderer) {
-  targetRenderer.setBackground(...syncedRenderer.getBackground());
-  targetRenderer.getActors().forEach((a) => targetRenderer.removeActor(a));
-
-  syncedRenderer.getActors().forEach((syncedActor) => {
-    const syncedMapper = syncedActor.getMapper();
-    const syncedPolyData = syncedMapper?.getInputData();
-
-    if (syncedPolyData) {
-      const freshPolyData = vtkPolyData.newInstance();
-      const syncedPoints = syncedPolyData.getPoints();
-      const syncedPolys = syncedPolyData.getPolys();
-
-      if (syncedPoints) {
-        freshPolyData.getPoints().setData(syncedPoints.getData(), 3);
-      }
-      if (syncedPolys) {
-        freshPolyData.getPolys().setData(syncedPolys.getData());
-      }
-      const syncedLines = syncedPolyData.getLines();
-      if (syncedLines) {
-        freshPolyData.getLines().setData(syncedLines.getData());
-      }
-      const syncedVerts = syncedPolyData.getVerts();
-      if (syncedVerts) {
-        freshPolyData.getVerts().setData(syncedVerts.getData());
-      }
-
-      const freshMapper = vtkMapper.newInstance();
-      freshMapper.setInputData(freshPolyData);
-
-      const freshActor = vtkActor.newInstance();
-      freshActor.setMapper(freshMapper);
-      freshActor.setVisibility(syncedActor.getVisibility());
-      freshActor.setPosition(...syncedActor.getPosition());
-
-      const syncedProp = syncedActor.getProperty();
-      const freshProp = freshActor.getProperty();
-      if (syncedProp) {
-        freshProp.setColor(...syncedProp.getColor());
-        freshProp.setOpacity(syncedProp.getOpacity());
-        freshProp.setRepresentation(syncedProp.getRepresentation());
-      }
-
-      targetRenderer.addActor(freshActor);
-    }
-  });
 }
 
 export function cleanupSyncContext(contextName) {

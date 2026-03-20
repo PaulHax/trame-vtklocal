@@ -155,7 +155,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
 
     if (onPartialUpdate) {
-      onPartialUpdate(update, synchronizerContext);
+      await onPartialUpdate(update, synchronizerContext);
     } else {
       applyPartialArrayUpdate(update, synchronizerContext);
     }

@@ -348,7 +348,7 @@ INIT_SCRIPT_JS = """
     let pendingOrbitCamera = null;
     let ignoreOrbitCameraUntil = 0;
     let viewLight = null;
-    const { mat4, vec3 } = glMatrix;
+    let mat4, vec3;
 
     const MAPLIBRE_NORTH_UP = [0, -1, 0];
     function computeViewUp(transform) {
@@ -486,6 +486,7 @@ INIT_SCRIPT_JS = """
         }
 
         initialized = true;
+        ({ mat4, vec3 } = glMatrix);
 
         map = new maplibregl.Map({
             container: 'map-container',

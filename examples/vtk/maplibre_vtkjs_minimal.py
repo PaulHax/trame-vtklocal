@@ -66,7 +66,7 @@ JS_INIT = """
 (function() {
     let mapInitialized = false;
     let viewLight = null;
-    const { mat4, vec3 } = glMatrix;
+    let mat4, vec3;
 
     const MAPLIBRE_NORTH_UP = [0, -1, 0];
     function computeViewUp(transform) {
@@ -93,6 +93,7 @@ JS_INIT = """
         }
 
         mapInitialized = true;
+        ({ mat4, vec3 } = glMatrix);
 
         const map = new maplibregl.Map({
             container: 'map-container',

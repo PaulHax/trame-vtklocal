@@ -83,9 +83,8 @@ class VtkJsDemo:
 
     def _ui(self):
         with DivLayout(self.server) as layout:
-            html.Style("body { margin: 0; }")
             with html.Div(
-                style="position: absolute; left: 0; top: 0; width: 100vw; height: 100vh;"
+                style="position: fixed; inset: 0;"
             ):
                 self.html_view = VtkJsLocalView(self.render_window)
 

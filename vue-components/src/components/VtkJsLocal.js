@@ -3,16 +3,13 @@ import { ref, inject, onMounted, onBeforeUnmount, watchEffect } from "vue";
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
-import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
 import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera";
-import vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 
 import {
   createSyncContext,
   getSyncedRenderers,
-  extractGeometry,
   cleanupSyncContext,
   extractCameraParams,
   applyCameraParams,
@@ -51,7 +48,7 @@ export default {
     let interactor = null;
     let resizeObserver = null;
     let synchronizerContext = null;
-    let freshRenderer = null;
+    let activeRenderer = null;
     let sync = null;
 
     function resize() {
@@ -68,83 +65,45 @@ export default {
       renderWindow.render();
     }
 
-    async function updatePull() {
-      const state = await sync.update();
-      if (!state || !syncRenderWindow) return;
-
-      if (interactor) {
+    async function update() {
+      const isPull = props.syncMode !== "push";
+      if (isPull && interactor) {
         interactor.setEnableRender(false);
       }
 
       try {
-        emit("updated");
+        const synced = isPull
+          ? await sync.update()
+          : await sync.applyQueuedState();
 
-        const syncedRenderers = getSyncedRenderers(renderWindow);
-        renderWindow.getRenderers().forEach((ren) =>
-          renderWindow.removeRenderer(ren)
-        );
-
-        if (!freshRenderer) {
-          freshRenderer = vtkRenderer.newInstance();
+        if (synced) {
+          const syncedRenderers = getSyncedRenderers(renderWindow);
           if (syncedRenderers.length > 0) {
-            const syncedCam = syncedRenderers[0].getActiveCamera();
-            if (syncedCam) {
-              const freshCam = vtkCamera.newInstance();
-              applyCameraParams(freshCam, extractCameraParams(syncedCam));
-              freshRenderer.setActiveCamera(freshCam);
-            }
+            activeRenderer = syncedRenderers[0];
           }
+          emit("updated");
         }
-
-        if (syncedRenderers.length > 0) {
-          extractGeometry(syncedRenderers[0], freshRenderer);
-        }
-
-        renderWindow.addRenderer(freshRenderer);
-
-        if (interactor) {
+      } catch (err) {
+        console.error("VtkJsLocal: synchronize error", err);
+      } finally {
+        if (isPull && interactor) {
           interactor.setEnableRender(true);
         }
         renderWindow.render();
-      } catch (err) {
-        console.error("VtkJsLocal: synchronize error", err);
-        if (interactor) {
-          interactor.setEnableRender(true);
-        }
-      }
-    }
-
-    async function updatePush() {
-      const synced = await sync.applyQueuedState();
-      if (synced) {
-        const syncedRenderers = getSyncedRenderers(renderWindow);
-        if (syncedRenderers.length > 0) {
-          freshRenderer = syncedRenderers[0];
-        }
-        emit("updated");
-      }
-      renderWindow.render();
-    }
-
-    async function update() {
-      if (props.syncMode === "push") {
-        await updatePush();
-      } else {
-        await updatePull();
       }
     }
 
     function setCamera(params) {
-      if (!freshRenderer) return;
-      const cam = freshRenderer.getActiveCamera();
+      if (!activeRenderer) return;
+      const cam = activeRenderer.getActiveCamera();
       if (!cam) return;
       applyCameraParams(cam, params);
       if (renderWindow) renderWindow.render();
     }
 
     function resetCamera() {
-      if (!freshRenderer) return;
-      freshRenderer.resetCamera();
+      if (!activeRenderer) return;
+      activeRenderer.resetCamera();
       if (renderWindow) renderWindow.render();
     }
 
@@ -181,9 +140,17 @@ export default {
               });
             }
           },
-          onPartialUpdate(partialUpdate, syncCtx) {
-            applyPartialArrayUpdate(partialUpdate, syncCtx);
-            renderWindow.render();
+          async onPartialUpdate(partialUpdate, syncCtx) {
+            if (sync?.getQueueLength?.() > 0) {
+              await sync.applyQueuedState();
+            }
+
+            const applied = applyPartialArrayUpdate(partialUpdate, syncCtx);
+            if (applied) {
+              renderWindow.render();
+            } else {
+              sync?.requestResync?.();
+            }
           },
         });
       } else {
@@ -199,8 +166,8 @@ export default {
       interactor.bindEvents(container.value);
 
       interactor.onEndInteraction(() => {
-        if (freshRenderer) {
-          const cam = freshRenderer.getActiveCamera();
+        if (activeRenderer) {
+          const cam = activeRenderer.getActiveCamera();
           if (cam) {
             emit("camera", extractCameraParams(cam));
           }

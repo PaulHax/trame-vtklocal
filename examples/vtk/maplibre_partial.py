@@ -313,7 +313,7 @@ INIT_SCRIPT_JS = """
     let pendingOrbitCamera = null;
     let ignoreOrbitCameraUntil = 0;
     let viewLight = null;
-    const { mat4, vec3 } = glMatrix;
+    let mat4, vec3;
 
     const MAPLIBRE_NORTH_UP = [0, -1, 0];
     function computeViewUp(transform) {
@@ -378,6 +378,7 @@ INIT_SCRIPT_JS = """
         }
 
         initialized = true;
+        ({ mat4, vec3 } = glMatrix);
 
         map = new maplibregl.Map({
             container: 'map-container',
@@ -509,6 +510,7 @@ server.enable_module({"styles": ["data:text/css,html { overflow-y: hidden !impor
 
 with SinglePageLayout(server) as layout:
     layout.title.set_text("MapLibre + VTK.js (Partial Updates)")
+    layout.title.style = "flex: 0 1 auto;"
 
     with layout.toolbar:
         with vuetify3.VBtnToggle(
@@ -537,7 +539,7 @@ with SinglePageLayout(server) as layout:
             step=0.1,
             hide_details=True,
             density="compact",
-            style="max-width: 120px;",
+            style="max-width: 120px; flex: 0 0 120px;",
             thumb_label=True,
         )
         vuetify3.VSpacer()

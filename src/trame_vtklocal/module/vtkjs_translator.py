@@ -99,8 +99,13 @@ PROPERTY_RELATIONS = {
         "LookupTable": ("setLookupTable", None),
     },
     "vtkVolumeProperty": {
-        "RGBTransferFunction": ("setRGBTransferFunction", None),
-        "ScalarOpacity": ("setScalarOpacity", None),
+        "RGBTransferFunction": {"method": "setRGBTransferFunction", "indexed": True},
+        "GrayTransferFunction": {"method": "setGrayTransferFunction", "indexed": True},
+        "ScalarOpacity": {"method": "setScalarOpacity", "indexed": True},
+    },
+    "vtkImageProperty": {
+        "RGBTransferFunction": {"method": "setRGBTransferFunction", "indexed": True},
+        "ScalarOpacity": {"method": "setScalarOpacity", "indexed": True},
     },
     "vtkTexture": {
         "LookupTable": ("setLookupTable", None),
@@ -331,6 +336,12 @@ VTK_DATATYPE_MAP = {
     17: "BigUint64Array",  # VTK_UNSIGNED_LONG_LONG
 }
 
+VTK_LIGHT_TYPE_MAP = {
+    1: "HeadLight",
+    2: "CameraLight",
+    3: "SceneLight",
+}
+
 CLASS_TO_DATATYPE = {
     "vtkFloatArray": "Float32Array",
     "vtkDoubleArray": "Float64Array",
@@ -378,6 +389,21 @@ def get_ref_id(value):
 
 def wrap_id(obj_id):
     return f"instance:${{{obj_id}}}"
+
+
+def normalize_relation_spec(spec):
+    if isinstance(spec, dict):
+        return {
+            "method": spec["method"],
+            "collection_type": spec.get("collection_type"),
+            "indexed": spec.get("indexed", False),
+        }
+    method, collection_type = spec
+    return {
+        "method": method,
+        "collection_type": collection_type,
+        "indexed": False,
+    }
 
 
 class VtkJsTranslator:
@@ -634,26 +660,43 @@ class VtkJsTranslator:
             ref_id = get_ref_id(value)
             if ref_id:
                 if relation_map and key in relation_map:
-                    method, collection_type = relation_map[key]
+                    relation = normalize_relation_spec(relation_map[key])
+                    method = relation["method"]
                     ref_state = self._get_state(ref_id)
                     ref_class = ref_state.get("ClassName", "")
 
                     if ref_class in COLLECTION_TYPES:
                         items = self._get_collection_items(ref_id, ref_class)
                         for item_ref in items:
-                            item_id = get_ref_id(item_ref)
-                            if item_id:
-                                item_dep = self._translate_object(item_id)
-                                if item_dep:
-                                    dependencies.append(item_dep)
-                                    calls.append([method, [wrap_id(item_id)]])
+                                item_id = get_ref_id(item_ref)
+                                if item_id:
+                                    item_dep = self._translate_object(item_id)
+                                    if item_dep:
+                                        dependencies.append(item_dep)
+                                        calls.append([method, [wrap_id(item_id)]])
                     else:
                         dep = self._translate_object(ref_id)
                         if dep:
                             dependencies.append(dep)
-                            calls.append([method, [wrap_id(ref_id)]])
+                            call_args = [wrap_id(ref_id)]
+                            if relation["indexed"]:
+                                call_args.insert(0, 0)
+                            calls.append([method, call_args])
             elif isinstance(value, list) and value and is_ref(value[0]):
-                pass
+                if relation_map and key in relation_map:
+                    relation = normalize_relation_spec(relation_map[key])
+                    method = relation["method"]
+                    for idx, item_ref in enumerate(value):
+                        item_id = get_ref_id(item_ref)
+                        if item_id is None:
+                            continue
+                        dep = self._translate_object(item_id)
+                        if dep:
+                            dependencies.append(dep)
+                            call_args = [wrap_id(item_id)]
+                            if relation["indexed"]:
+                                call_args.insert(0, idx)
+                            calls.append([method, call_args])
             else:
                 camel_key = to_camel_case(key)
                 if is_camera and camel_key not in CAMERA_PROPERTIES:
@@ -667,6 +710,12 @@ class VtkJsTranslator:
                 if is_property and camel_key in PROPERTY_SKIP_PROPERTIES:
                     continue
                 props[camel_key] = value
+
+        # vtk.js Light expects string lightType, Python VTK uses integers
+        if vtkjs_type == "vtkLight" and "lightType" in props:
+            props["lightType"] = VTK_LIGHT_TYPE_MAP.get(
+                props["lightType"], "HeadLight"
+            )
 
         # vtk.js uses background[3] as alpha; merge BackgroundAlpha into background
         if is_renderer and "background" in props:

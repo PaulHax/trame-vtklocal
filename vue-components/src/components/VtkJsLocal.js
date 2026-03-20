@@ -157,6 +157,10 @@ export default {
         sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
       }
 
+      if (props.syncMode === "pull") {
+        await update();
+      }
+
       interactor = vtkRenderWindowInteractor.newInstance();
       interactor.setInteractorStyle(
         vtkInteractorStyleTrackballCamera.newInstance()
@@ -177,10 +181,6 @@ export default {
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(container.value);
 
-      resize();
-      if (props.syncMode === "pull") {
-        await update();
-      }
       resize();
     });
 

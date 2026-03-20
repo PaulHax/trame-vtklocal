@@ -112,13 +112,17 @@ for city in CITIES:
 
     cone_source = vtkConeSource()
     cone_source.SetHeight(1.0)
-    cone_source.SetRadius(0.5)
-    cone_source.SetDirection(0, 0, 1)
+    cone_source.SetRadius(0.3)
+    cone_source.SetResolution(12)
+    cone_source.SetDirection(0, 0, -1)
+    cone_source.CappingOn()
     mapper = vtkPolyDataMapper()
     mapper.SetInputConnection(cone_source.GetOutputPort())
     actor = vtkActor()
     actor.SetMapper(mapper)
     actor.GetProperty().SetColor(*city["color"])
+    actor.GetProperty().SetAmbient(0.4)
+    actor.GetProperty().SetDiffuse(0.6)
     actor.SetPosition(x, y, cone_scale * 0.5)
     actor.SetScale(cone_scale, cone_scale, cone_scale)
     renderer.AddActor(actor)
@@ -292,7 +296,10 @@ def start_animation():
 
 
 maplibre_module = {
-    "scripts": ["https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.js"],
+    "scripts": [
+        "https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.js",
+        "https://unpkg.com/gl-matrix@3.4.3/gl-matrix-min.js",
+    ],
     "styles": ["https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.css"],
 }
 server.enable_module(maplibre_module)
@@ -305,6 +312,20 @@ INIT_SCRIPT_JS = """
     let vtkLayerConfig = null;
     let pendingOrbitCamera = null;
     let ignoreOrbitCameraUntil = 0;
+    let viewLight = null;
+    const { mat4, vec3 } = glMatrix;
+
+    const MAPLIBRE_NORTH_UP = [0, -1, 0];
+    function computeViewUp(transform) {
+        const rot = mat4.create();
+        const up = vec3.fromValues(...MAPLIBRE_NORTH_UP);
+        mat4.rotateZ(rot, rot, transform.bearingInRadians);
+        mat4.rotateX(rot, rot, -transform.pitchInRadians);
+        mat4.rotateZ(rot, rot, transform.rollInRadians);
+        vec3.transformMat4(up, up, rot);
+        vec3.normalize(up, up);
+        return up;
+    }
 
     window.onVtkViewStateChange = (state) => {
         if (state?.extra?.orbitCamera) {
@@ -404,21 +425,68 @@ INIT_SCRIPT_JS = """
                 if (!renderer) return;
 
                 const camera = renderer.getActiveCamera();
-                const identity = new Float64Array([
-                    1, 0, 0, 0,
-                    0, 1, 0, 0,
-                    0, 0, 1, 0,
-                    0, 0, 0, 1
-                ]);
-                camera.setViewMatrix(identity);
-                camera.setProjectionMatrix(projMatrix);
+                renderer.setAutomaticLightCreation(false);
+                if (!viewLight) {
+                    renderer.removeAllLights();
+                    viewLight = renderer.makeLight();
+                    viewLight.setLightTypeToSceneLight();
+                    viewLight.setPositional(false);
+                    renderer.addLight(viewLight);
+                } else if (!renderer.hasLight(viewLight)) {
+                    renderer.removeAllLights();
+                    renderer.addLight(viewLight);
+                }
+
+                const cameraLngLat = map.transform.getCameraLngLat();
+                const cameraAltitude = map.transform.getCameraAltitude();
+                const cameraMercator = maplibregl.MercatorCoordinate.fromLngLat(
+                    cameraLngLat,
+                    cameraAltitude
+                );
+                const targetMercator = maplibregl.MercatorCoordinate.fromLngLat(
+                    map.getCenter(),
+                    typeof map.getCameraTargetElevation === 'function'
+                        ? map.getCameraTargetElevation()
+                        : 0
+                );
+                viewLight.setPosition(
+                    cameraMercator.x,
+                    cameraMercator.y,
+                    cameraMercator.z
+                );
+                viewLight.setFocalPoint(
+                    targetMercator.x,
+                    targetMercator.y,
+                    targetMercator.z
+                );
+
+                const viewUp = computeViewUp(map.transform);
+                const viewMatrix = new Float64Array(16);
+                mat4.lookAt(viewMatrix,
+                    [cameraMercator.x, cameraMercator.y, cameraMercator.z],
+                    [targetMercator.x, targetMercator.y, targetMercator.z],
+                    viewUp
+                );
+                const inverseView = new Float64Array(16);
+                const projectionMatrix = new Float64Array(16);
+                mat4.invert(inverseView, viewMatrix);
+                mat4.multiply(projectionMatrix, projMatrix, inverseView);
+
+                camera.setViewMatrix(viewMatrix);
+                camera.setProjectionMatrix(projectionMatrix);
                 camera.modified();
 
                 const rw = vtkView.getRenderWindow();
                 if (rw) {
                     const views = rw.getViews();
                     if (views.length > 0 && views[0].renderShared) {
-                        views[0].renderShared({});
+                        const previousFrontFace = gl.getParameter(gl.FRONT_FACE);
+                        gl.frontFace(gl.CW);
+                        try {
+                            views[0].renderShared({});
+                        } finally {
+                            gl.frontFace(previousFrontFace);
+                        }
                     }
                 }
             }

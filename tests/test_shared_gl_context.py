@@ -47,6 +47,9 @@ def test_partial_flush_sends_no_delta(server, server_path, page: Page):
     wait_for_ready(page)
 
     page.evaluate("window.testDisableAutoRender()")
+    # Drain any queued resync/update state so the baseline reflects only what
+    # partial_move() itself contributes.
+    page.evaluate("window.testRenderSharedDrainsQueue()")
     queue_before = page.evaluate("window.testGetDeltaQueueLength()")
     page.evaluate("window.trame.trigger('partial_move')")
     time.sleep(1)

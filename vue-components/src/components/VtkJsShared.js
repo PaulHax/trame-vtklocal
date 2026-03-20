@@ -11,7 +11,7 @@ import {
   cleanupSyncContext,
 } from "./vtkJsSync";
 
-import { withSyncCapability } from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/SyncExtension";
+import { withSyncCapability } from "./SyncExtension";
 import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
 
 import { createPullSync } from "./pullSync";
@@ -92,6 +92,8 @@ export default {
             }
           },
           onPartialUpdate(update, syncCtx) {
+            // Apply any queued full-state delta before patching arrays so the
+            // partial update lands on the latest synchronized scene.
             if (syncStateAtRenderFlag && sync?.getQueueLength?.() > 0) {
               applyQueuedStateSync();
             }

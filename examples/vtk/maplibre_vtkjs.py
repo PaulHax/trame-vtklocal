@@ -51,7 +51,7 @@ state.camera_mode = "orbit"
 state.basemap = "openfreemap_positron"
 state.trame__title = "MapLibre + VTK.js (trame-vtklocal)"
 state.orbit_speed = 1.0
-state.animation_paused = True
+state.animation_paused = False
 
 CITIES = [
     {"name": "New York", "lng": -74.006, "lat": 40.7128, "color": (1.0, 0.5, 0.0)},
@@ -340,6 +340,13 @@ INIT_SCRIPT_JS = """
     let vtkLayerConfig = null;
     let pendingOrbitCamera = null;
     let ignoreOrbitCameraUntil = 0;
+    const identityViewMatrix = new Float64Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+    let viewLight = null;
 
     const BASEMAPS = {
         openfreemap_positron: 'https://tiles.openfreemap.org/styles/positron',
@@ -473,6 +480,7 @@ INIT_SCRIPT_JS = """
             zoom: 4,
             antialias: true
         });
+        window._map = map;
 
         await new Promise(resolve => map.on('load', resolve));
 
@@ -512,13 +520,43 @@ INIT_SCRIPT_JS = """
                 if (!renderer) return;
 
                 const camera = renderer.getActiveCamera();
-                const identity = new Float64Array([
-                    1, 0, 0, 0,
-                    0, 1, 0, 0,
-                    0, 0, 1, 0,
-                    0, 0, 0, 1
-                ]);
-                camera.setViewMatrix(identity);
+                renderer.setAutomaticLightCreation(false);
+                if (!viewLight) {
+                    renderer.removeAllLights();
+                    viewLight = renderer.makeLight();
+                    viewLight.setLightTypeToSceneLight();
+                    viewLight.setPositional(true);
+                    viewLight.setConeAngle(180);
+                    renderer.addLight(viewLight);
+                } else if (!renderer.hasLight(viewLight)) {
+                    renderer.removeAllLights();
+                    renderer.addLight(viewLight);
+                }
+
+                const cameraLngLat = map.transform.getCameraLngLat();
+                const cameraAltitude = map.transform.getCameraAltitude();
+                const cameraMercator = maplibregl.MercatorCoordinate.fromLngLat(
+                    cameraLngLat,
+                    cameraAltitude
+                );
+                const targetMercator = maplibregl.MercatorCoordinate.fromLngLat(
+                    map.getCenter(),
+                    typeof map.getCameraTargetElevation === 'function'
+                        ? map.getCameraTargetElevation()
+                        : 0
+                );
+                viewLight.setPosition(
+                    cameraMercator.x,
+                    cameraMercator.y,
+                    cameraMercator.z
+                );
+                viewLight.setFocalPoint(
+                    targetMercator.x,
+                    targetMercator.y,
+                    targetMercator.z
+                );
+
+                camera.setViewMatrix(identityViewMatrix);
                 camera.setProjectionMatrix(projMatrix);
                 camera.modified();
 
@@ -526,7 +564,13 @@ INIT_SCRIPT_JS = """
                 if (rw) {
                     const views = rw.getViews();
                     if (views.length > 0 && views[0].renderShared) {
-                        views[0].renderShared({});
+                        const previousFrontFace = gl.getParameter(gl.FRONT_FACE);
+                        gl.frontFace(gl.CW);
+                        try {
+                            views[0].renderShared({});
+                        } finally {
+                            gl.frontFace(previousFrontFace);
+                        }
                     }
                 }
             }

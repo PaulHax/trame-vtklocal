@@ -169,9 +169,15 @@ export default {
     }
 
     function getRenderer() {
-      return getSyncedRenderers(renderWindow)[0]
-        || renderWindow?.getRenderersByReference?.()?.[0]
-        || null;
+      if (!renderWindow) {
+        return null;
+      }
+
+      return (
+        getSyncedRenderers(renderWindow)[0]
+        || renderWindow.getRenderersByReference?.()?.[0]
+        || null
+      );
     }
 
     function setRepaintCallback(callback) {

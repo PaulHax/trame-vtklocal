@@ -28,6 +28,10 @@ const DATA_ARRAY_MAPPER = {
   vtkDataArray,
 };
 
+function isLiveInstance(instance) {
+  return !!instance && !(typeof instance.isDeleted === "function" && instance.isDeleted());
+}
+
 function getDataArrayMapper() {
   return DATA_ARRAY_MAPPER;
 }
@@ -36,7 +40,8 @@ function extractCallArgs(synchronizerContext, argList) {
   return argList.map((arg) => {
     const m = WRAPPED_ID_RE.exec(arg);
     if (m) {
-      return synchronizerContext.getInstance(m[1]);
+      const instance = synchronizerContext.getInstance(m[1]);
+      return isLiveInstance(instance) ? instance : null;
     }
     return arg;
   });
@@ -285,6 +290,10 @@ export function genericUpdaterSync(
   objectManager,
   inlineValues
 ) {
+  if (!isLiveInstance(instance)) {
+    return;
+  }
+
   if (state.properties) {
     instance.set(state.properties);
   }
@@ -303,6 +312,12 @@ export function genericUpdaterSync(
       }
 
       let childInstance = context.getInstance(id);
+      if (!isLiveInstance(childInstance)) {
+        if (childInstance) {
+          context.unregisterInstance?.(id);
+        }
+        childInstance = null;
+      }
       if (!childInstance) {
         // Need objectManager to build new instances
         if (objectManager && objectManager.build) {
@@ -340,6 +355,9 @@ export function genericUpdaterSync(
   // Apply method calls (already sync)
   if (state.calls) {
     state.calls.filter(notSkippedInstance).forEach((call) => {
+      if (!isLiveInstance(instance)) {
+        return;
+      }
       instance[call[0]].apply(null, extractCallArgs(context, call[1]));
     });
   }
@@ -423,14 +441,20 @@ export function updateRenderWindowSync(
       .forEach((call) => {
         extractInstanceIds(call[1]).forEach((renId) => {
           const renderer = context.getInstance(renId);
-          if (renderer) {
-            const viewProps = renderer.getViewProps();
+          if (isLiveInstance(renderer)) {
+            const viewProps = renderer.getViewProps?.();
+            if (!Array.isArray(viewProps)) {
+              return;
+            }
             viewProps.forEach((viewProp) => {
-              const deps = viewProp.get("flattenedDepIds").flattenedDepIds;
+              const deps = viewProp?.get?.("flattenedDepIds")?.flattenedDepIds;
               if (deps) {
                 deps.forEach((depId) => context.unregisterInstance(depId));
               }
-              context.unregisterInstance(context.getInstanceId(viewProp));
+              const viewPropId = context.getInstanceId(viewProp);
+              if (viewPropId !== undefined) {
+                context.unregisterInstance(viewPropId);
+              }
             });
           }
         });

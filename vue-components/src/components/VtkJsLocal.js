@@ -50,6 +50,9 @@ export default {
     let synchronizerContext = null;
     let activeRenderer = null;
     let sync = null;
+    let disposed = false;
+    let updatePromise = null;
+    let updateRequested = false;
 
     function resize() {
       if (!container.value || !openGLRenderWindow) return;
@@ -65,7 +68,11 @@ export default {
       renderWindow.render();
     }
 
-    async function update() {
+    async function runUpdate() {
+      if (disposed || !sync || !renderWindow) {
+        return false;
+      }
+
       const isPull = props.syncMode !== "push";
       if (isPull && interactor) {
         interactor.setEnableRender(false);
@@ -76,6 +83,10 @@ export default {
           ? await sync.update()
           : await sync.applyQueuedState();
 
+        if (disposed || !renderWindow) {
+          return false;
+        }
+
         if (synced) {
           const syncedRenderers = getSyncedRenderers(renderWindow);
           if (syncedRenderers.length > 0) {
@@ -84,12 +95,43 @@ export default {
           emit("updated");
         }
       } catch (err) {
-        console.error("VtkJsLocal: synchronize error", err);
+        if (!disposed) {
+          console.error("VtkJsLocal: synchronize error", err);
+          sync?.requestResync?.();
+        }
       } finally {
         if (isPull && interactor) {
           interactor.setEnableRender(true);
         }
-        renderWindow.render();
+        if (!disposed && renderWindow) {
+          renderWindow.render();
+        }
+      }
+
+      return true;
+    }
+
+    async function update() {
+      updateRequested = true;
+      if (updatePromise) {
+        return updatePromise;
+      }
+
+      updatePromise = (async () => {
+        let updated = false;
+
+        while (updateRequested && !disposed) {
+          updateRequested = false;
+          updated = (await runUpdate()) || updated;
+        }
+
+        return updated;
+      })();
+
+      try {
+        return await updatePromise;
+      } finally {
+        updatePromise = null;
       }
     }
 
@@ -185,6 +227,8 @@ export default {
     });
 
     onBeforeUnmount(() => {
+      disposed = true;
+
       if (sync) {
         sync.cleanup();
         sync = null;

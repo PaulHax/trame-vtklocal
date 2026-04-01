@@ -11,10 +11,17 @@ __all__ = [
 ]
 
 serve_path = str(Path(__file__).with_name("serve").resolve())
+serve_root = Path(serve_path)
+
+
+def _versioned_asset(asset_name):
+    asset_path = serve_root / "js" / asset_name
+    version = int(asset_path.stat().st_mtime)
+    return f"__trame_vtklocal/js/{asset_name}?v={version}"
 
 serve = {"__trame_vtklocal": serve_path}
-scripts = ["__trame_vtklocal/js/trame_vtklocal.umd.js"]
-styles = ["__trame_vtklocal/js/trame_vtklocal.css"]
+scripts = [_versioned_asset("trame_vtklocal.umd.js")]
+styles = [_versioned_asset("trame_vtklocal.css")]
 vue_use = ["trame_vtklocal"]
 
 # -----------------------------------------------------------------------------

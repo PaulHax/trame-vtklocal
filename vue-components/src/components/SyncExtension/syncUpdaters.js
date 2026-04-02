@@ -28,8 +28,19 @@ const DATA_ARRAY_MAPPER = {
   vtkDataArray,
 };
 
-function isLiveInstance(instance) {
+export function isLiveInstance(instance) {
   return !!instance && !(typeof instance.isDeleted === "function" && instance.isDeleted());
+}
+
+export function getOrPurgeInstance(context, id) {
+  const instance = context.getInstance(id);
+  if (!isLiveInstance(instance)) {
+    if (instance) {
+      context.unregisterInstance?.(id);
+    }
+    return null;
+  }
+  return instance;
 }
 
 function getDataArrayMapper() {
@@ -311,13 +322,7 @@ export function genericUpdaterSync(
         }
       }
 
-      let childInstance = context.getInstance(id);
-      if (!isLiveInstance(childInstance)) {
-        if (childInstance) {
-          context.unregisterInstance?.(id);
-        }
-        childInstance = null;
-      }
+      let childInstance = getOrPurgeInstance(context, id);
       if (!childInstance) {
         // Need objectManager to build new instances
         if (objectManager && objectManager.build) {
@@ -355,9 +360,6 @@ export function genericUpdaterSync(
   // Apply method calls (already sync)
   if (state.calls) {
     state.calls.filter(notSkippedInstance).forEach((call) => {
-      if (!isLiveInstance(instance)) {
-        return;
-      }
       instance[call[0]].apply(null, extractCallArgs(context, call[1]));
     });
   }

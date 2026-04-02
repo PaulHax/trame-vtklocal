@@ -44,6 +44,7 @@ export default {
     let syncStateAtRenderFlag = false;
     let sync = null;
     let syncCapability = null;
+    let disposed = false;
 
     function emitIfSynced(synced) {
       if (synced) emit("updated");
@@ -82,11 +83,14 @@ export default {
               sharedRafPending = true;
               requestAnimationFrame(() => {
                 sharedRafPending = false;
+                if (disposed) return;
                 applyQueuedState().catch((err) => {
-                  console.warn("[VtkJsShared] State sync failed:", err.message);
-                  sync?.requestResync?.();
+                  if (!disposed) {
+                    console.warn("[VtkJsShared] State sync failed:", err.message);
+                    sync?.requestResync?.();
+                  }
                 }).then(() => {
-                  if (renderRequestedCallback) renderRequestedCallback();
+                  if (!disposed && renderRequestedCallback) renderRequestedCallback();
                 });
               });
             }
@@ -130,17 +134,21 @@ export default {
     }
 
     async function applyQueuedState() {
-      if (!sync?.getQueueLength?.()) return false;
+      if (disposed || !sync?.getQueueLength?.()) return false;
 
       emit("beforeSceneLoaded");
-      return emitIfSynced(await sync.applyQueuedState());
+      const synced = await sync.applyQueuedState();
+      if (disposed) return false;
+      return emitIfSynced(synced);
     }
 
     async function update() {
-      if (!sync?.update) return;
+      if (disposed || !sync?.update) return;
 
       emit("beforeSceneLoaded");
-      emitIfSynced(!!(await sync.update()));
+      const synced = await sync.update();
+      if (disposed) return;
+      emitIfSynced(!!synced);
     }
 
     function renderShared(options = {}) {
@@ -195,6 +203,7 @@ export default {
     });
 
     onBeforeUnmount(() => {
+      disposed = true;
       sync?.cleanup();
       sync = null;
       sharedRenderWindow?.delete();

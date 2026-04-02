@@ -10,8 +10,8 @@ __all__ = [
     "setup_wasm",
 ]
 
-serve_path = str(Path(__file__).with_name("serve").resolve())
-serve_root = Path(serve_path)
+serve_root = Path(__file__).with_name("serve").resolve()
+serve_path = str(serve_root)
 
 
 def _versioned_asset(asset_name):

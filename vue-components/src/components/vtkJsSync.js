@@ -2,13 +2,13 @@ import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/Synchr
 import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
 import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/BehaviorManager";
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
-import { cleanupRemovedRendererDependencies } from "./SyncExtension/syncUpdaters";
+import {
+  cleanupRemovedRendererDependencies,
+  isLiveInstance,
+  getOrPurgeInstance,
+} from "./SyncExtension/syncUpdaters";
 
 let safeRenderWindowUpdaterInstalled = false;
-
-function isLiveInstance(instance) {
-  return !!instance && !(typeof instance.isDeleted === "function" && instance.isDeleted());
-}
 
 function createSafeContext(context) {
   if (!context) {
@@ -17,16 +17,7 @@ function createSafeContext(context) {
 
   return {
     ...context,
-    getInstance(id) {
-      const instance = context.getInstance?.(id);
-      if (!isLiveInstance(instance)) {
-        if (instance) {
-          context.unregisterInstance?.(id);
-        }
-        return null;
-      }
-      return instance;
-    },
+    getInstance: (id) => getOrPurgeInstance(context, id),
   };
 }
 

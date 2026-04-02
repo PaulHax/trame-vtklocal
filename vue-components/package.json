@@ -5,7 +5,6 @@
   "main": "./dist/trame_vtklocal.umd.js",
   "scripts": {
     "dev": "vite",
-    "link:vtk": "npm link @kitware/vtk.js",
     "build": "vite build --emptyOutDir",
     "lint": "eslint --fix src",
     "format": "prettier .  --write",

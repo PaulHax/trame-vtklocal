@@ -19,7 +19,7 @@ import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRender
 
 const WRAPPED_ID_RE = /instance:\${([^}]+)}/;
 const WRAP_ID = (id) => `instance:$\{${id}}`;
-const SKIPPED_INSTANCE_IDS = [];
+const SKIPPED_INSTANCE_IDS = new Set();
 const EXCLUDE_INSTANCE_MAP = {};
 
 const DATA_ARRAY_MAPPER = {
@@ -67,13 +67,12 @@ function extractInstanceIds(argList) {
 
 function notSkippedInstance(call) {
   if (call[1].length === 1) {
-    return SKIPPED_INSTANCE_IDS.indexOf(call[1][0]) === -1;
+    return !SKIPPED_INSTANCE_IDS.has(call[1][0]);
   }
-  let keep = false;
   for (let i = 0; i < call[1].length; i++) {
-    keep = keep || SKIPPED_INSTANCE_IDS.indexOf(call[1][i]) === -1;
+    if (!SKIPPED_INSTANCE_IDS.has(call[1][i])) return true;
   }
-  return keep;
+  return false;
 }
 
 function bindArrays(arraysToBind) {
@@ -317,7 +316,7 @@ export function genericUpdaterSync(
       if (EXCLUDE_INSTANCE_MAP[type]) {
         const { key, value } = EXCLUDE_INSTANCE_MAP[type];
         if (!key || childState.properties[key] === value) {
-          SKIPPED_INSTANCE_IDS.push(WRAP_ID(id));
+          SKIPPED_INSTANCE_IDS.add(WRAP_ID(id));
           return;
         }
       }
@@ -434,6 +433,7 @@ export function updateRenderWindowSync(
   context,
   objectManager
 ) {
+  SKIPPED_INSTANCE_IDS.clear();
   const inlineValues = extractInlineArrays(state, context);
   cleanupRemovedRendererDependencies(state, context);
 

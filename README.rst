@@ -53,7 +53,7 @@ Build and install the Vue components
     npm link
     cd ../../../trame-vtklocal/vue-components
     npm i
-    npm run link:vtk
+    npm link @kitware/vtk.js
     npm run build
     cd -
 

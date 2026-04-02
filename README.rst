@@ -46,8 +46,14 @@ Build and install the Vue components
 
 .. code-block:: console
 
-    cd vue-components
+    cd ../vtk-js
+    npm ci
+    npm run build:esm
+    cd dist/esm
+    npm link
+    cd ../../../trame-vtklocal/vue-components
     npm i
+    npm run link:vtk
     npm run build
     cd -
 

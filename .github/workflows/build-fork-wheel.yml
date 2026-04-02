@@ -34,7 +34,7 @@ jobs:
 
       - name: Build vue-components
         working-directory: trame-vtklocal/vue-components
-        run: npm ci && npm link @kitware/vtk.js && npm run build
+        run: npm ci && npm run link:vtk && npm run build
 
       - name: Build wheel
         working-directory: trame-vtklocal

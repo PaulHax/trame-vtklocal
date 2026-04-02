@@ -2,65 +2,23 @@ import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/Synchr
 import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
 import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/BehaviorManager";
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
+import { cleanupRemovedRendererDependencies } from "./SyncExtension/syncUpdaters";
 
-const WRAPPED_ID_RE = /instance:\${([^}]+)}/;
 let safeRenderWindowUpdaterInstalled = false;
-const SAFE_CONTEXT_FLAG = "__trameSafeDeletedInstanceGuard";
 
 function isLiveInstance(instance) {
   return !!instance && !(typeof instance.isDeleted === "function" && instance.isDeleted());
 }
 
-function extractInstanceIds(argList = []) {
-  return argList
-    .map((arg) => WRAPPED_ID_RE.exec(arg))
-    .filter((match) => match)
-    .map((match) => match[1]);
-}
-
-function unregisterRemovedRendererDependencies(state, context) {
-  if (!state?.calls) {
-    return;
+function createSafeContext(context) {
+  if (!context) {
+    return context;
   }
 
-  state.calls
-    .filter((call) => call[0] === "removeRenderer")
-    .forEach((call) => {
-      extractInstanceIds(call[1]).forEach((rendererId) => {
-        const renderer = context.getInstance(rendererId);
-        if (!isLiveInstance(renderer)) {
-          return;
-        }
-
-        const viewProps = renderer.getViewProps?.();
-        if (!Array.isArray(viewProps)) {
-          return;
-        }
-
-        viewProps.forEach((viewProp) => {
-          const deps = viewProp?.get?.("flattenedDepIds")?.flattenedDepIds;
-          if (Array.isArray(deps)) {
-            deps.forEach((depId) => context.unregisterInstance(depId));
-          }
-
-          const viewPropId = context.getInstanceId(viewProp);
-          if (viewPropId !== undefined) {
-            context.unregisterInstance(viewPropId);
-          }
-        });
-      });
-    });
-}
-
-function installSafeContextAccess(context) {
-  if (!context || context[SAFE_CONTEXT_FLAG]) {
-    return;
-  }
-
-  const originalGetInstance = context.getInstance?.bind(context);
-  if (originalGetInstance) {
-    context.getInstance = (id) => {
-      const instance = originalGetInstance(id);
+  return {
+    ...context,
+    getInstance(id) {
+      const instance = context.getInstance?.(id);
       if (!isLiveInstance(instance)) {
         if (instance) {
           context.unregisterInstance?.(id);
@@ -68,10 +26,8 @@ function installSafeContextAccess(context) {
         return null;
       }
       return instance;
-    };
-  }
-
-  context[SAFE_CONTEXT_FLAG] = true;
+    },
+  };
 }
 
 function installSafeRenderWindowUpdater() {
@@ -83,9 +39,11 @@ function installSafeRenderWindowUpdater() {
     if (!isLiveInstance(instance)) {
       return;
     }
-    unregisterRemovedRendererDependencies(state, context);
-    vtkObjectManager.genericUpdater(instance, state, context);
-    BehaviorManager.applyBehaviors(instance, state, context);
+
+    const safeContext = createSafeContext(context);
+    cleanupRemovedRendererDependencies(state, safeContext);
+    vtkObjectManager.genericUpdater(instance, state, safeContext);
+    BehaviorManager.applyBehaviors(instance, state, safeContext);
   };
 
   vtkObjectManager.setTypeMapping(
@@ -120,7 +78,6 @@ export function createSyncContext(client, contextName, renderWindow) {
   installSafeRenderWindowUpdater();
   const synchronizerContext =
     vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
-  installSafeContextAccess(synchronizerContext);
   synchronizerContext.setFetchArrayFunction(createFetchArray(client));
   const syncRenderWindow = vtkSynchronizableRenderWindow.decorate(
     renderWindow,

@@ -220,7 +220,7 @@ function populateFromCache(value, context, inlineValues) {
   }
 }
 
-function extractInlineArrays(state, context, inlineValues, options = {}) {
+export function extractInlineArrays(state, context, inlineValues, options = {}) {
   const resolvedInlineValues = inlineValues || new Map();
   if (!state) {
     return resolvedInlineValues;

@@ -32,7 +32,7 @@ export function isLiveInstance(instance) {
   return !!instance && !(typeof instance.isDeleted === "function" && instance.isDeleted());
 }
 
-export function getOrPurgeInstance(context, id) {
+function getOrPurgeInstance(context, id) {
   const instance = context.getInstance(id);
   if (!isLiveInstance(instance)) {
     if (instance) {
@@ -51,8 +51,7 @@ function extractCallArgs(synchronizerContext, argList) {
   return argList.map((arg) => {
     const m = WRAPPED_ID_RE.exec(arg);
     if (m) {
-      const instance = synchronizerContext.getInstance(m[1]);
-      return isLiveInstance(instance) ? instance : null;
+      return synchronizerContext.getInstance(m[1]);
     }
     return arg;
   });
@@ -455,7 +454,7 @@ export function cleanupRemovedRendererDependencies(state, context) {
     .forEach((call) => {
       extractInstanceIds(call[1]).forEach((renId) => {
         const renderer = context.getInstance(renId);
-        if (!isLiveInstance(renderer)) {
+        if (!renderer) {
           return;
         }
 

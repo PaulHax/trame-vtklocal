@@ -5,21 +5,9 @@ import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import {
   cleanupRemovedRendererDependencies,
   isLiveInstance,
-  getOrPurgeInstance,
 } from "./SyncExtension/syncUpdaters";
 
 let safeRenderWindowUpdaterInstalled = false;
-
-function createSafeContext(context) {
-  if (!context) {
-    return context;
-  }
-
-  return {
-    ...context,
-    getInstance: (id) => getOrPurgeInstance(context, id),
-  };
-}
 
 function installSafeRenderWindowUpdater() {
   if (safeRenderWindowUpdaterInstalled) {
@@ -31,10 +19,9 @@ function installSafeRenderWindowUpdater() {
       return;
     }
 
-    const safeContext = createSafeContext(context);
-    cleanupRemovedRendererDependencies(state, safeContext);
-    vtkObjectManager.genericUpdater(instance, state, safeContext);
-    BehaviorManager.applyBehaviors(instance, state, safeContext);
+    cleanupRemovedRendererDependencies(state, context);
+    vtkObjectManager.genericUpdater(instance, state, context);
+    BehaviorManager.applyBehaviors(instance, state, context);
   };
 
   vtkObjectManager.setTypeMapping(

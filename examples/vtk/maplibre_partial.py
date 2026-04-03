@@ -407,7 +407,7 @@ INIT_SCRIPT_JS = """
                 });
             },
             render: function(gl, args) {
-                vtkView.renderShared({ skipRender: true });
+                vtkView.applyQueuedStateSync();
 
                 if (pendingOrbitCamera) {
                     map.jumpTo({

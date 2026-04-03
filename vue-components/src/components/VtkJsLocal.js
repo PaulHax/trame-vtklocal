@@ -8,15 +8,15 @@ import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow
 import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera";
 
 import {
-  createSyncContext,
-  getSyncedRenderers,
-  cleanupSyncContext,
+  createManagedSyncContext,
+  getFirstSyncedRenderer,
   extractCameraParams,
   applyCameraParams,
 } from "./vtkJsSync";
 
 import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
+import { createRafScheduler } from "./rafScheduler";
 import { createSyncController } from "./syncController";
 
 export default {
@@ -46,6 +46,7 @@ export default {
     let openGLRenderWindow = null;
     let renderWindow = null;
     let syncRenderWindow = null;
+    let managedSyncContext = null;
     let interactor = null;
     let resizeObserver = null;
     let synchronizerContext = null;
@@ -82,9 +83,9 @@ export default {
     }
 
     function updateActiveRenderer() {
-      const syncedRenderers = getSyncedRenderers(renderWindow);
-      if (syncedRenderers.length > 0) {
-        activeRenderer = syncedRenderers[0];
+      const syncedRenderer = getFirstSyncedRenderer(renderWindow);
+      if (syncedRenderer) {
+        activeRenderer = syncedRenderer;
       }
     }
 
@@ -130,38 +131,40 @@ export default {
       const cam = activeRenderer.getActiveCamera();
       if (!cam) return;
       applyCameraParams(cam, params);
-      if (renderWindow) renderWindow.render();
+      renderScene();
     }
 
     function resetCamera() {
       if (!activeRenderer) return;
       activeRenderer.resetCamera();
-      if (renderWindow) renderWindow.render();
+      renderScene();
     }
 
     function render() {
-      if (renderWindow) {
-        renderWindow.render();
-      }
+      renderScene();
     }
 
     onMounted(async () => {
-      const contextName = `vtkjs-local-${props.renderWindow}`;
-
       openGLRenderWindow = vtkOpenGLRenderWindow.newInstance();
       openGLRenderWindow.setContainer(container.value);
 
       renderWindow = vtkRenderWindow.newInstance();
       renderWindow.addView(openGLRenderWindow);
 
-      const ctx = createSyncContext(client, contextName, renderWindow);
-      synchronizerContext = ctx.synchronizerContext;
-      syncRenderWindow = ctx.syncRenderWindow;
+      managedSyncContext = createManagedSyncContext(
+        client,
+        `vtkjs-local-${props.renderWindow}`,
+        renderWindow,
+      );
+      synchronizerContext = managedSyncContext.synchronizerContext;
+      syncRenderWindow = managedSyncContext.syncRenderWindow;
 
       const rwId = String(props.renderWindow);
 
       if (props.syncMode === "push") {
-        let rafPending = false;
+        const scheduleUpdate = createRafScheduler(() => {
+          update();
+        });
         sync = createPushSync(
           client,
           syncRenderWindow,
@@ -169,13 +172,7 @@ export default {
           rwId,
           {
             onStateReceived() {
-              if (!rafPending) {
-                rafPending = true;
-                requestAnimationFrame(() => {
-                  rafPending = false;
-                  update();
-                });
-              }
+              scheduleUpdate();
             },
             async onPartialUpdate(partialUpdate, syncCtx) {
               if (sync?.getQueueLength?.() > 0) {
@@ -184,7 +181,7 @@ export default {
 
               const applied = applyPartialArrayUpdate(partialUpdate, syncCtx);
               if (applied) {
-                renderWindow.render();
+                renderScene();
               } else {
                 sync?.requestResync?.();
               }
@@ -256,7 +253,8 @@ export default {
         renderWindow = null;
       }
 
-      cleanupSyncContext(`vtkjs-local-${props.renderWindow}`);
+      managedSyncContext?.cleanup();
+      managedSyncContext = null;
       synchronizerContext = null;
     });
 

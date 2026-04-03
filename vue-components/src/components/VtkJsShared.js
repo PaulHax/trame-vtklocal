@@ -169,12 +169,12 @@ export default {
       await updateController.runSync();
     }
 
-    function renderShared(options = {}) {
+    function renderShared() {
       if (syncStateAtRenderFlag) {
         applyQueuedStateSync();
       }
 
-      if (!options.skipRender && sharedRenderWindow) {
+      if (sharedRenderWindow) {
         sharedRenderWindow.renderShared({});
       }
     }

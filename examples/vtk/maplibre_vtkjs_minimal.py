@@ -117,7 +117,7 @@ JS_INIT = """
                 });
             },
             render(gl, args) {
-                vtkView.renderShared({ skipRender: true });
+                vtkView.applyQueuedStateSync();
 
                 const projData = map.transform.getProjectionDataForCustomLayer?.() || args.defaultProjectionData;
                 const projMatrix = projData.mainMatrix;

@@ -516,7 +516,7 @@ INIT_SCRIPT_JS = """
                 vtkView.initializeForSharedContext(canvas, gl, options);
             },
             render: function(gl, args) {
-                vtkView.renderShared({ skipRender: true });
+                vtkView.applyQueuedStateSync();
 
                 if (pendingOrbitCamera) {
                     map.jumpTo({

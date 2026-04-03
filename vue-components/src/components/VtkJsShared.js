@@ -16,6 +16,7 @@ import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRende
 
 import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
+import { createSyncController } from "./syncController";
 
 export default {
   emits: ["updated", "viewStateChange", "onReady", "beforeSceneLoaded", "afterSceneLoaded"],
@@ -46,11 +47,32 @@ export default {
     let syncCapability = null;
     let disposed = false;
 
-    function emitIfSynced(synced) {
-      if (synced) emit("updated");
-      emit("afterSceneLoaded");
-      return synced;
+    function createSceneSyncRunner(canSync, synchronize) {
+      return createSyncController({
+        canSync,
+        synchronize,
+        beforeSync() {
+          emit("beforeSceneLoaded");
+        },
+        onSynced() {
+          emit("updated");
+        },
+        afterSync() {
+          emit("afterSceneLoaded");
+        },
+        rethrowError: true,
+      });
     }
+
+    const queuedStateController = createSceneSyncRunner(
+      () => !disposed && !!sync?.getQueueLength?.(),
+      () => sync.applyQueuedState()
+    );
+
+    const updateController = createSceneSyncRunner(
+      () => !disposed && !!sync?.update,
+      () => sync.update()
+    );
 
     function initializeForSharedContext(canvas, gl, options = {}) {
       const { syncStateAtRender = false } = options;
@@ -130,25 +152,18 @@ export default {
         }
       }
 
-      return emitIfSynced(synced);
+      if (synced) emit("updated");
+      emit("afterSceneLoaded");
+      return synced;
     }
 
     async function applyQueuedState() {
-      if (disposed || !sync?.getQueueLength?.()) return false;
-
-      emit("beforeSceneLoaded");
-      const synced = await sync.applyQueuedState();
-      if (disposed) return false;
-      return emitIfSynced(synced);
+      const result = await queuedStateController.runSync();
+      return result.didSync;
     }
 
     async function update() {
-      if (disposed || !sync?.update) return;
-
-      emit("beforeSceneLoaded");
-      const synced = await sync.update();
-      if (disposed) return;
-      emitIfSynced(!!synced);
+      await updateController.runSync();
     }
 
     function renderShared(options = {}) {

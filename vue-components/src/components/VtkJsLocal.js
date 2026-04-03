@@ -17,6 +17,7 @@ import {
 
 import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
+import { createSyncController } from "./syncController";
 
 export default {
   emits: ["updated", "camera"],
@@ -51,8 +52,6 @@ export default {
     let activeRenderer = null;
     let sync = null;
     let disposed = false;
-    let updatePromise = null;
-    let updateRequested = false;
 
     function resize() {
       if (!container.value || !openGLRenderWindow) return;
@@ -68,71 +67,62 @@ export default {
       renderWindow.render();
     }
 
-    async function runUpdate() {
-      if (disposed || !sync || !renderWindow) {
-        return false;
-      }
-
-      const isPull = props.syncMode !== "push";
-      if (isPull && interactor) {
-        interactor.setEnableRender(false);
-      }
-
-      try {
-        const synced = isPull
-          ? await sync.update()
-          : await sync.applyQueuedState();
-
-        if (disposed || !renderWindow) {
-          return false;
-        }
-
-        if (synced) {
-          const syncedRenderers = getSyncedRenderers(renderWindow);
-          if (syncedRenderers.length > 0) {
-            activeRenderer = syncedRenderers[0];
-          }
-          emit("updated");
-        }
-      } catch (err) {
-        if (!disposed) {
-          console.error("VtkJsLocal: synchronize error", err);
-          sync?.requestResync?.();
-        }
-      } finally {
-        if (isPull && interactor) {
-          interactor.setEnableRender(true);
-        }
-        if (!disposed && renderWindow) {
-          renderWindow.render();
-        }
-      }
-
-      return true;
+    function canRunUpdate() {
+      return !disposed && !!sync && !!renderWindow;
     }
 
-    async function update() {
-      updateRequested = true;
-      if (updatePromise) {
-        return updatePromise;
+    function shouldPauseInteractorRender() {
+      return props.syncMode !== "push" && !!interactor;
+    }
+
+    async function synchronizeScene() {
+      return props.syncMode === "push"
+        ? sync.applyQueuedState()
+        : sync.update();
+    }
+
+    function updateActiveRenderer() {
+      const syncedRenderers = getSyncedRenderers(renderWindow);
+      if (syncedRenderers.length > 0) {
+        activeRenderer = syncedRenderers[0];
       }
+    }
 
-      updatePromise = (async () => {
-        let updated = false;
+    function renderScene() {
+      if (!disposed && renderWindow) {
+        renderWindow.render();
+      }
+    }
 
-        while (updateRequested && !disposed) {
-          updateRequested = false;
-          updated = (await runUpdate()) || updated;
+    const updateController = createSyncController({
+      canSync: canRunUpdate,
+      synchronize: synchronizeScene,
+      beforeSync() {
+        const pauseInteractorRender = shouldPauseInteractorRender();
+        if (pauseInteractorRender) {
+          interactor.setEnableRender(false);
         }
 
-        return updated;
-      })();
+        return { pauseInteractorRender };
+      },
+      onSynced() {
+        updateActiveRenderer();
+        emit("updated");
+      },
+      onError(err) {
+        console.error("VtkJsLocal: synchronize error", err);
+        sync?.requestResync?.();
+      },
+      finalizeSync(syncContext) {
+        if (syncContext?.pauseInteractorRender && interactor) {
+          interactor.setEnableRender(true);
+        }
+        renderScene();
+      },
+    });
 
-      try {
-        return await updatePromise;
-      } finally {
-        updatePromise = null;
-      }
+    async function update() {
+      return updateController.requestSync();
     }
 
     function setCamera(params) {
@@ -172,31 +162,42 @@ export default {
 
       if (props.syncMode === "push") {
         let rafPending = false;
-        sync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
-          onStateReceived() {
-            if (!rafPending) {
-              rafPending = true;
-              requestAnimationFrame(() => {
-                rafPending = false;
-                update();
-              });
-            }
-          },
-          async onPartialUpdate(partialUpdate, syncCtx) {
-            if (sync?.getQueueLength?.() > 0) {
-              await sync.applyQueuedState();
-            }
+        sync = createPushSync(
+          client,
+          syncRenderWindow,
+          synchronizerContext,
+          rwId,
+          {
+            onStateReceived() {
+              if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(() => {
+                  rafPending = false;
+                  update();
+                });
+              }
+            },
+            async onPartialUpdate(partialUpdate, syncCtx) {
+              if (sync?.getQueueLength?.() > 0) {
+                await sync.applyQueuedState();
+              }
 
-            const applied = applyPartialArrayUpdate(partialUpdate, syncCtx);
-            if (applied) {
-              renderWindow.render();
-            } else {
-              sync?.requestResync?.();
-            }
+              const applied = applyPartialArrayUpdate(partialUpdate, syncCtx);
+              if (applied) {
+                renderWindow.render();
+              } else {
+                sync?.requestResync?.();
+              }
+            },
           },
-        });
+        );
       } else {
-        sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
+        sync = createPullSync(
+          client,
+          syncRenderWindow,
+          synchronizerContext,
+          rwId,
+        );
       }
 
       if (props.syncMode === "pull") {
@@ -205,7 +206,7 @@ export default {
 
       interactor = vtkRenderWindowInteractor.newInstance();
       interactor.setInteractorStyle(
-        vtkInteractorStyleTrackballCamera.newInstance()
+        vtkInteractorStyleTrackballCamera.newInstance(),
       );
       interactor.setView(openGLRenderWindow);
       interactor.initialize();

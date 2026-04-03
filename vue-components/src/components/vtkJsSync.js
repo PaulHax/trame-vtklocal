@@ -7,14 +7,16 @@ import {
   isLiveInstance,
 } from "./SyncExtension/syncUpdaters";
 
-let safeRenderWindowUpdaterInstalled = false;
+let preRenderSkippingRenderWindowUpdaterInstalled = false;
 
-function installSafeRenderWindowUpdater() {
-  if (safeRenderWindowUpdaterInstalled) {
+function installRenderWindowUpdaterSkippingPreRender() {
+  if (preRenderSkippingRenderWindowUpdaterInstalled) {
     return;
   }
 
-  const safeRenderWindowUpdater = (instance, state, context) => {
+  // Override vtk.js's default vtkRenderWindow updater so async scene sync
+  // does not issue the upstream pre-update render() call.
+  const renderWindowUpdaterSkippingPreRender = (instance, state, context) => {
     if (!isLiveInstance(instance)) {
       return;
     }
@@ -27,9 +29,9 @@ function installSafeRenderWindowUpdater() {
   vtkObjectManager.setTypeMapping(
     "vtkRenderWindow",
     vtkRenderWindow.newInstance,
-    safeRenderWindowUpdater
+    renderWindowUpdaterSkippingPreRender
   );
-  safeRenderWindowUpdaterInstalled = true;
+  preRenderSkippingRenderWindowUpdaterInstalled = true;
 }
 
 export function createFetchArray(client) {
@@ -53,7 +55,7 @@ export function createFetchArray(client) {
 }
 
 export function createSyncContext(client, contextName, renderWindow) {
-  installSafeRenderWindowUpdater();
+  installRenderWindowUpdaterSkippingPreRender();
   const synchronizerContext =
     vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
   synchronizerContext.setFetchArrayFunction(createFetchArray(client));
@@ -64,11 +66,43 @@ export function createSyncContext(client, contextName, renderWindow) {
   return { synchronizerContext, syncRenderWindow };
 }
 
+export function createManagedSyncContext(client, contextName, renderWindow) {
+  const { synchronizerContext, syncRenderWindow } = createSyncContext(
+    client,
+    contextName,
+    renderWindow,
+  );
+
+  return {
+    synchronizerContext,
+    syncRenderWindow,
+    cleanup() {
+      cleanupSyncContext(contextName);
+    },
+  };
+}
+
 export function getSyncedRenderers(renderWindow) {
+  if (!renderWindow) {
+    return [];
+  }
+
   return renderWindow.getRenderers().filter(
     (ren) =>
       ren.get("remoteId")?.remoteId !== undefined ||
       ren.get("managedInstanceId")?.managedInstanceId !== undefined
+  );
+}
+
+export function getFirstSyncedRenderer(renderWindow) {
+  return getSyncedRenderers(renderWindow)[0] || null;
+}
+
+export function getPrimaryRenderer(renderWindow) {
+  return (
+    getFirstSyncedRenderer(renderWindow) ||
+    renderWindow?.getRenderersByReference?.()?.[0] ||
+    null
   );
 }
 

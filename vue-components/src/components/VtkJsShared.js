@@ -6,9 +6,8 @@ import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
 
 import {
-  createSyncContext,
-  getSyncedRenderers,
-  cleanupSyncContext,
+  createManagedSyncContext,
+  getPrimaryRenderer,
 } from "./vtkJsSync";
 
 import { withSyncCapability } from "./SyncExtension";
@@ -16,6 +15,7 @@ import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRende
 
 import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
+import { createRafScheduler } from "./rafScheduler";
 import { createSyncController } from "./syncController";
 
 export default {
@@ -40,6 +40,7 @@ export default {
 
     let sharedRenderWindow = null;
     let renderWindow = null;
+    let managedSyncContext = null;
     let renderRequestedCallback = null;
     let repaintCallback = null;
     let syncStateAtRenderFlag = false;
@@ -84,8 +85,12 @@ export default {
       renderWindow = vtkRenderWindow.newInstance();
       renderWindow.addView(sharedRenderWindow);
 
-      const contextName = `vtkjs-shared-${props.renderWindow}`;
-      const { synchronizerContext, syncRenderWindow } = createSyncContext(client, contextName, renderWindow);
+      managedSyncContext = createManagedSyncContext(
+        client,
+        `vtkjs-shared-${props.renderWindow}`,
+        renderWindow,
+      );
+      const { synchronizerContext, syncRenderWindow } = managedSyncContext;
 
       const rwId = String(props.renderWindow);
       syncCapability = withSyncCapability(syncRenderWindow, synchronizerContext, vtkObjectManager);
@@ -93,7 +98,17 @@ export default {
       if (props.syncMode === "pull") {
         sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
       } else {
-        let sharedRafPending = false;
+        const scheduleQueuedStateApply = createRafScheduler(() => {
+          if (disposed) return;
+          applyQueuedState().catch((err) => {
+            if (!disposed) {
+              console.warn("[VtkJsShared] State sync failed:", err.message);
+              sync?.requestResync?.();
+            }
+          }).then(() => {
+            if (!disposed && renderRequestedCallback) renderRequestedCallback();
+          });
+        });
         sync = createPushSync(client, syncRenderWindow, synchronizerContext, rwId, {
           onStateReceived(deltaState) {
             emit("viewStateChange", deltaState);
@@ -101,20 +116,8 @@ export default {
               repaintCallback(deltaState);
             } else if (syncStateAtRenderFlag) {
               if (renderRequestedCallback) renderRequestedCallback();
-            } else if (!sharedRafPending) {
-              sharedRafPending = true;
-              requestAnimationFrame(() => {
-                sharedRafPending = false;
-                if (disposed) return;
-                applyQueuedState().catch((err) => {
-                  if (!disposed) {
-                    console.warn("[VtkJsShared] State sync failed:", err.message);
-                    sync?.requestResync?.();
-                  }
-                }).then(() => {
-                  if (!disposed && renderRequestedCallback) renderRequestedCallback();
-                });
-              });
+            } else {
+              scheduleQueuedStateApply();
             }
           },
           onPartialUpdate(update, syncCtx) {
@@ -192,15 +195,7 @@ export default {
     }
 
     function getRenderer() {
-      if (!renderWindow) {
-        return null;
-      }
-
-      return (
-        getSyncedRenderers(renderWindow)[0]
-        || renderWindow.getRenderersByReference?.()?.[0]
-        || null
-      );
+      return getPrimaryRenderer(renderWindow);
     }
 
     function setRepaintCallback(callback) {
@@ -225,7 +220,8 @@ export default {
       sharedRenderWindow = null;
       renderWindow?.delete();
       renderWindow = null;
-      cleanupSyncContext(`vtkjs-shared-${props.renderWindow}`);
+      managedSyncContext?.cleanup();
+      managedSyncContext = null;
     });
 
     return {

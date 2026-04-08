@@ -29,7 +29,7 @@ function installRenderWindowUpdaterSkippingPreRender() {
   vtkObjectManager.setTypeMapping(
     "vtkRenderWindow",
     vtkRenderWindow.newInstance,
-    renderWindowUpdaterSkippingPreRender
+    renderWindowUpdaterSkippingPreRender,
   );
   preRenderSkippingRenderWindowUpdaterInstalled = true;
 }
@@ -44,7 +44,7 @@ export function createFetchArray(client) {
     if (content instanceof Uint8Array) {
       return content.buffer.slice(
         content.byteOffset,
-        content.byteOffset + content.byteLength
+        content.byteOffset + content.byteLength,
       );
     }
     if (content instanceof ArrayBuffer) {
@@ -61,7 +61,7 @@ export function createSyncContext(client, contextName, renderWindow) {
   synchronizerContext.setFetchArrayFunction(createFetchArray(client));
   const syncRenderWindow = vtkSynchronizableRenderWindow.decorate(
     renderWindow,
-    contextName
+    contextName,
   );
   return { synchronizerContext, syncRenderWindow };
 }
@@ -82,15 +82,28 @@ export function createManagedSyncContext(client, contextName, renderWindow) {
   };
 }
 
-export function getSyncedRenderers(renderWindow) {
-  if (!renderWindow) {
+function getRenderWindowRenderers(renderWindow, methodName = "getRenderers") {
+  if (!isLiveInstance(renderWindow)) {
     return [];
   }
 
-  return renderWindow.getRenderers().filter(
+  try {
+    const renderers = renderWindow[methodName]?.();
+    if (!Array.isArray(renderers)) {
+      return [];
+    }
+
+    return renderers.filter((renderer) => isLiveInstance(renderer));
+  } catch {
+    return [];
+  }
+}
+
+export function getSyncedRenderers(renderWindow) {
+  return getRenderWindowRenderers(renderWindow).filter(
     (ren) =>
       ren.get("remoteId")?.remoteId !== undefined ||
-      ren.get("managedInstanceId")?.managedInstanceId !== undefined
+      ren.get("managedInstanceId")?.managedInstanceId !== undefined,
   );
 }
 
@@ -101,7 +114,7 @@ export function getFirstSyncedRenderer(renderWindow) {
 export function getPrimaryRenderer(renderWindow) {
   return (
     getFirstSyncedRenderer(renderWindow) ||
-    renderWindow?.getRenderersByReference?.()?.[0] ||
+    getRenderWindowRenderers(renderWindow, "getRenderersByReference")[0] ||
     null
   );
 }

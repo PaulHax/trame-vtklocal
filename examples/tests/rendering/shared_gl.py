@@ -84,6 +84,69 @@ JS_CODE = r"""
         return vtkView.getQueueLength();
     };
 
+    window.testGetRendererHandlesBrokenRendererCollection = function() {
+        const renderWindow = vtkView?.getRenderWindow?.();
+        if (!renderWindow) {
+            return { ready: false, threw: false, value: null };
+        }
+
+        const saved = renderWindow.getRenderersByReference?.();
+        const broken = {
+            [Symbol.iterator]() {
+                throw new TypeError("Cannot read properties of null (reading 'getRenderers')");
+            },
+        };
+
+        renderWindow.set({ renderers: broken }, true, true);
+
+        try {
+            const renderer = vtkView.getRenderer();
+            return {
+                ready: true,
+                threw: false,
+                value: renderer === null ? null : renderer.getClassName?.() || "renderer",
+            };
+        } catch (error) {
+            return {
+                ready: true,
+                threw: true,
+                message: error?.message || String(error),
+            };
+        } finally {
+            renderWindow.set({ renderers: saved }, true, true);
+        }
+    };
+
+    window.testGetRendererIgnoresNullRendererEntries = function() {
+        const renderWindow = vtkView?.getRenderWindow?.();
+        if (!renderWindow) {
+            return { ready: false, threw: false, sameRenderer: false };
+        }
+
+        const saved = renderWindow.getRenderersByReference?.();
+        const liveRenderer = saved?.[0] || null;
+
+        renderWindow.set({ renderers: [null, liveRenderer] }, true, true);
+
+        try {
+            const renderer = vtkView.getRenderer();
+            return {
+                ready: true,
+                threw: false,
+                sameRenderer: renderer === liveRenderer,
+            };
+        } catch (error) {
+            return {
+                ready: true,
+                threw: true,
+                sameRenderer: false,
+                message: error?.message || String(error),
+            };
+        } finally {
+            renderWindow.set({ renderers: saved }, true, true);
+        }
+    };
+
     window.__consoleErrors = [];
     const origError = console.error;
     console.error = function() {

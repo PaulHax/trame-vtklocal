@@ -40,6 +40,44 @@ def test_render_shared_drains_sync_queue(server, server_path, page: Page):
     assert drained, "renderShared() should drain the sync queue synchronously"
 
 
+def test_get_renderer_handles_broken_renderer_collection(
+    server, server_path, page: Page
+):
+    """getRenderer() should return null instead of throwing on transient renderer lookup failure."""
+    url = f"http://127.0.0.1:{server.port}/"
+    page.goto(url)
+    wait_for_ready(page)
+
+    result = page.evaluate("window.testGetRendererHandlesBrokenRendererCollection()")
+    assert result["ready"], "Shared view should be initialized before the check"
+    assert not result["threw"], (
+        "getRenderer() should not throw when getRenderers() fails transiently "
+        f"(message={result.get('message')})"
+    )
+    assert result["value"] is None, (
+        "getRenderer() should degrade to null when the renderer collection "
+        "is transiently unavailable"
+    )
+
+
+def test_get_renderer_ignores_null_renderer_entries(server, server_path, page: Page):
+    """getRenderer() should skip dead/null renderer entries instead of throwing."""
+    url = f"http://127.0.0.1:{server.port}/"
+    page.goto(url)
+    wait_for_ready(page)
+
+    result = page.evaluate("window.testGetRendererIgnoresNullRendererEntries()")
+    assert result["ready"], "Shared view should be initialized before the check"
+    assert not result["threw"], (
+        "getRenderer() should skip null renderer entries instead of throwing "
+        f"(message={result.get('message')})"
+    )
+    assert result["sameRenderer"], (
+        "getRenderer() should preserve the live renderer when null entries "
+        "are present in the render window"
+    )
+
+
 def test_partial_flush_sends_no_delta(server, server_path, page: Page):
     """flush() sends only partial array updates, no delta state."""
     url = f"http://127.0.0.1:{server.port}/"

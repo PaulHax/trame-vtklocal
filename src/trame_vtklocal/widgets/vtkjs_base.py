@@ -106,6 +106,8 @@ class VtkJsBaseView(HtmlElement):
         render_window.Render()
         self.object_manager.UpdateStatesFromObjects()
 
+        self._collection_tracker = {}
+
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self._ref}"'
 
@@ -126,7 +128,9 @@ class VtkJsBaseView(HtmlElement):
 
         self._render_window.Render()
         self.object_manager.UpdateStatesFromObjects()
-        return translate_scene(self.object_manager, self._window_id)
+        return translate_scene(
+            self.object_manager, self._window_id, self._collection_tracker
+        )
 
     def get_instance_id(self, vtk_object):
         vtk_id = self.object_manager.GetId(vtk_object)

@@ -47,6 +47,7 @@ class VtkJsLocalView(VtkJsBaseView):
 
     def request_resync(self, extra=None):
         if self._push_sync:
+            self._collection_tracker.clear()
             self._push_sync.request_resync(extra)
 
     def _push_camera(self):

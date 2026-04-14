@@ -407,10 +407,11 @@ def normalize_relation_spec(spec):
 
 
 class VtkJsTranslator:
-    def __init__(self, object_manager):
+    def __init__(self, object_manager, collection_tracker=None):
         self.object_manager = object_manager
         self._states_cache = {}
         self._visited = set()
+        self._collection_tracker = collection_tracker
 
     def _get_state(self, obj_id):
         if obj_id not in self._states_cache:
@@ -667,13 +668,41 @@ class VtkJsTranslator:
 
                     if ref_class in COLLECTION_TYPES:
                         items = self._get_collection_items(ref_id, ref_class)
+                        current_item_ids = set()
+                        tracker_key = None
+                        prev_ids = set()
+                        if self._collection_tracker is not None:
+                            tracker_key = (state["Id"], method)
+                            prev_ids = self._collection_tracker.get(
+                                tracker_key, set()
+                            )
+
+                        add_start_idx = len(calls)
                         for item_ref in items:
                                 item_id = get_ref_id(item_ref)
                                 if item_id:
+                                    current_item_ids.add(item_id)
                                     item_dep = self._translate_object(item_id)
                                     if item_dep:
                                         dependencies.append(item_dep)
-                                        calls.append([method, [wrap_id(item_id)]])
+                                        if item_id not in prev_ids:
+                                            calls.append([method, [wrap_id(item_id)]])
+
+                        if tracker_key is not None:
+                            # Removals before adds so client tears down
+                            # stale actors before adding new ones
+                            removed_ids = prev_ids - current_item_ids
+                            if removed_ids:
+                                remove_method = method.replace(
+                                    "add", "remove", 1
+                                )
+                                calls[add_start_idx:add_start_idx] = [
+                                    [remove_method, [wrap_id(rid)]]
+                                    for rid in removed_ids
+                                ]
+                            self._collection_tracker[tracker_key] = (
+                                current_item_ids
+                            )
                     else:
                         dep = self._translate_object(ref_id)
                         if dep:
@@ -776,9 +805,9 @@ class VtkJsTranslator:
         return result
 
 
-def translate_scene(object_manager, root_id):
+def translate_scene(object_manager, root_id, collection_tracker=None):
     _scene_mtime_counter[0] += 1
-    translator = VtkJsTranslator(object_manager)
+    translator = VtkJsTranslator(object_manager, collection_tracker)
     result = translator.translate(root_id)
     result["mtime"] = _scene_mtime_counter[0]
     return result

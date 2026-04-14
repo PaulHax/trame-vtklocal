@@ -37,6 +37,7 @@ class VtkJsSharedView(VtkJsBaseView):
 
     def request_resync(self, extra=None):
         if self._push_sync:
+            self._collection_tracker.clear()
             self._push_sync.request_resync(extra)
 
     def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):

@@ -84,6 +84,43 @@ JS_CODE = r"""
         return vtkView.getQueueLength();
     };
 
+    window.testCommonSceneApi = function() {
+        const methods = [
+            "update",
+            "requestResync",
+            "applyQueuedStateSync",
+            "getQueueLength",
+            "getRenderWindow",
+            "getRenderer",
+            "setCamera",
+            "resetCamera",
+        ];
+        const missing = methods.filter((name) => typeof vtkView?.[name] !== "function");
+        const renderer = vtkView?.getRenderer?.();
+        const camera = renderer?.getActiveCamera?.();
+
+        let cameraChanged = false;
+        let cameraReset = false;
+        if (camera) {
+            const before = camera.getParallelScale();
+            vtkView.setCamera({ parallelScale: before * 0.5 });
+            const afterSet = camera.getParallelScale();
+            vtkView.resetCamera();
+            const afterReset = camera.getParallelScale();
+            cameraChanged = afterSet !== before;
+            cameraReset = afterReset !== afterSet;
+        }
+
+        return {
+            ready: !!vtkView,
+            missing,
+            hasRenderer: !!renderer,
+            cameraChanged,
+            cameraReset,
+            idleQueueDrained: !vtkView?.applyQueuedStateSync?.(),
+        };
+    };
+
     window.testGetRendererHandlesBrokenRendererCollection = function() {
         const renderWindow = vtkView?.getRenderWindow?.();
         if (!renderWindow) {

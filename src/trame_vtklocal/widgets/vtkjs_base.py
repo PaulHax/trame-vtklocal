@@ -107,6 +107,7 @@ class VtkJsBaseView(HtmlElement):
         self.object_manager.UpdateStatesFromObjects()
 
         self._collection_tracker = {}
+        self._push_sync = None
 
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self._ref}"'
@@ -135,3 +136,26 @@ class VtkJsBaseView(HtmlElement):
     def get_instance_id(self, vtk_object):
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
+
+    def _init_push_sync(self, sync_mode):
+        from trame_vtklocal.widgets.push_sync import PushSync
+
+        self._sync_mode = sync_mode
+        if sync_mode == "push":
+            self._push_sync = PushSync(
+                self.server,
+                self.object_manager,
+                self._get_vtkjs_state,
+                self.get_instance_id,
+                api=self.api,
+            )
+            self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
+
+    def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
+        if self._push_sync:
+            self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
+
+    def request_resync(self, extra=None):
+        if self._push_sync:
+            self._collection_tracker.clear()
+            self._push_sync.request_resync(extra)

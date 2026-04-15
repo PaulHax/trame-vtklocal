@@ -25,6 +25,22 @@ def wait_for_ready(page: Page):
     expect(page.locator(".readyCount")).not_to_have_text("0", timeout=15000)
 
 
+def test_shared_common_scene_api(server, server_path, page: Page):
+    url = f"http://127.0.0.1:{server.port}/"
+    page.goto(url)
+    wait_for_ready(page)
+
+    result = page.evaluate("window.testCommonSceneApi()")
+    assert result["ready"], "Shared view should be initialized before API inspection"
+    assert result["missing"] == [], f"Missing common scene methods: {result['missing']}"
+    assert result["hasRenderer"], "Shared view should expose getRenderer()"
+    assert result["cameraChanged"], "setCamera() should update the shared renderer camera"
+    assert result["cameraReset"], "resetCamera() should restore the shared renderer camera"
+    assert result["idleQueueDrained"], (
+        "applyQueuedStateSync() should return false when the queue is empty"
+    )
+
+
 def test_render_shared_drains_sync_queue(server, server_path, page: Page):
     """renderShared() must drain the sync queue synchronously when
     syncStateAtRender is true."""

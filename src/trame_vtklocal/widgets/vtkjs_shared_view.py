@@ -1,17 +1,16 @@
+import weakref
+
 from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
-from trame_vtklocal.widgets.push_sync import PushSync
 
 
 class VtkJsSharedView(VtkJsBaseView):
     _ref_prefix = "_vtkjssharedview"
-    _shared_views = {}
+    _shared_views = weakref.WeakValueDictionary()
 
     def __init__(self, render_window, sync_mode="push", **kwargs):
         super().__init__("vtk-js-shared", render_window, **kwargs)
 
         self._view_id = str(self._window_id)
-        self._sync_mode = sync_mode
-        self._push_sync = None
 
         self._event_names += [
             "updated",
@@ -23,26 +22,9 @@ class VtkJsSharedView(VtkJsBaseView):
 
         self._attributes["sync_mode"] = f'sync-mode="{sync_mode}"'
 
-        if sync_mode == "push":
-            self._push_sync = PushSync(
-                self.server,
-                self.object_manager,
-                self._get_vtkjs_state,
-                self.get_instance_id,
-                api=self.api,
-            )
-            self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
+        self._init_push_sync(sync_mode)
 
         VtkJsSharedView._shared_views[self._view_id] = self
-
-    def request_resync(self, extra=None):
-        if self._push_sync:
-            self._collection_tracker.clear()
-            self._push_sync.request_resync(extra)
-
-    def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
-        if self._push_sync:
-            self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
 
     def update(self, extra=None):
         if self._sync_mode == "push":
@@ -61,6 +43,12 @@ class VtkJsSharedView(VtkJsBaseView):
 
     def on_render_requested(self, callback_name, **kwargs):
         self.server.js_call(self._ref, "onRenderRequested", callback_name)
+
+    def set_camera(self, params):
+        self.server.js_call(self._ref, "setCamera", params)
+
+    def reset_camera(self):
+        self.server.js_call(self._ref, "resetCamera")
 
     def get_renderer(self):
         renderers = self._render_window.GetRenderers()

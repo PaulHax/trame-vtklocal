@@ -1,5 +1,4 @@
 from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
-from trame_vtklocal.widgets.push_sync import PushSync
 
 
 class VtkJsLocalView(VtkJsBaseView):
@@ -7,8 +6,6 @@ class VtkJsLocalView(VtkJsBaseView):
 
     def __init__(self, render_window, sync_mode="pull", **kwargs):
         super().__init__("vtk-js-local", render_window, **kwargs)
-        self._sync_mode = sync_mode
-        self._push_sync = None
 
         self._attr_names += [
             ("interactor_settings", "interactorSettings"),
@@ -17,17 +14,13 @@ class VtkJsLocalView(VtkJsBaseView):
         self._event_names += [
             "updated",
             "camera",
+            ("view_state_change", "viewStateChange"),
+            ("on_ready", "onReady"),
+            ("before_scene_loaded", "beforeSceneLoaded"),
+            ("after_scene_loaded", "afterSceneLoaded"),
         ]
 
-        if sync_mode == "push":
-            self._push_sync = PushSync(
-                self.server,
-                self.object_manager,
-                self._get_vtkjs_state,
-                self.get_instance_id,
-                api=self.api,
-            )
-            self.api.register_push_sent_hashes(self._push_sync._sent_hashes)
+        self._init_push_sync(sync_mode)
 
     def update(self, push_camera=False, **kwargs):
         if self._sync_mode == "push":
@@ -40,15 +33,6 @@ class VtkJsLocalView(VtkJsBaseView):
 
         if push_camera:
             self._push_camera()
-
-    def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
-        if self._push_sync:
-            self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
-
-    def request_resync(self, extra=None):
-        if self._push_sync:
-            self._collection_tracker.clear()
-            self._push_sync.request_resync(extra)
 
     def _push_camera(self):
         renderer = self._render_window.GetRenderers().GetFirstRenderer()
@@ -70,6 +54,9 @@ class VtkJsLocalView(VtkJsBaseView):
 
     def reset_camera(self):
         self.server.js_call(self._ref, "resetCamera")
+
+    def set_camera(self, params):
+        self.server.js_call(self._ref, "setCamera", params)
 
 
 __all__ = ["VtkJsLocalView"]

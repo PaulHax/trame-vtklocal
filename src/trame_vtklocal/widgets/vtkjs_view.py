@@ -3,6 +3,11 @@ from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
 
 class VtkJsLocalView(VtkJsBaseView):
     _ref_prefix = "_vtkjslocalview"
+    # Local push-mode scenes are small and can legitimately move identical array
+    # payloads between different objects across updates (for example, selected
+    # versus normal overlay actors). Always inlining arrays avoids hash-cache
+    # reuse bugs on those full updates.
+    _always_inline_arrays = True
 
     def __init__(self, render_window, sync_mode="pull", **kwargs):
         super().__init__("vtk-js-local", render_window, **kwargs)

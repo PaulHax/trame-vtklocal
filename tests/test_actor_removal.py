@@ -1,10 +1,13 @@
-"""Test that the vtk.js translator emits removal calls for removed actors."""
+"""Translator regressions for vtk.js scene generation."""
 
 from trame_vtklocal.module.vtkjs_translator import translate_scene
 
+from vtkmodules.vtkCommonCore import vtkPoints
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkFiltersSources import vtkSphereSource
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
+    vtkGlyph3DMapper,
     vtkPolyDataMapper,
     vtkRenderer,
     vtkRenderWindow,
@@ -40,6 +43,33 @@ def find_calls(state, method_name):
     for dep in state.get("dependencies", []):
         found.extend(find_calls(dep, method_name))
     return found
+
+
+def find_node_by_id(state, node_id):
+    """Recursively find the translated node for the given vtk object id."""
+    if state.get("id") == str(node_id):
+        return state
+    for dep in state.get("dependencies", []):
+        found = find_node_by_id(dep, node_id)
+        if found:
+            return found
+    return None
+
+
+def make_cross_polydata():
+    points = vtkPoints()
+    lines = vtkCellArray()
+    for dx, dy, dz in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        a = points.InsertNextPoint(-dx, -dy, -dz)
+        b = points.InsertNextPoint(dx, dy, dz)
+        lines.InsertNextCell(2)
+        lines.InsertCellPoint(a)
+        lines.InsertCellPoint(b)
+
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetLines(lines)
+    return polydata
 
 
 def test_remove_actor_emits_removal_call():
@@ -146,3 +176,50 @@ def test_tracker_resets_on_clear():
     state = translate_scene(om, rw_id, tracker)
     removes = find_calls(state, "removeViewProp")
     assert len(removes) == 0
+
+
+def test_glyph_mapper_keeps_source_input_on_port_one():
+    rw = vtkRenderWindow()
+    rw.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    rw.AddRenderer(renderer)
+
+    centers_points = vtkPoints()
+    centers_points.InsertNextPoint(-0.5, 0.0, 0.0)
+    centers_points.InsertNextPoint(0.5, 0.0, 0.0)
+    centers = vtkPolyData()
+    centers.SetPoints(centers_points)
+    source = make_cross_polydata()
+
+    mapper = vtkGlyph3DMapper()
+    mapper.SetInputData(centers)
+    mapper.SetSourceData(source)
+    mapper.SetScaleFactor(0.2)
+    mapper.OrientOff()
+    mapper.SetScalarVisibility(False)
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    renderer.AddActor(actor)
+    renderer.ResetCamera()
+
+    om = get_object_manager()
+    rw_id = om.RegisterObject(rw)
+    rw.Render()
+    om.UpdateStatesFromObjects()
+
+    state = translate_scene(om, rw_id, {})
+    mapper_node = find_node_by_id(state, om.GetId(mapper))
+
+    assert mapper_node is not None
+    assert mapper_node["type"] == "vtkGlyph3DMapper"
+
+    centers_id = str(om.GetId(centers))
+    source_id = str(om.GetId(source))
+    dep_ids = {dep["id"] for dep in mapper_node.get("dependencies", [])}
+    assert centers_id in dep_ids
+    assert source_id in dep_ids
+
+    calls = mapper_node.get("calls", [])
+    assert ["setInputData", [f"instance:${{{centers_id}}}"]] in calls
+    assert ["setInputData", [f"instance:${{{source_id}}}", 1]] in calls

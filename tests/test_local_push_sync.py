@@ -3,6 +3,8 @@
 from copy import deepcopy
 
 from trame_vtklocal.widgets.push_sync import PushSync
+from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
+from trame_vtklocal.widgets.vtkjs_shared_view import VtkJsSharedView
 from trame_vtklocal.widgets.vtkjs_view import VtkJsLocalView
 
 
@@ -80,5 +82,7 @@ def test_push_sync_always_inlines_reused_hashes_on_full_updates():
     assert "content" in _find_points_array(second_state, "31")
 
 
-def test_local_view_defaults_to_always_inlining_arrays():
+def test_vtkjs_views_inherit_base_inline_array_policy():
+    assert VtkJsBaseView._always_inline_arrays is True
     assert VtkJsLocalView._always_inline_arrays is True
+    assert VtkJsSharedView._always_inline_arrays is True

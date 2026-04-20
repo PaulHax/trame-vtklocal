@@ -111,6 +111,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
   const wsPartialUpdateSubscription = session.subscribe("trame.vtk.array.partial", async ([update]) => {
     if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
+    if (update?.rwId && String(update.rwId) !== rwId) return;
 
     if (onPartialUpdate) {
       await onPartialUpdate(update, synchronizerContext);

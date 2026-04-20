@@ -10,11 +10,22 @@ _prof_logger = logging.getLogger("trame_vtklocal.prof")
 
 
 class PushSync:
-    def __init__(self, server, object_manager, get_vtkjs_state, get_instance_id, api=None):
+    def __init__(
+        self,
+        server,
+        object_manager,
+        get_vtkjs_state,
+        get_instance_id,
+        render_window_id,
+        always_inline_arrays=False,
+        api=None,
+    ):
         self._server = server
         self._object_manager = object_manager
         self._get_vtkjs_state = get_vtkjs_state
         self._get_instance_id = get_instance_id
+        self._render_window_id = str(render_window_id)
+        self._always_inline_arrays = always_inline_arrays
         self._api = api
         self._pending_changes = []
         self._sent_hashes = set()
@@ -44,7 +55,10 @@ class PushSync:
             self._pending_changes.clear()
             delta_state = self._get_vtkjs_state()
             t1 = time.perf_counter()
-            _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
+            if self._always_inline_arrays:
+                _inline_arrays(delta_state, self._object_manager)
+            else:
+                _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
             t2 = time.perf_counter()
             if extra:
                 delta_state.setdefault("extra", {}).update(extra)
@@ -64,7 +78,10 @@ class PushSync:
 
         self._pending_changes.clear()
         delta_state = self._get_vtkjs_state()
-        _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
+        if self._always_inline_arrays:
+            _inline_arrays(delta_state, self._object_manager)
+        else:
+            _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
 
         if extra:
             delta_state.setdefault("extra", {}).update(extra)
@@ -104,6 +121,7 @@ class PushSync:
             self._server.protocol.publish(
                 "trame.vtk.array.partial",
                 {
+                    "rwId": self._render_window_id,
                     "instanceId": instance_id,
                     "arrayPath": array_path,
                     "offset": element_offset,

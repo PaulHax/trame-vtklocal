@@ -44,6 +44,7 @@ CLASS_NAME_MAP = {
     "vtkPVLight": "vtkLight",
     "vtkCompositePolyDataMapper2": "vtkMapper",
     "vtkDataSetMapper": "vtkMapper",
+    "vtkOpenGLGlyph3DMapper": "vtkGlyph3DMapper",
     "vtkPVDiscretizableColorTransferFunction": "vtkColorTransferFunction",
     "vtkOpenGLImageSliceMapper": "vtkImageMapper",
     "vtkFixedPointVolumeRayCastMapper": "vtkVolumeMapper",
@@ -423,6 +424,20 @@ class VtkJsTranslator:
         """Get the actual VTK Python object for an ID."""
         return self.object_manager.GetObjectAtId(obj_id)
 
+    def _translate_ref(self, ref_id):
+        """Translate a referenced object, preserving reusable references.
+
+        The nested vtk.js scene format de-duplicates object payloads via
+        ``self._visited``, but callers still need the relation/method call that
+        points at an already-translated instance. Return both the optional
+        dependency payload and whether the reference should still be emitted.
+        """
+        ref_state = self._get_state(ref_id)
+        ref_class = ref_state.get("ClassName", "")
+        if ref_class in SKIP_TYPES or ref_class in COLLECTION_TYPES:
+            return None, False
+        return self._translate_object(ref_id), True
+
     def _get_collection_items(self, ref_id, ref_class):
         """Get items from a VTK collection using Python API."""
         vtk_obj = self._get_vtk_object(ref_id)
@@ -610,23 +625,28 @@ class VtkJsTranslator:
             if key == "InputDataObjects":
                 input_list = value
                 if input_list and isinstance(input_list, list):
-                    for port_inputs in input_list:
+                    for port_idx, port_inputs in enumerate(input_list):
                         if isinstance(port_inputs, list):
                             for input_ref in port_inputs:
                                 input_id = get_ref_id(input_ref)
                                 if input_id:
-                                    input_dep = self._translate_object(input_id)
+                                    input_dep, should_emit_ref = (
+                                        self._translate_ref(input_id)
+                                    )
                                     if input_dep:
                                         dependencies.append(input_dep)
-                                        calls.append(
-                                            ["setInputData", [wrap_id(input_id)]]
-                                        )
+                                    if should_emit_ref:
+                                        args = [wrap_id(input_id)]
+                                        if port_idx:
+                                            args.append(port_idx)
+                                        calls.append(["setInputData", args])
             elif key == "LookupTable":
                 lut_id = get_ref_id(value)
                 if lut_id:
-                    lut_dep = self._translate_object(lut_id)
+                    lut_dep, should_emit_ref = self._translate_ref(lut_id)
                     if lut_dep:
                         dependencies.append(lut_dep)
+                    if should_emit_ref:
                         calls.append(["setLookupTable", [wrap_id(lut_id)]])
             elif not is_ref(value):
                 camel_key = to_camel_case(key)
@@ -682,11 +702,13 @@ class VtkJsTranslator:
                                 item_id = get_ref_id(item_ref)
                                 if item_id:
                                     current_item_ids.add(item_id)
-                                    item_dep = self._translate_object(item_id)
+                                    item_dep, should_emit_ref = (
+                                        self._translate_ref(item_id)
+                                    )
                                     if item_dep:
                                         dependencies.append(item_dep)
-                                        if item_id not in prev_ids:
-                                            calls.append([method, [wrap_id(item_id)]])
+                                    if should_emit_ref and item_id not in prev_ids:
+                                        calls.append([method, [wrap_id(item_id)]])
 
                         if tracker_key is not None:
                             # Removals before adds so client tears down
@@ -704,9 +726,10 @@ class VtkJsTranslator:
                                 current_item_ids
                             )
                     else:
-                        dep = self._translate_object(ref_id)
+                        dep, should_emit_ref = self._translate_ref(ref_id)
                         if dep:
                             dependencies.append(dep)
+                        if should_emit_ref:
                             call_args = [wrap_id(ref_id)]
                             if relation["indexed"]:
                                 call_args.insert(0, 0)
@@ -719,9 +742,10 @@ class VtkJsTranslator:
                         item_id = get_ref_id(item_ref)
                         if item_id is None:
                             continue
-                        dep = self._translate_object(item_id)
+                        dep, should_emit_ref = self._translate_ref(item_id)
                         if dep:
                             dependencies.append(dep)
+                        if should_emit_ref:
                             call_args = [wrap_id(item_id)]
                             if relation["indexed"]:
                                 call_args.insert(0, idx)

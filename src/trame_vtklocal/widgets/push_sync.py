@@ -1,13 +1,5 @@
-import logging
-import os
-import time
-
 import numpy as np
 from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
-
-_PROF = os.environ.get("TRAME_VTKLOCAL_PROF") == "1"
-_prof_logger = logging.getLogger("trame_vtklocal.prof")
-
 
 class PushSync:
     def __init__(
@@ -48,32 +40,6 @@ class PushSync:
 
     def update(self, extra=None):
         if not self._server.protocol:
-            return
-
-        if _PROF:
-            t0 = time.perf_counter()
-            self._pending_changes.clear()
-            delta_state = self._get_vtkjs_state()
-            t1 = time.perf_counter()
-            if self._always_inline_arrays:
-                _inline_arrays(delta_state, self._object_manager)
-            else:
-                _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
-            t2 = time.perf_counter()
-            if extra:
-                delta_state.setdefault("extra", {}).update(extra)
-            if self._api:
-                self._api._convert_bytes_to_attachments(delta_state)
-            t3 = time.perf_counter()
-            self._server.protocol.publish("trame.vtk.delta", delta_state)
-            t4 = time.perf_counter()
-            _prof_logger.info(
-                "[trame-prof] push_sync.update get_state=%.2fms inline_arrays=%.2fms convert=%.2fms publish=%.2fms",
-                (t1 - t0) * 1000.0,
-                (t2 - t1) * 1000.0,
-                (t3 - t2) * 1000.0,
-                (t4 - t3) * 1000.0,
-            )
             return
 
         self._pending_changes.clear()

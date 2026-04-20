@@ -34,10 +34,6 @@ class VtkJsSharedView(VtkJsBaseView):
             self.api.update()
             self.server.js_call(self._ref, "update")
 
-    def flush(self):
-        if self._push_sync:
-            self._push_sync.flush()
-
     def render_shared(self, options=None, **kwargs):
         self.server.js_call(self._ref, "renderShared", options or {})
 

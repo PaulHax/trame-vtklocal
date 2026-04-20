@@ -1,6 +1,7 @@
 import { ref, inject, onMounted, onBeforeUnmount, watchEffect } from "vue";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
+import "@kitware/vtk.js/Rendering/Profiles/Glyph";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";

@@ -1,6 +1,7 @@
 import { inject, onMounted, onBeforeUnmount } from "vue";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
+import "@kitware/vtk.js/Rendering/Profiles/Glyph";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";

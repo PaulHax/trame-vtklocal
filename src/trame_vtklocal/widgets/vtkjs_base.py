@@ -1,14 +1,6 @@
-import logging
-import os
-import time
-
 import numpy as np
 from trame_client.widgets.core import AbstractElement
 from trame_vtklocal import module
-
-_PROF = os.environ.get("TRAME_VTKLOCAL_PROF") == "1"
-_prof_logger = logging.getLogger("trame_vtklocal.prof")
-
 
 class HtmlElement(AbstractElement):
     def __init__(self, _elem_name, children=None, **kwargs):
@@ -133,25 +125,6 @@ class VtkJsBaseView(HtmlElement):
 
     def _get_vtkjs_state(self):
         from trame_vtklocal.module.vtkjs_translator import translate_scene
-
-        if _PROF:
-            t0 = time.perf_counter()
-            self._render_window.Render()
-            t1 = time.perf_counter()
-            self.object_manager.UpdateStatesFromObjects()
-            t2 = time.perf_counter()
-            state = translate_scene(
-                self.object_manager, self._window_id, self._collection_tracker
-            )
-            t3 = time.perf_counter()
-            _prof_logger.info(
-                "[trame-prof] get_state ref=%s Render=%.2fms UpdateStates=%.2fms translate_scene=%.2fms",
-                self._ref,
-                (t1 - t0) * 1000.0,
-                (t2 - t1) * 1000.0,
-                (t3 - t2) * 1000.0,
-            )
-            return state
 
         self._render_window.Render()
         self.object_manager.UpdateStatesFromObjects()

@@ -298,6 +298,15 @@ LOOKUPTABLE_SKIP_PROPERTIES = {
 
 MAPPER_SKIP_PROPERTIES = {
     "numberOfPieces",
+    "clamping",
+    "cullingAndLOD",
+    "lODColoring",
+    "masking",
+    "range",
+    "selectionColorId",
+    "sourceIndexing",
+    "useSelectionIds",
+    "useSourceTableTree",
 }
 
 PROPERTY_SKIP_PROPERTIES = {

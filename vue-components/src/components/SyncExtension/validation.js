@@ -12,12 +12,47 @@
  * @returns {boolean} - true if all arrays have inline data or are cached
  */
 export function allArraysHaveInlineData(state, context) {
+  const inlineHashes = new Set();
+
+  function collectInlineHashes(obj) {
+    if (!obj || typeof obj !== 'object') return;
+
+    if (Array.isArray(obj)) {
+      obj.forEach((item) => collectInlineHashes(item));
+      return;
+    }
+
+    if (obj.hash && obj.dataType && obj.content != null) {
+      inlineHashes.add(obj.hash);
+    }
+
+    if (obj.properties) {
+      Object.values(obj.properties).forEach((value) => collectInlineHashes(value));
+    }
+
+    if (obj.dependencies) {
+      obj.dependencies.forEach((dep) => collectInlineHashes(dep));
+    }
+
+    if (obj.arrays) {
+      Object.values(obj.arrays).forEach((arr) => collectInlineHashes(arr));
+    }
+  }
+
   function checkObj(obj) {
     if (!obj || typeof obj !== 'object') return true;
 
+    if (Array.isArray(obj)) {
+      return obj.every((item) => checkObj(item));
+    }
+
     // Check if this is an array descriptor (has hash and dataType)
     if (obj.hash && obj.dataType) {
-      if (!obj.content && !context?.getCachedArray?.(obj.hash, context)) {
+      if (
+        obj.content == null &&
+        !inlineHashes.has(obj.hash) &&
+        !context?.getCachedArray?.(obj.hash, context)
+      ) {
         console.warn('[validation] Missing array:', obj.hash, 'name:', obj.name);
         return false;
       }
@@ -48,6 +83,7 @@ export function allArraysHaveInlineData(state, context) {
     return true;
   }
 
+  collectInlineHashes(state);
   return checkObj(state);
 }
 

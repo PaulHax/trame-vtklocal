@@ -5,6 +5,7 @@ from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
 
 class VtkJsSharedView(VtkJsBaseView):
     _ref_prefix = "_vtkjssharedview"
+    _always_inline_arrays = True
     _shared_views = weakref.WeakValueDictionary()
 
     def __init__(self, render_window, sync_mode="push", **kwargs):

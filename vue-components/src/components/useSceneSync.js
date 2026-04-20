@@ -152,6 +152,7 @@ export function useSceneSync({
         synchronizerContext,
         vtkObjectManager,
       );
+      syncCapability.updateGarbageCollectorThreshold(10000);
       sync = createPushSync(
         client,
         syncRenderWindow,

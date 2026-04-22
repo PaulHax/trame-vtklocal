@@ -1,4 +1,4 @@
-"""Regression coverage for local push-sync array inlining."""
+"""Regression coverage for hash-first local push sync."""
 
 from copy import deepcopy
 
@@ -19,14 +19,6 @@ class _FakeProtocol:
 class _FakeServer:
     def __init__(self):
         self.protocol = _FakeProtocol()
-
-
-class _FakeObjectManager:
-    def __init__(self, blobs):
-        self._blobs = blobs
-
-    def GetBlob(self, hash_str):
-        return self._blobs[hash_str]
 
 
 def _state_with_points(instance_id, points_hash):
@@ -53,36 +45,39 @@ def _find_points_array(state, instance_id):
     raise AssertionError(f"points array for instance {instance_id} not found")
 
 
-def test_push_sync_always_inlines_reused_hashes_on_full_updates():
-    states = iter(
-        [
-            _state_with_points("62", "shared-points"),
-            _state_with_points("31", "shared-points"),
-        ]
-    )
+def test_push_sync_incremental_updates_are_hash_first():
     server = _FakeServer()
     push_sync = PushSync(
         server,
-        _FakeObjectManager({"shared-points": b"\x00\x00\x80?\x00\x00\x80?\x00\x00\x80?"}),
-        lambda: deepcopy(next(states)),
+        lambda: deepcopy(_state_with_points("62", "shared-points")),
         lambda vtk_object: str(vtk_object),
         render_window_id=1,
-        always_inline_arrays=True,
     )
 
     push_sync.update()
-    push_sync.update()
 
-    assert len(server.protocol.messages) == 2
-
-    _, first_state = server.protocol.messages[0]
-    _, second_state = server.protocol.messages[1]
-
-    assert "content" in _find_points_array(first_state, "62")
-    assert "content" in _find_points_array(second_state, "31")
+    assert len(server.protocol.messages) == 1
+    _, delta_state = server.protocol.messages[0]
+    assert "content" not in _find_points_array(delta_state, "62")
 
 
-def test_vtkjs_views_inherit_base_inline_array_policy():
-    assert VtkJsBaseView._always_inline_arrays is True
-    assert VtkJsLocalView._always_inline_arrays is True
-    assert VtkJsSharedView._always_inline_arrays is True
+def test_push_sync_resync_is_hash_first():
+    server = _FakeServer()
+    push_sync = PushSync(
+        server,
+        lambda: deepcopy(_state_with_points("62", "shared-points")),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+    )
+
+    push_sync.request_resync()
+
+    assert len(server.protocol.messages) == 1
+    _, full_state = server.protocol.messages[0]
+    assert "content" not in _find_points_array(full_state, "62")
+
+
+def test_vtkjs_views_do_not_expose_inline_array_policy():
+    assert not hasattr(VtkJsBaseView, "_always_inline_arrays")
+    assert not hasattr(VtkJsLocalView, "_always_inline_arrays")
+    assert not hasattr(VtkJsSharedView, "_always_inline_arrays")

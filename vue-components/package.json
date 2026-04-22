@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build --emptyOutDir",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "lint": "eslint --fix src",
     "format": "prettier .  --write",
     "semantic-release": "semantic-release"

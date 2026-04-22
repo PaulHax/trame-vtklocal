@@ -1,24 +1,24 @@
 /**
- * SyncExtension - Synchronous state synchronization for vtk.js
+ * sync - Synchronous state synchronization for vtk.js
  *
  * Provides synchronous state application for use cases where Promise-based
  * async synchronization is not suitable (e.g., MapLibre custom layer render
  * callbacks that must be synchronous).
  *
  * Usage:
- *   import { withSyncCapability } from './SyncExtension';
+ *   import { withSyncCapability } from "./sync/syncCapability";
  *
  *   const syncMethods = withSyncCapability(renderWindow, synchronizerContext, objectManager);
  *   syncMethods.synchronizeSync(state) - synchronous state application
  *   syncMethods.hasInlineData(state) - check if state has inline data
  */
 
-import { allArraysHaveInlineData } from './validation';
-import { updateRenderWindowSync } from './syncUpdaters';
+import { allArraysHaveInlineData } from "./validation";
+import { updateRenderWindowSync } from "./syncUpdaters";
 
 // Re-export components for direct access
-export { base64ToArrayBuffer, createTypedArray } from './base64';
-export { allArraysHaveInlineData } from './validation';
+export { base64ToArrayBuffer, createTypedArray } from "./base64";
+export { allArraysHaveInlineData } from "./validation";
 export {
   genericUpdaterSync,
   updateRenderWindowSync,
@@ -27,7 +27,7 @@ export {
   imageDataUpdaterSync,
   registerSyncUpdater,
   getSyncUpdater,
-} from './syncUpdaters';
+} from "./syncUpdaters";
 
 /**
  * Add synchronous sync capability to a SynchronizableRenderWindow.
@@ -50,7 +50,7 @@ export function withSyncCapability(
   };
 
   const getSynchronizedViewId = () =>
-    renderWindow.get('synchronizedViewId').synchronizedViewId;
+    renderWindow.get("synchronizedViewId").synchronizedViewId;
 
   /**
    * Synchronous state application - requires all arrays to have inline data.
@@ -65,7 +65,7 @@ export function withSyncCapability(
     if (!allArraysHaveInlineData(state, synchronizerContext)) {
       throw new Error(
         'synchronizeSync requires all arrays to have inline "content" field or be previously cached. ' +
-          'Use inline_arrays=True on Python side.'
+          "Push sync must prefetch missing hashes into the cache before sync apply."
       );
     }
 

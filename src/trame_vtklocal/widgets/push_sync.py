@@ -1,36 +1,28 @@
 import numpy as np
-from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
 
 class PushSync:
     def __init__(
         self,
         server,
-        object_manager,
         get_vtkjs_state,
         get_instance_id,
         render_window_id,
-        always_inline_arrays=False,
         api=None,
     ):
         self._server = server
-        self._object_manager = object_manager
         self._get_vtkjs_state = get_vtkjs_state
         self._get_instance_id = get_instance_id
         self._render_window_id = str(render_window_id)
-        self._always_inline_arrays = always_inline_arrays
         self._api = api
         self._pending_changes = []
-        self._sent_hashes = set()
 
     def request_resync(self, extra=None):
         self._pending_changes.clear()
-        self._sent_hashes.clear()
 
         if not self._server.protocol:
             return
 
         full_state = self._get_vtkjs_state()
-        _inline_arrays(full_state, self._object_manager)
         if extra:
             full_state.setdefault("extra", {}).update(extra)
 
@@ -44,11 +36,6 @@ class PushSync:
 
         self._pending_changes.clear()
         delta_state = self._get_vtkjs_state()
-        if self._always_inline_arrays:
-            _inline_arrays(delta_state, self._object_manager)
-        else:
-            _inline_arrays(delta_state, self._object_manager, self._sent_hashes)
-
         if extra:
             delta_state.setdefault("extra", {}).update(extra)
 

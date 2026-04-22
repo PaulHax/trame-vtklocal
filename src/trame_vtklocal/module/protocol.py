@@ -43,7 +43,6 @@ class ObjectManagerAPI(LinkProtocol):
         self._last_publish_states = {}
         self._last_publish_hash = set()
         self._push_camera = False
-        self._push_sent_hashes_sets = []
 
         self._debug_state = False
         self._debug_state_counter = 1
@@ -181,28 +180,16 @@ class ObjectManagerAPI(LinkProtocol):
         state = translate_scene(self.vtk_object_manager, obj_id)
         return state
 
-    def register_push_sent_hashes(self, sent_hashes_set):
-        self._push_sent_hashes_sets.append(sent_hashes_set)
-
     @export_rpc("vtkjs.push.resync")
     def push_resync(self, obj_id):
-        """Return full scene state with all arrays inlined for the requesting client.
-
-        Always includes camera state (unlike incremental deltas which may skip
-        camera via _push_camera) since the client needs full state to initialize.
-        """
+        """Return full scene state in vtk.js format for the requesting client."""
         from .vtkjs_translator import translate_scene
-        from trame_vtklocal.widgets.vtkjs_base import _inline_arrays
-
-        for s in self._push_sent_hashes_sets:
-            s.clear()
 
         render_window = self.vtk_object_manager.GetObjectAtId(int(obj_id))
         if render_window:
             render_window.Render()
         self.vtk_object_manager.UpdateStatesFromObjects()
         state = translate_scene(self.vtk_object_manager, int(obj_id))
-        _inline_arrays(state, self.vtk_object_manager)
         self._convert_bytes_to_attachments(state)
         return state
 
@@ -264,6 +251,19 @@ class ObjectManagerAPI(LinkProtocol):
             data = arr.astype(np.int32).tobytes()
 
         return self.addAttachment(memoryview(data))
+
+    @export_rpc("vtkjs.get.arrays")
+    def get_vtkjs_arrays(self, hashes, convert_to=None):
+        """Get multiple arrays for vtk.js in one RPC response."""
+
+        unique_hashes = list(dict.fromkeys(hashes or []))
+        return [
+            {
+                "hash": hash_str,
+                "content": self.get_vtkjs_array(hash_str, convert_to),
+            }
+            for hash_str in unique_hashes
+        ]
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id):

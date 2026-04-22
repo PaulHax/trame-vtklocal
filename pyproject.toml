@@ -73,6 +73,11 @@ line-length = 88
 indent-width = 4
 target-version = "py39"
 
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+]
+
 [tool.ruff.lint]
 select = ["E", "W", "F"]
 ignore = []

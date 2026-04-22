@@ -65,6 +65,16 @@ export default {
       });
     });
 
+    function requestQueuedStateApply(deltaState = null) {
+      if (repaintCallback) {
+        repaintCallback(deltaState);
+      } else if (syncStateAtRenderFlag) {
+        renderRequestedCallback?.();
+      } else {
+        scheduleQueuedStateApply();
+      }
+    }
+
     function initializeForSharedContext(canvas, gl, options = {}) {
       const { syncStateAtRender = false } = options;
 
@@ -80,13 +90,10 @@ export default {
         renderWindowId: props.renderWindow,
         syncMode: props.syncMode,
         onStateReceived(deltaState) {
-          if (repaintCallback) {
-            repaintCallback(deltaState);
-          } else if (syncStateAtRenderFlag) {
-            renderRequestedCallback?.();
-          } else {
-            scheduleQueuedStateApply();
-          }
+          requestQueuedStateApply(deltaState);
+        },
+        onQueueReady() {
+          requestQueuedStateApply();
         },
         onPartialApplied(_update, _syncCtx, applied) {
           if (applied) {

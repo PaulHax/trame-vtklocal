@@ -105,6 +105,9 @@ export default {
         onStateReceived() {
           scheduleUpdate();
         },
+        onQueueReady() {
+          scheduleUpdate();
+        },
         onPartialApplied(_partialUpdate, _syncCtx, applied) {
           if (applied) {
             renderScene();

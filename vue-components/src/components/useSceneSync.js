@@ -5,7 +5,7 @@ import {
   getPrimaryRenderer,
   applyCameraParams,
 } from "./vtkJsSync";
-import { withSyncCapability } from "./SyncExtension";
+import { withSyncCapability } from "./sync/syncCapability";
 import { createPullSync } from "./pullSync";
 import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
 import { createSyncController } from "./syncController";
@@ -18,18 +18,31 @@ export function useSceneSync({
   beforeSync,
   finalizeSync,
   syncErrorLabel = "SceneSync",
-}) {
+}, dependencies = {}) {
+  const {
+    applyPartialArrayUpdate: applyPartialArrayUpdateImpl = applyPartialArrayUpdate,
+    createManagedSyncContext: createManagedSyncContextImpl = createManagedSyncContext,
+    createPullSync: createPullSyncImpl = createPullSync,
+    createPushSync: createPushSyncImpl = createPushSync,
+    createSyncController: createSyncControllerImpl = createSyncController,
+    vtkObjectManager: vtkObjectManagerImpl = vtkObjectManager,
+    withSyncCapability: withSyncCapabilityImpl = withSyncCapability,
+  } = dependencies;
+
   let managedSyncContext = null;
   let sync = null;
   let syncCapability = null;
   let currentSyncMode = "pull";
   let disposed = false;
+  let pendingPartialUpdates = [];
+  let partialAppliedCallback = null;
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
   }
 
   function requestResync() {
+    pendingPartialUpdates = [];
     sync?.requestResync?.();
   }
 
@@ -51,11 +64,51 @@ export function useSceneSync({
     renderScene?.();
   }
 
-  function applyQueuedStateSync({ emitLifecycle = true, emitUpdated = true } = {}) {
-    if (!sync?.drainQueue || !syncCapability) return false;
+  function applySinglePartialUpdate(partialUpdate, syncCtx) {
+    const applied = applyPartialArrayUpdateImpl(partialUpdate, syncCtx);
+    if (!applied) {
+      requestResync();
+    }
+    partialAppliedCallback?.(partialUpdate, syncCtx, applied);
+    return applied;
+  }
 
-    const states = sync.drainQueue();
-    if (!states.length) return false;
+  function flushBufferedPartialUpdates(syncCtx = null) {
+    const resolvedSyncContext = syncCtx || managedSyncContext?.synchronizerContext;
+    if (!resolvedSyncContext || !pendingPartialUpdates.length) {
+      return true;
+    }
+
+    const bufferedUpdates = pendingPartialUpdates;
+    pendingPartialUpdates = [];
+
+    for (const partialUpdate of bufferedUpdates) {
+      if (!applySinglePartialUpdate(partialUpdate, resolvedSyncContext)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function applyQueuedStateSyncResult({
+    emitLifecycle = true,
+    emitUpdated = true,
+  } = {}) {
+    if (!syncCapability) {
+      return { status: "idle", didSync: false };
+    }
+
+    const states =
+      sync?.drainReadyQueue?.() ??
+      sync?.drainQueue?.() ??
+      [];
+    if (!states.length) {
+      return {
+        status: getQueueLength() > 0 ? "blocked" : "idle",
+        didSync: false,
+      };
+    }
 
     if (emitLifecycle) {
       emit?.("beforeSceneLoaded");
@@ -73,8 +126,15 @@ export function useSceneSync({
         if (emitLifecycle) {
           emit?.("afterSceneLoaded");
         }
-        return false;
+        return { status: "failed", didSync: false };
       }
+    }
+
+    if (!flushBufferedPartialUpdates()) {
+      if (emitLifecycle) {
+        emit?.("afterSceneLoaded");
+      }
+      return { status: "failed", didSync: false };
     }
 
     if (synced && emitUpdated) {
@@ -85,10 +145,14 @@ export function useSceneSync({
       emit?.("afterSceneLoaded");
     }
 
-    return synced;
+    return { status: "applied", didSync: synced };
   }
 
-  const updateController = createSyncController({
+  function applyQueuedStateSync(options = {}) {
+    return applyQueuedStateSyncResult(options).didSync;
+  }
+
+  const updateController = createSyncControllerImpl({
     canSync: () => !disposed && !!sync && !!getRenderWindow?.(),
     synchronize() {
       return currentSyncMode === "push"
@@ -122,6 +186,8 @@ export function useSceneSync({
     sync?.cleanup?.();
     sync = null;
     syncCapability = null;
+    pendingPartialUpdates = [];
+    partialAppliedCallback = null;
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -131,13 +197,15 @@ export function useSceneSync({
     renderWindowId,
     syncMode,
     onStateReceived,
+    onQueueReady,
     onPartialApplied,
   }) {
     disposed = false;
     cleanupSyncContext();
     currentSyncMode = syncMode;
+    partialAppliedCallback = onPartialApplied || null;
 
-    managedSyncContext = createManagedSyncContext(
+    managedSyncContext = createManagedSyncContextImpl(
       client,
       contextName,
       getRenderWindow(),
@@ -147,13 +215,13 @@ export function useSceneSync({
     const rwId = String(renderWindowId);
 
     if (syncMode === "push") {
-      syncCapability = withSyncCapability(
+      syncCapability = withSyncCapabilityImpl(
         syncRenderWindow,
         synchronizerContext,
-        vtkObjectManager,
+        vtkObjectManagerImpl,
       );
       syncCapability.updateGarbageCollectorThreshold(10000);
-      sync = createPushSync(
+      sync = createPushSyncImpl(
         client,
         syncRenderWindow,
         synchronizerContext,
@@ -163,23 +231,27 @@ export function useSceneSync({
             emit?.("viewStateChange", deltaState);
             onStateReceived?.(deltaState);
           },
+          onQueueReady() {
+            onQueueReady?.();
+          },
           onPartialUpdate(partialUpdate, syncCtx) {
             if (getQueueLength() > 0) {
-              applyQueuedStateSync();
+              const queuedStateResult = applyQueuedStateSyncResult();
+              if (queuedStateResult.status === "blocked") {
+                pendingPartialUpdates.push(partialUpdate);
+                return;
+              }
+              if (queuedStateResult.status === "failed") return;
             }
 
-            const applied = applyPartialArrayUpdate(partialUpdate, syncCtx);
-            if (!applied) {
-              requestResync();
-            }
-            onPartialApplied?.(partialUpdate, syncCtx, applied);
+            applySinglePartialUpdate(partialUpdate, syncCtx);
           },
         },
       );
       return;
     }
 
-    sync = createPullSync(client, syncRenderWindow, synchronizerContext, rwId);
+    sync = createPullSyncImpl(client, syncRenderWindow, synchronizerContext, rwId);
   }
 
   function cleanup() {

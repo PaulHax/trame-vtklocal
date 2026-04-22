@@ -114,8 +114,10 @@ def test_partial_flush_sends_no_delta(server, server_path, page: Page):
     )
 
 
-def test_update_after_mark_modified_has_inlined_arrays(server, server_path, page: Page):
-    """update() after mark_modified() must send inlined arrays (no synchronizeSync error)."""
+def test_update_after_mark_modified_prefetches_missing_arrays(
+    server, server_path, page: Page
+):
+    """update() after mark_modified() must prefetch missing arrays before sync apply."""
     url = f"http://127.0.0.1:{server.port}/"
     page.goto(url)
     wait_for_ready(page)
@@ -125,10 +127,10 @@ def test_update_after_mark_modified_has_inlined_arrays(server, server_path, page
 
     errors = page.evaluate("""() => {
         return (window.__consoleErrors || []).filter(
-            m => m.includes('synchronizeSync') || m.includes('inline')
+            m => m.includes('synchronizeSync') || m.includes('inline') || m.includes('prefetch')
         );
     }""")
-    assert len(errors) == 0, f"Expected no synchronizeSync errors, got: {errors}"
+    assert len(errors) == 0, f"Expected no synchronizeSync/prefetch errors, got: {errors}"
 
     queue_len = page.evaluate("window.testGetDeltaQueueLength()")
     assert queue_len == 0, (

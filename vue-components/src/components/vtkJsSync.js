@@ -5,7 +5,7 @@ import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import {
   cleanupRemovedRendererDependencies,
   isLiveInstance,
-} from "./SyncExtension/syncUpdaters";
+} from "./sync/syncUpdaters";
 
 let preRenderSkippingRenderWindowUpdaterInstalled = false;
 
@@ -34,23 +34,45 @@ function installRenderWindowUpdaterSkippingPreRender() {
   preRenderSkippingRenderWindowUpdaterInstalled = true;
 }
 
-export function createFetchArray(client) {
-  return async function fetchArray(hash) {
-    const session = client.getConnection().getSession();
-    const content = await session.call("vtkjs.get.array", [hash, null]);
-    if (content.arrayBuffer) {
-      return await content.arrayBuffer();
-    }
-    if (content instanceof Uint8Array) {
-      return content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength,
-      );
-    }
-    if (content instanceof ArrayBuffer) {
-      return content;
-    }
+export async function normalizeFetchedArrayContent(content) {
+  if (content?.arrayBuffer) {
+    return await content.arrayBuffer();
+  }
+  if (content instanceof Uint8Array) {
+    return content.buffer.slice(
+      content.byteOffset,
+      content.byteOffset + content.byteLength,
+    );
+  }
+  if (content instanceof ArrayBuffer) {
     return content;
+  }
+  return content;
+}
+
+export function createFetchArray(client) {
+  const session = client.getConnection().getSession();
+
+  return async function fetchArray(hash) {
+    const content = await session.call("vtkjs.get.array", [hash, null]);
+    return normalizeFetchedArrayContent(content);
+  };
+}
+
+export function createFetchArrays(client) {
+  const session = client.getConnection().getSession();
+
+  return async function fetchArrays(hashes) {
+    const results = new Map();
+    const response = await session.call("vtkjs.get.arrays", [hashes, null]);
+
+    await Promise.all(
+      (response || []).map(async ({ hash, content }) => {
+        results.set(hash, await normalizeFetchedArrayContent(content));
+      }),
+    );
+
+    return results;
   };
 }
 

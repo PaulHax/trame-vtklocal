@@ -102,9 +102,6 @@ export default {
         contextName: `vtkjs-local-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
         syncMode: props.syncMode,
-        onStateReceived() {
-          scheduleUpdate();
-        },
         onQueueReady() {
           scheduleUpdate();
         },

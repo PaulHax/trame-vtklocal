@@ -232,6 +232,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
   const inflightFetches = new Map();
 
   let stateQueue = [];
+  let pendingPartialUpdates = [];
   let visibilityHandler = null;
   let acceptBroadcasts = false;
   let resyncPending = false;
@@ -247,9 +248,9 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     pushArrayCache.prune(getQueuedHashes());
   }
 
-  async function prefetchStateArrays(state, version) {
+  async function prefetchArrayDescriptors(missingDescriptors, version) {
     const uniqueDescriptors = new Map();
-    pushArrayCache.prepareState(state).forEach((descriptor) => {
+    (missingDescriptors || []).forEach((descriptor) => {
       if (descriptor?.hash && !uniqueDescriptors.has(descriptor.hash)) {
         uniqueDescriptors.set(descriptor.hash, descriptor);
       }
@@ -320,27 +321,44 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     return true;
   }
 
+  async function dispatchPartialUpdate(update) {
+    if (onPartialUpdate) {
+      await onPartialUpdate(update, synchronizerContext);
+    } else {
+      applyPartialArrayUpdate(update, synchronizerContext);
+    }
+  }
+
   function enqueueState(state) {
     stateQueue.push(state);
     pruneArrayCacheToQueue();
 
     const version = queueVersion;
-    prefetchStateArrays(state, version)
-      .then((didPrefetch) => {
-        if (!didPrefetch || version !== queueVersion) {
-          return;
-        }
-
+    const missingDescriptors = pushArrayCache.prepareState(state);
+    if (!missingDescriptors.length) {
+      if (stateQueue[0] === state) {
         onQueueReady?.();
-      })
-      .catch(async (error) => {
-        if (version !== queueVersion) {
-          return;
-        }
+      }
+    } else {
+      prefetchArrayDescriptors(missingDescriptors, version)
+        .then((didPrefetch) => {
+          if (!didPrefetch || version !== queueVersion) {
+            return;
+          }
 
-        console.warn("[pushSync] Failed to prefetch missing arrays, requesting resync", error);
-        await requestResync();
-      });
+          if (stateQueue[0] === state) {
+            onQueueReady?.();
+          }
+        })
+        .catch(async (error) => {
+          if (version !== queueVersion) {
+            return;
+          }
+
+          console.warn("[pushSync] Failed to prefetch missing arrays, requesting resync", error);
+          await requestResync();
+        });
+    }
 
     onStateReceived?.(state);
   }
@@ -356,28 +374,41 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
     if (update?.rwId && String(update.rwId) !== rwId) return;
 
-    if (onPartialUpdate) {
-      await onPartialUpdate(update, synchronizerContext);
-    } else {
-      applyPartialArrayUpdate(update, synchronizerContext);
+    if (stateQueue.length) {
+      pendingPartialUpdates.push(update);
+      return;
     }
+
+    await dispatchPartialUpdate(update);
   });
 
   async function requestResync() {
     acceptBroadcasts = false;
     resyncPending = true;
     stateQueue.length = 0;
+    pendingPartialUpdates.length = 0;
     inflightFetches.clear();
     pruneArrayCacheToQueue();
 
     const version = ++queueVersion;
-    const state = await session.call("vtkjs.push.resync", [rwId]);
-    if (version !== queueVersion) {
-      return;
-    }
+    try {
+      const state = await session.call("vtkjs.push.resync", [rwId]);
+      if (version !== queueVersion) {
+        return false;
+      }
 
-    enqueueState(state);
-    acceptBroadcasts = true;
+      enqueueState(state);
+      acceptBroadcasts = true;
+      return true;
+    } catch (error) {
+      if (version !== queueVersion) {
+        return false;
+      }
+
+      console.warn("[pushSync] Failed to request resync", error);
+      acceptBroadcasts = true;
+      return false;
+    }
   }
 
   visibilityHandler = () => {
@@ -389,7 +420,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
   requestResync();
 
-  function drainReadyQueue() {
+  function drainReadyStates() {
     const readyStates = [];
 
     while (stateQueue.length) {
@@ -410,22 +441,35 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     return readyStates;
   }
 
-  async function applyQueuedState() {
-    if (!syncRenderWindow) return false;
+  function drainReadyPartialUpdates() {
+    if (stateQueue.length || !pendingPartialUpdates.length) {
+      return [];
+    }
 
-    const states = drainReadyQueue();
-    if (!states.length) return false;
+    return pendingPartialUpdates.splice(0);
+  }
+
+  async function applyQueuedState() {
+    const states = drainReadyStates();
+    const partialUpdates = drainReadyPartialUpdates();
+    if (!states.length && !partialUpdates.length) return false;
 
     for (const state of states) {
+      if (!syncRenderWindow) continue;
       await syncRenderWindow.synchronize(state);
     }
 
-    return true;
+    for (const partialUpdate of partialUpdates) {
+      await dispatchPartialUpdate(partialUpdate);
+    }
+
+    return states.length > 0 || partialUpdates.length > 0;
   }
 
   function cleanup() {
     queueVersion += 1;
     stateQueue.length = 0;
+    pendingPartialUpdates.length = 0;
     inflightFetches.clear();
     pushArrayCache.clear();
 
@@ -445,15 +489,11 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     return stateQueue.length;
   }
 
-  function drainQueue() {
-    return drainReadyQueue();
-  }
-
   return {
     applyQueuedState,
     cleanup,
-    drainQueue,
-    drainReadyQueue,
+    drainReadyPartialUpdates,
+    drainReadyStates,
     getQueueLength,
     requestResync,
   };

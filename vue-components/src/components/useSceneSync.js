@@ -34,7 +34,6 @@ export function useSceneSync({
   let syncCapability = null;
   let currentSyncMode = "pull";
   let disposed = false;
-  let pendingPartialUpdates = [];
   let partialAppliedCallback = null;
 
   function getRenderer() {
@@ -42,7 +41,6 @@ export function useSceneSync({
   }
 
   function requestResync() {
-    pendingPartialUpdates = [];
     sync?.requestResync?.();
   }
 
@@ -73,22 +71,24 @@ export function useSceneSync({
     return applied;
   }
 
-  function flushBufferedPartialUpdates(syncCtx = null) {
+  function applyReadyPartialUpdates(syncCtx = null) {
     const resolvedSyncContext = syncCtx || managedSyncContext?.synchronizerContext;
-    if (!resolvedSyncContext || !pendingPartialUpdates.length) {
-      return true;
+    if (!resolvedSyncContext) {
+      return { didApply: false, failed: false };
     }
 
-    const bufferedUpdates = pendingPartialUpdates;
-    pendingPartialUpdates = [];
+    const partialUpdates = sync?.drainReadyPartialUpdates?.() ?? [];
+    if (!partialUpdates.length) {
+      return { didApply: false, failed: false };
+    }
 
-    for (const partialUpdate of bufferedUpdates) {
+    for (const partialUpdate of partialUpdates) {
       if (!applySinglePartialUpdate(partialUpdate, resolvedSyncContext)) {
-        return false;
+        return { didApply: true, failed: true };
       }
     }
 
-    return true;
+    return { didApply: true, failed: false };
   }
 
   function applyQueuedStateSyncResult({
@@ -99,11 +99,15 @@ export function useSceneSync({
       return { status: "idle", didSync: false };
     }
 
-    const states =
-      sync?.drainReadyQueue?.() ??
-      sync?.drainQueue?.() ??
-      [];
+    const states = sync?.drainReadyStates?.() ?? [];
     if (!states.length) {
+      const partialResult = applyReadyPartialUpdates();
+      if (partialResult.failed) {
+        return { status: "failed", didSync: false };
+      }
+      if (partialResult.didApply) {
+        return { status: "applied", didSync: false };
+      }
       return {
         status: getQueueLength() > 0 ? "blocked" : "idle",
         didSync: false,
@@ -115,10 +119,12 @@ export function useSceneSync({
     }
 
     let synced = false;
+    let latestAppliedState = null;
     for (const state of states) {
       try {
         if (syncCapability.synchronizeSync(state, true)) {
           synced = true;
+          latestAppliedState = state;
         }
       } catch (error) {
         console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
@@ -130,11 +136,16 @@ export function useSceneSync({
       }
     }
 
-    if (!flushBufferedPartialUpdates()) {
+    const partialResult = applyReadyPartialUpdates();
+    if (partialResult.failed) {
       if (emitLifecycle) {
         emit?.("afterSceneLoaded");
       }
       return { status: "failed", didSync: false };
+    }
+
+    if (latestAppliedState) {
+      emit?.("viewStateChange", latestAppliedState);
     }
 
     if (synced && emitUpdated) {
@@ -145,7 +156,10 @@ export function useSceneSync({
       emit?.("afterSceneLoaded");
     }
 
-    return { status: "applied", didSync: synced };
+    return {
+      status: getQueueLength() > 0 ? "blocked" : "applied",
+      didSync: synced,
+    };
   }
 
   function applyQueuedStateSync(options = {}) {
@@ -186,7 +200,6 @@ export function useSceneSync({
     sync?.cleanup?.();
     sync = null;
     syncCapability = null;
-    pendingPartialUpdates = [];
     partialAppliedCallback = null;
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
@@ -228,22 +241,12 @@ export function useSceneSync({
         rwId,
         {
           onStateReceived(deltaState) {
-            emit?.("viewStateChange", deltaState);
             onStateReceived?.(deltaState);
           },
           onQueueReady() {
             onQueueReady?.();
           },
           onPartialUpdate(partialUpdate, syncCtx) {
-            if (getQueueLength() > 0) {
-              const queuedStateResult = applyQueuedStateSyncResult();
-              if (queuedStateResult.status === "blocked") {
-                pendingPartialUpdates.push(partialUpdate);
-                return;
-              }
-              if (queuedStateResult.status === "failed") return;
-            }
-
             applySinglePartialUpdate(partialUpdate, syncCtx);
           },
         },

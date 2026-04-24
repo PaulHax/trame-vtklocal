@@ -48,7 +48,7 @@ class PushSync:
         instance_id = self._get_instance_id(vtk_object)
         self._pending_changes.append((vtk_object, instance_id, array_path, start, count, data, data_type))
 
-    def flush(self):
+    def flush(self, extra=None):
         if not self._pending_changes or not self._server.protocol:
             return False
 
@@ -80,6 +80,7 @@ class PushSync:
                     "offset": element_offset,
                     "data": data,
                     "dataType": data_type,
+                    "extra": extra,
                 },
             )
 

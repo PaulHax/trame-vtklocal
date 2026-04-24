@@ -67,6 +67,9 @@ export function useSceneSync({
     if (!applied) {
       requestResync();
     }
+    if (applied && partialUpdate?.extra) {
+      emit?.("viewStateExtra", partialUpdate.extra);
+    }
     partialAppliedCallback?.(partialUpdate, syncCtx, applied);
     return applied;
   }
@@ -136,16 +139,16 @@ export function useSceneSync({
       }
     }
 
+    if (latestAppliedState?.extra) {
+      emit?.("viewStateExtra", latestAppliedState.extra);
+    }
+
     const partialResult = applyReadyPartialUpdates();
     if (partialResult.failed) {
       if (emitLifecycle) {
         emit?.("afterSceneLoaded");
       }
       return { status: "failed", didSync: false };
-    }
-
-    if (latestAppliedState) {
-      emit?.("viewStateChange", latestAppliedState);
     }
 
     if (synced && emitUpdated) {

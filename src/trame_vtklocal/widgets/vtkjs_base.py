@@ -13,7 +13,7 @@ class VtkJsBaseView(HtmlElement):
     _ref_prefix = "_vtkjsview"
     _scene_event_names = [
         "updated",
-        ("view_state_change", "viewStateChange"),
+        ("view_state_extra", "viewStateExtra"),
         ("on_ready", "onReady"),
         ("before_scene_loaded", "beforeSceneLoaded"),
         ("after_scene_loaded", "afterSceneLoaded"),
@@ -128,9 +128,9 @@ class VtkJsBaseView(HtmlElement):
         if self._push_sync:
             self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
 
-    def flush(self):
+    def flush(self, extra=None):
         if self._push_sync:
-            self._push_sync.flush()
+            self._push_sync.flush(extra)
 
     def request_resync(self, extra=None):
         if self._push_sync:

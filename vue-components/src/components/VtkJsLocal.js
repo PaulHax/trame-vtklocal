@@ -16,7 +16,7 @@ export default {
   emits: [
     "updated",
     "camera",
-    "viewStateChange",
+    "viewStateExtra",
     "onReady",
     "beforeSceneLoaded",
     "afterSceneLoaded",

@@ -95,12 +95,14 @@ test("useSceneSync applies immediate partial updates from pushSync", async () =>
   ]);
 });
 
-test("useSceneSync emits viewStateChange only after queued push state is applied", async () => {
+test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates before partial-applied callback", async () => {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
 
-  const fullState = {
-    id: "rw",
-    mtime: 1,
+  const eventOrder = [];
+  const partialUpdate = {
+    instanceId: "1",
+    arrayPath: "points",
+    offset: 0,
     extra: {
       orbitCamera: {
         center: [-90, 40],
@@ -108,13 +110,99 @@ test("useSceneSync emits viewStateChange only after queued push state is applied
       },
     },
   };
+  const syncContext = { name: "sync-context" };
 
+  let pushCallbacks = null;
+
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit(eventName, payload) {
+        eventOrder.push({ type: "emit", eventName, payload });
+      },
+      getRenderWindow: () => ({ id: "render-window" }),
+      renderScene() {},
+      syncErrorLabel: "UseSceneSyncPartialExtraTest",
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: syncContext,
+        syncRenderWindow: { id: "sync-render-window" },
+        cleanup() {},
+      }),
+      withSyncCapability: () => ({
+        synchronizeSync() {
+          return true;
+        },
+        updateGarbageCollectorThreshold() {},
+      }),
+      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, callbacks) {
+        pushCallbacks = callbacks;
+        return {
+          cleanup() {},
+          requestResync() {},
+          getQueueLength() {
+            return 0;
+          },
+          drainReadyStates() {
+            return [];
+          },
+          drainReadyPartialUpdates() {
+            return [];
+          },
+        };
+      },
+      createPullSync() {
+        throw new Error("Pull sync should not be used in this test");
+      },
+      applyPartialArrayUpdate() {
+        eventOrder.push({ type: "applyPartial" });
+        return true;
+      },
+      createSyncController() {
+        return {
+          async requestSync() {
+            return false;
+          },
+        };
+      },
+    },
+  );
+
+  scene.initialize({
+    contextName: "ctx",
+    renderWindowId: 1,
+    syncMode: "push",
+    onPartialApplied(update, ctx, applied) {
+      eventOrder.push({ type: "partialApplied", update, ctx, applied });
+    },
+  });
+
+  assert.ok(pushCallbacks, "push sync callbacks should be captured");
+
+  pushCallbacks.onPartialUpdate(partialUpdate, syncContext);
+
+  assert.deepEqual(eventOrder, [
+    { type: "applyPartial" },
+    { type: "emit", eventName: "viewStateExtra", payload: partialUpdate.extra },
+    {
+      type: "partialApplied",
+      update: partialUpdate,
+      ctx: syncContext,
+      applied: true,
+    },
+  ]);
+});
+
+const useSceneSyncRef = {};
+
+function buildFullStateSyncHarness({ queuedStates }) {
   let queuedStatesBlocked = true;
-  let queuedStates = [fullState];
+  let remainingStates = queuedStates;
   let pushCallbacks = null;
   const emittedEvents = [];
 
-  const scene = useSceneSync(
+  const scene = useSceneSyncRef.useSceneSync(
     {
       client: {},
       emit(eventName, payload) {
@@ -142,14 +230,14 @@ test("useSceneSync emits viewStateChange only after queued push state is applied
           cleanup() {},
           requestResync() {},
           getQueueLength() {
-            return queuedStatesBlocked ? 1 : queuedStates.length;
+            return queuedStatesBlocked ? 1 : remainingStates.length;
           },
           drainReadyStates() {
             if (queuedStatesBlocked) {
               return [];
             }
-            const readyStates = queuedStates;
-            queuedStates = [];
+            const readyStates = remainingStates;
+            remainingStates = [];
             return readyStates;
           },
           drainReadyPartialUpdates() {
@@ -176,23 +264,69 @@ test("useSceneSync emits viewStateChange only after queued push state is applied
     syncMode: "push",
   });
 
-  assert.ok(pushCallbacks, "push sync callbacks should be captured");
+  return {
+    scene,
+    emittedEvents,
+    unblock() {
+      queuedStatesBlocked = false;
+    },
+    get pushCallbacks() {
+      return pushCallbacks;
+    },
+  };
+}
 
-  pushCallbacks.onStateReceived(fullState);
+test("useSceneSync emits viewStateExtra only after queued push state is applied", async () => {
+  const mod = await loadModule("/src/components/useSceneSync.js");
+  useSceneSyncRef.useSceneSync = mod.useSceneSync;
+
+  const fullState = {
+    id: "rw",
+    mtime: 1,
+    extra: {
+      orbitCamera: {
+        center: [-90, 40],
+        zoom: 8,
+      },
+    },
+  };
+
+  const harness = buildFullStateSyncHarness({ queuedStates: [fullState] });
+  assert.ok(harness.pushCallbacks, "push sync callbacks should be captured");
+
+  harness.pushCallbacks.onStateReceived(fullState);
 
   assert.deepEqual(
-    emittedEvents.filter((event) => event.eventName === "viewStateChange"),
+    harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
     [],
-    "viewStateChange should wait until the queued state is actually applied",
+    "viewStateExtra should wait until the queued state is actually applied",
   );
 
-  queuedStatesBlocked = false;
-  const didSync = scene.applyQueuedStateSync();
+  harness.unblock();
+  const didSync = harness.scene.applyQueuedStateSync();
 
   assert.equal(didSync, true);
   assert.deepEqual(
-    emittedEvents.filter((event) => event.eventName === "viewStateChange"),
-    [{ eventName: "viewStateChange", payload: fullState }],
+    harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
+    [{ eventName: "viewStateExtra", payload: fullState.extra }],
+  );
+});
+
+test("useSceneSync does not emit viewStateExtra when full state has no extra", async () => {
+  const mod = await loadModule("/src/components/useSceneSync.js");
+  useSceneSyncRef.useSceneSync = mod.useSceneSync;
+
+  const fullState = { id: "rw", mtime: 1 };
+
+  const harness = buildFullStateSyncHarness({ queuedStates: [fullState] });
+  harness.pushCallbacks.onStateReceived(fullState);
+  harness.unblock();
+  harness.scene.applyQueuedStateSync();
+
+  assert.deepEqual(
+    harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
+    [],
+    "viewStateExtra should not emit when state carries no extra",
   );
 });
 
@@ -291,4 +425,90 @@ test("useSceneSync keeps partial updates buffered until the full-state queue dra
   assert.equal(didSync, true);
   assert.deepEqual(appliedStates, [readyState, blockedState]);
   assert.deepEqual(appliedPartials, [{ update: partialUpdate, ctx: syncContext }]);
+});
+
+test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra so newer partial extras win", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+
+  const fullState = { id: "rw", mtime: 1, extra: { marker: "full" } };
+  const partialUpdate = {
+    instanceId: "1",
+    arrayPath: "points",
+    offset: 0,
+    extra: { marker: "partial" },
+  };
+  const syncContext = { name: "sync-context" };
+  const emittedExtras = [];
+
+  let remainingStates = [fullState];
+  let remainingPartials = [partialUpdate];
+
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit(eventName, payload) {
+        if (eventName === "viewStateExtra") {
+          emittedExtras.push(payload);
+        }
+      },
+      getRenderWindow: () => ({ id: "render-window" }),
+      renderScene() {},
+      syncErrorLabel: "UseSceneSyncOrderingExtraTest",
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: syncContext,
+        syncRenderWindow: { id: "sync-render-window" },
+        cleanup() {},
+      }),
+      withSyncCapability: () => ({
+        synchronizeSync() {
+          return true;
+        },
+        updateGarbageCollectorThreshold() {},
+      }),
+      createPushSync() {
+        return {
+          cleanup() {},
+          requestResync() {},
+          getQueueLength() {
+            return remainingStates.length + remainingPartials.length;
+          },
+          drainReadyStates() {
+            const ready = remainingStates;
+            remainingStates = [];
+            return ready;
+          },
+          drainReadyPartialUpdates() {
+            const ready = remainingPartials;
+            remainingPartials = [];
+            return ready;
+          },
+        };
+      },
+      createPullSync() {
+        throw new Error("Pull sync should not be used in this test");
+      },
+      applyPartialArrayUpdate() {
+        return true;
+      },
+      createSyncController() {
+        return {
+          async requestSync() {
+            return false;
+          },
+        };
+      },
+    },
+  );
+
+  scene.initialize({
+    contextName: "ctx",
+    renderWindowId: 1,
+    syncMode: "push",
+  });
+
+  scene.applyQueuedStateSync();
+
+  assert.deepEqual(emittedExtras, [fullState.extra, partialUpdate.extra]);
 });

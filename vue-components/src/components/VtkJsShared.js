@@ -12,7 +12,7 @@ import { useSceneSync } from "./useSceneSync";
 export default {
   emits: [
     "updated",
-    "viewStateChange",
+    "viewStateExtra",
     "onReady",
     "beforeSceneLoaded",
     "afterSceneLoaded",

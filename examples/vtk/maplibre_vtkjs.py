@@ -305,19 +305,16 @@ async def animate_cones():
         center_actor.SetScale(marker_size, marker_size, marker_size)
         update_trail(orbit_lng, orbit_lat, marker_size)
 
+        orbit_camera = None
         if state.camera_mode == "orbit":
-            ctrl.view_update(
-                extra={
-                    "orbitCamera": {
-                        "center": [orbit_lng, orbit_lat],
-                        "zoom": ORBIT_ZOOM,
-                        "bearing": 0,
-                        "pitch": ORBIT_PITCH,
-                    }
-                },
-            )
-        else:
-            ctrl.view_update()
+            orbit_camera = {
+                "center": [orbit_lng, orbit_lat],
+                "zoom": ORBIT_ZOOM,
+                "bearing": 0,
+                "pitch": ORBIT_PITCH,
+            }
+
+        ctrl.view_update(extra={"orbitCamera": orbit_camera})
 
         server.js_call("mapController", "triggerRepaint")
         await asyncio.sleep(1 / 30)
@@ -402,16 +399,12 @@ INIT_SCRIPT_JS = """
         },
     };
 
-    window.onVtkViewStateChange = (state) => {
-        if (state?.extra?.orbitCamera) {
-            if (Date.now() < ignoreOrbitCameraUntil) {
-                pendingOrbitCamera = null;
-                return;
-            }
-            pendingOrbitCamera = state.extra.orbitCamera;
-        } else {
+    window.onVtkViewStateExtra = (extra) => {
+        if (Date.now() < ignoreOrbitCameraUntil) {
             pendingOrbitCamera = null;
+            return;
         }
+        pendingOrbitCamera = extra?.orbitCamera || null;
     };
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -701,7 +694,7 @@ with SinglePageLayout(server) as layout:
                 ref="vtkView",
                 style="display: none;",
                 on_ready="window.initMapLibreVTK && window.initMapLibreVTK()",
-                view_state_change="window.onVtkViewStateChange && window.onVtkViewStateChange($event)",
+                view_state_extra="window.onVtkViewStateExtra && window.onVtkViewStateExtra($event)",
             )
             ctrl.view_update = view.update
 

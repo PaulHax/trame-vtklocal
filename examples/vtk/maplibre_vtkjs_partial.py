@@ -16,7 +16,7 @@ from trame.ui.vuetify3 import SinglePageLayout
 
 from trame_vtklocal.widgets import VtkJsSharedView
 
-from vtkmodules.vtkFiltersSources import vtkConeSource, vtkSphereSource
+from vtkmodules.vtkFiltersSources import vtkConeSource
 from vtkmodules.vtkRenderingCore import (
     vtkRenderer,
     vtkRenderWindow,
@@ -56,12 +56,19 @@ CITIES = [
     {"name": "Denver", "lng": -104.9903, "lat": 39.7392, "color": (0.0, 0.5, 1.0)},
 ]
 
+
 def set_map_camera(center, zoom, bearing=0, pitch=0, animate=True, duration=1000):
     server.js_call(
         "mapController",
         "setCamera",
-        {"center": center, "zoom": zoom, "bearing": bearing, "pitch": pitch,
-         "animate": animate, "duration": duration},
+        {
+            "center": center,
+            "zoom": zoom,
+            "bearing": bearing,
+            "pitch": pitch,
+            "animate": animate,
+            "duration": duration,
+        },
     )
 
 
@@ -103,9 +110,6 @@ renderWindow = vtkRenderWindow()
 renderWindow.AddRenderer(renderer)
 renderWindow.OffScreenRenderingOn()
 
-cone_actors = []
-cone_base_scales = []
-
 for city in CITIES:
     x, y, z, scale = lng_lat_to_mercator(city["lng"], city["lat"])
     cone_scale = scale * 100000
@@ -126,8 +130,6 @@ for city in CITIES:
     actor.SetPosition(x, y, cone_scale * 0.5)
     actor.SetScale(cone_scale, cone_scale, cone_scale)
     renderer.AddActor(actor)
-    cone_actors.append(actor)
-    cone_base_scales.append(cone_scale)
 
 ORBIT_CENTER = [
     (CITIES[0]["lng"] + CITIES[2]["lng"]) / 2,
@@ -135,23 +137,6 @@ ORBIT_CENTER = [
 ]
 ORBIT_RADIUS = 8
 ORBIT_ZOOM = 8
-
-center_x, center_y, _, center_scale = lng_lat_to_mercator(
-    ORBIT_CENTER[0], ORBIT_CENTER[1]
-)
-sphere_source = vtkSphereSource()
-sphere_source.SetRadius(0.5)
-sphere_source.SetThetaResolution(32)
-sphere_source.SetPhiResolution(32)
-center_mapper = vtkPolyDataMapper()
-center_mapper.SetInputConnection(sphere_source.GetOutputPort())
-center_actor = vtkActor()
-center_actor.SetMapper(center_mapper)
-center_actor.GetProperty().SetColor(1.0, 0.5, 0.0)
-center_actor.GetProperty().SetAmbient(1.0)
-center_actor.GetProperty().SetDiffuse(0.0)
-center_actor.SetScale(center_scale * 50000, center_scale * 50000, center_scale * 50000)
-renderer.AddActor(center_actor)
 
 # Trail setup - raw line with fixed topology for partial updates
 MAX_TRAIL_POINTS = 60
@@ -192,7 +177,7 @@ animation_task = None
 
 
 def update_trail(lng, lat, scale):
-    """Add a point to the orbit trail. Returns (x, y, z, point_index)."""
+    """Add a point to the orbit trail and report the modified range."""
     global visible_trail_count
     x, y, _, _ = lng_lat_to_mercator(lng, lat)
     z_height = scale * 0.3
@@ -205,22 +190,25 @@ def update_trail(lng, lat, scale):
         for i in range(idx + 1, MAX_TRAIL_POINTS):
             trail_points.SetPoint(i, x, y, z_height)
         visible_trail_count += 1
+        start = idx
+        count = MAX_TRAIL_POINTS - idx
     else:
         # Sliding window: shift all points left, add new at end
         for i in range(MAX_TRAIL_POINTS - 1):
             trail_points.SetPoint(i, *trail_points.GetPoint(i + 1))
         trail_points.SetPoint(MAX_TRAIL_POINTS - 1, x, y, z_height)
+        start = 0
+        count = MAX_TRAIL_POINTS
 
     trail_points.Modified()
     trail_polydata.Modified()
-    return x, y, z_height
+    return start, count
 
 
 async def animate():
-    """Animate orbit marker and trail."""
+    """Animate the trail using partial point-array pushes."""
     animation_time = 0.0
     last_time = time.time()
-    frame_count = 0
 
     # Initial full sync
     ctrl.view_update()
@@ -234,15 +222,6 @@ async def animate():
         if not state.animation_paused:
             animation_time += (current_time - last_time) * state.orbit_speed
         last_time = current_time
-        frame_count += 1
-
-        # Update cone scales
-        scale_factor = 1.0 + 0.3 * math.sin(animation_time * 4)
-        for actor, base_scale in zip(cone_actors, cone_base_scales):
-            current_scale = base_scale * scale_factor
-            x, y, z = actor.GetPosition()
-            actor.SetScale(current_scale, current_scale, current_scale)
-            actor.SetPosition(x, y, current_scale * 0.5)
 
         # Update orbit position
         base_orbit_speed = 2 * math.pi / 20
@@ -250,29 +229,25 @@ async def animate():
         orbit_lng = ORBIT_CENTER[0] + ORBIT_RADIUS * math.cos(angle)
         orbit_lat = ORBIT_CENTER[1] + ORBIT_RADIUS * math.sin(angle) * 0.5
 
-        marker_x, marker_y, _, marker_scale = lng_lat_to_mercator(orbit_lng, orbit_lat)
+        _, _, _, marker_scale = lng_lat_to_mercator(orbit_lng, orbit_lat)
         marker_size = marker_scale * 50000
-        center_actor.SetPosition(marker_x, marker_y, marker_size * 0.5)
-        center_actor.SetScale(marker_size, marker_size, marker_size)
 
         # Update trail
-        tx, ty, tz = update_trail(orbit_lng, orbit_lat, marker_size)
+        start, count = update_trail(orbit_lng, orbit_lat, marker_size)
 
         start_time = time.perf_counter()
 
+        orbit_camera = None
         if state.camera_mode == "orbit":
-            ctrl.view_update(
-                extra={
-                    "orbitCamera": {
-                        "center": [orbit_lng, orbit_lat],
-                        "zoom": ORBIT_ZOOM,
-                        "bearing": 0,
-                        "pitch": 0,
-                    }
-                },
-            )
-        else:
-            ctrl.view_update()
+            orbit_camera = {
+                "center": [orbit_lng, orbit_lat],
+                "zoom": ORBIT_ZOOM,
+                "bearing": 0,
+                "pitch": 0,
+            }
+
+        ctrl.mark_modified(trail_polydata, "points", start=start, count=count)
+        ctrl.view_flush(extra={"orbitCamera": orbit_camera})
 
         elapsed = (time.perf_counter() - start_time) * 1000
         update_times.append(elapsed)
@@ -284,7 +259,6 @@ async def animate():
             state.avg_update_ms = sum(update_times) / len(update_times)
 
         state.flush()
-        server.js_call("mapController", "triggerRepaint")
         await asyncio.sleep(1 / 30)
 
 
@@ -327,16 +301,12 @@ INIT_SCRIPT_JS = """
         return up;
     }
 
-    window.onVtkViewStateChange = (state) => {
-        if (state?.extra?.orbitCamera) {
-            if (Date.now() < ignoreOrbitCameraUntil) {
-                pendingOrbitCamera = null;
-                return;
-            }
-            pendingOrbitCamera = state.extra.orbitCamera;
-        } else {
+    window.onVtkViewStateExtra = (extra) => {
+        if (Date.now() < ignoreOrbitCameraUntil) {
             pendingOrbitCamera = null;
+            return;
         }
+        pendingOrbitCamera = extra?.orbitCamera || null;
     };
 
     window.trame = window.trame || {};
@@ -506,7 +476,9 @@ INIT_SCRIPT_JS = """
 """
 
 server.enable_module({"scripts": [f"data:text/javascript,{url_quote(INIT_SCRIPT_JS)}"]})
-server.enable_module({"styles": ["data:text/css,html { overflow-y: hidden !important; }"]})
+server.enable_module(
+    {"styles": ["data:text/css,html { overflow-y: hidden !important; }"]}
+)
 
 with SinglePageLayout(server) as layout:
     layout.title.set_text("MapLibre + VTK.js (Partial Updates)")
@@ -562,9 +534,11 @@ with SinglePageLayout(server) as layout:
                 ref="vtkView",
                 style="display: none;",
                 on_ready="window.initMapLibreVTK && window.initMapLibreVTK()",
-                view_state_change="window.onVtkViewStateChange && window.onVtkViewStateChange($event)",
+                view_state_extra="window.onVtkViewStateExtra && window.onVtkViewStateExtra($event)",
             )
             ctrl.view_update = view.update
+            ctrl.view_flush = view.flush
+            ctrl.mark_modified = view.mark_modified
 
 
 if __name__ == "__main__":

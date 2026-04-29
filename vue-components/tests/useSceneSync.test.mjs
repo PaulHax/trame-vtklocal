@@ -196,7 +196,7 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
 
 const useSceneSyncRef = {};
 
-function buildFullStateSyncHarness({ queuedStates }) {
+function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
   let queuedStatesBlocked = true;
   let remainingStates = queuedStates;
   let pushCallbacks = null;
@@ -220,7 +220,7 @@ function buildFullStateSyncHarness({ queuedStates }) {
       }),
       withSyncCapability: () => ({
         synchronizeSync() {
-          return true;
+          return synchronizeResult;
         },
         updateGarbageCollectorThreshold() {},
       }),
@@ -306,6 +306,38 @@ test("useSceneSync emits viewStateExtra only after queued push state is applied"
   const didSync = harness.scene.applyQueuedStateSync();
 
   assert.equal(didSync, true);
+  assert.deepEqual(
+    harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
+    [{ eventName: "viewStateExtra", payload: fullState.extra }],
+  );
+});
+
+test("useSceneSync emits viewStateExtra when ready push state has stale mtime", async () => {
+  const mod = await loadModule("/src/components/useSceneSync.js");
+  useSceneSyncRef.useSceneSync = mod.useSceneSync;
+
+  const fullState = {
+    id: "rw",
+    mtime: 1,
+    extra: {
+      orbitCamera: {
+        center: [-90, 40],
+        zoom: 8,
+      },
+    },
+  };
+
+  const harness = buildFullStateSyncHarness({
+    queuedStates: [fullState],
+    synchronizeResult: false,
+  });
+  assert.ok(harness.pushCallbacks, "push sync callbacks should be captured");
+
+  harness.pushCallbacks.onStateReceived(fullState);
+  harness.unblock();
+  const didSync = harness.scene.applyQueuedStateSync();
+
+  assert.equal(didSync, false);
   assert.deepEqual(
     harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
     [{ eventName: "viewStateExtra", payload: fullState.extra }],

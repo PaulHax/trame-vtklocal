@@ -122,12 +122,14 @@ export function useSceneSync({
     }
 
     let synced = false;
-    let latestAppliedState = null;
+    let latestExtraState = null;
     for (const state of states) {
       try {
         if (syncCapability.synchronizeSync(state, true)) {
           synced = true;
-          latestAppliedState = state;
+        }
+        if (state?.extra) {
+          latestExtraState = state;
         }
       } catch (error) {
         console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
@@ -139,8 +141,8 @@ export function useSceneSync({
       }
     }
 
-    if (latestAppliedState?.extra) {
-      emit?.("viewStateExtra", latestAppliedState.extra);
+    if (latestExtraState?.extra) {
+      emit?.("viewStateExtra", latestExtraState.extra);
     }
 
     const partialResult = applyReadyPartialUpdates();

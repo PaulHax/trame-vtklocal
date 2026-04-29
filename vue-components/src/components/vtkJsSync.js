@@ -8,6 +8,7 @@ import {
 } from "./sync/syncUpdaters";
 
 let preRenderSkippingRenderWindowUpdaterInstalled = false;
+const SYNC_ARRAY_CACHE_KEY = "__trameVtkLocalSyncArrayCache";
 
 function installRenderWindowUpdaterSkippingPreRender() {
   if (preRenderSkippingRenderWindowUpdaterInstalled) {
@@ -76,10 +77,111 @@ export function createFetchArrays(client) {
   };
 }
 
+// Polyfill cacheArray/getCachedArray on a synchronizer context so the push
+// prefetch path and synchronizeSync's validator/updater share arrays — including
+// zero-length arrays, which otherwise stall a full-scene load when the underlying
+// context doesn't expose working cache methods.
+export function installSyncArrayCache(synchronizerContext) {
+  if (!synchronizerContext || synchronizerContext[SYNC_ARRAY_CACHE_KEY]) {
+    return synchronizerContext;
+  }
+
+  const arrayCache = new Map();
+  const originalCacheArray =
+    typeof synchronizerContext.cacheArray === "function"
+      ? synchronizerContext.cacheArray.bind(synchronizerContext)
+      : null;
+  const originalGetCachedArray =
+    typeof synchronizerContext.getCachedArray === "function"
+      ? synchronizerContext.getCachedArray.bind(synchronizerContext)
+      : null;
+  const originalEmptyCachedArrays =
+    typeof synchronizerContext.emptyCachedArrays === "function"
+      ? synchronizerContext.emptyCachedArrays.bind(synchronizerContext)
+      : null;
+  const originalFreeOldArrays =
+    typeof synchronizerContext.freeOldArrays === "function"
+      ? synchronizerContext.freeOldArrays.bind(synchronizerContext)
+      : null;
+
+  Object.defineProperty(synchronizerContext, SYNC_ARRAY_CACHE_KEY, {
+    value: arrayCache,
+    enumerable: false,
+  });
+
+  const getActiveViewId = (context = synchronizerContext) =>
+    context?.getActiveViewId?.() || "default";
+  const getMTime = (
+    context = synchronizerContext,
+    viewId = getActiveViewId(context),
+  ) => context?.getMTime?.(viewId) || 0;
+
+  synchronizerContext.cacheArray = (
+    hash,
+    values,
+    context = synchronizerContext,
+  ) => {
+    const result = originalCacheArray
+      ? originalCacheArray(hash, values, context)
+      : values;
+
+    if (!hash || !values) {
+      return result;
+    }
+
+    const viewId = getActiveViewId(context);
+    const entry = arrayCache.get(hash) || { mtimes: {} };
+    entry.values = values;
+    entry.mtimes[viewId] = getMTime(context, viewId);
+    arrayCache.set(hash, entry);
+    return result;
+  };
+
+  synchronizerContext.getCachedArray = (
+    hash,
+    context = synchronizerContext,
+  ) => {
+    const entry = arrayCache.get(hash);
+    if (entry) {
+      const viewId = getActiveViewId(context);
+      entry.mtimes[viewId] = getMTime(context, viewId);
+      return entry.values || null;
+    }
+
+    return originalGetCachedArray
+      ? originalGetCachedArray(hash, context)
+      : null;
+  };
+
+  synchronizerContext.emptyCachedArrays = (...args) => {
+    originalEmptyCachedArrays?.(...args);
+    arrayCache.clear();
+  };
+
+  synchronizerContext.freeOldArrays = (
+    threshold,
+    context = synchronizerContext,
+  ) => {
+    originalFreeOldArrays?.(threshold, context);
+
+    const viewId = getActiveViewId(context);
+    const mtimeThreshold = getMTime(context, viewId) - threshold;
+    arrayCache.forEach((entry, hash) => {
+      const lastMTime = entry.mtimes[viewId];
+      if (lastMTime !== undefined && lastMTime < mtimeThreshold) {
+        arrayCache.delete(hash);
+      }
+    });
+  };
+
+  return synchronizerContext;
+}
+
 export function createSyncContext(client, contextName, renderWindow) {
   installRenderWindowUpdaterSkippingPreRender();
   const synchronizerContext =
     vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
+  installSyncArrayCache(synchronizerContext);
   synchronizerContext.setFetchArrayFunction(createFetchArray(client));
   const syncRenderWindow = vtkSynchronizableRenderWindow.decorate(
     renderWindow,

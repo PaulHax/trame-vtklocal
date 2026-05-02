@@ -24,7 +24,11 @@ function isArrayDescriptor(value) {
   );
 }
 
-function collectStateArrayDescriptors(state, descriptors = new Map()) {
+const stateArrayInfoCache = new WeakMap();
+
+function collectStateArrayInfo(state, descriptors = new Map()) {
+  let hasInlineContent = false;
+
   function visit(value) {
     if (!value || typeof value !== "object") {
       return;
@@ -37,6 +41,9 @@ function collectStateArrayDescriptors(state, descriptors = new Map()) {
 
     if (isArrayDescriptor(value) && !descriptors.has(value.hash)) {
       descriptors.set(value.hash, value);
+      if (value.content != null) {
+        hasInlineContent = true;
+      }
     }
 
     if (value.arrays) {
@@ -55,17 +62,20 @@ function collectStateArrayDescriptors(state, descriptors = new Map()) {
   }
 
   visit(state);
-  return descriptors;
+  return { descriptors, hasInlineContent };
 }
 
-function collectQueuedStateHashes(states, hashes = new Set()) {
-  (states || []).forEach((state) => {
-    collectStateArrayDescriptors(state).forEach((_descriptor, hash) => {
-      hashes.add(hash);
-    });
-  });
+function getStateArrayInfo(state) {
+  if (!state || typeof state !== "object") {
+    return { descriptors: new Map(), hasInlineContent: false };
+  }
 
-  return hashes;
+  let info = stateArrayInfoCache.get(state);
+  if (!info) {
+    info = collectStateArrayInfo(state);
+    stateArrayInfoCache.set(state, info);
+  }
+  return info;
 }
 
 function createPushArrayCache(synchronizerContext) {
@@ -101,7 +111,7 @@ function createPushArrayCache(synchronizerContext) {
     durableCache.clear();
   }
 
-  function prune(retainedHashes = new Set()) {
+  function prune(retainedHashes = new Map()) {
     durableCache.forEach((_values, hash) => {
       if (!retainedHashes.has(hash)) {
         durableCache.delete(hash);
@@ -115,11 +125,9 @@ function createPushArrayCache(synchronizerContext) {
     });
   }
 
-  function prepareState(state) {
-    captureInlineState(state);
-
+  function ensureDescriptorsReady(descriptors) {
     const missingDescriptors = [];
-    collectStateArrayDescriptors(state).forEach((descriptor, hash) => {
+    descriptors.forEach((descriptor, hash) => {
       const values = get(hash);
       if (!values) {
         missingDescriptors.push(descriptor);
@@ -132,12 +140,23 @@ function createPushArrayCache(synchronizerContext) {
     return missingDescriptors;
   }
 
+  function prepareState(state) {
+    const { descriptors, hasInlineContent } = getStateArrayInfo(state);
+    // TSW normally sends hash-only states; avoid a second recursive walk unless
+    // this state actually contains inline payloads.
+    if (hasInlineContent) {
+      captureInlineState(state);
+    }
+
+    return ensureDescriptorsReady(descriptors);
+  }
+
   return {
     get,
     set,
     clear,
     prune,
-    captureInlineState,
+    ensureDescriptorsReady,
     prepareState,
   };
 }
@@ -147,7 +166,9 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
 
   const instance = synchronizerContext.getInstance(instanceId);
   if (!instance) {
-    console.warn(`[pushSync] Instance ${instanceId} not found for partial update`);
+    console.warn(
+      `[pushSync] Instance ${instanceId} not found for partial update`,
+    );
     return false;
   }
 
@@ -165,7 +186,9 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   }
 
   if (!target || typeof target.getData !== "function") {
-    console.warn(`[pushSync] Cannot find array at path ${arrayPath} on instance ${instanceId}`);
+    console.warn(
+      `[pushSync] Cannot find array at path ${arrayPath} on instance ${instanceId}`,
+    );
     return false;
   }
 
@@ -224,7 +247,13 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   return true;
 }
 
-export function createPushSync(client, syncRenderWindow, synchronizerContext, rwId, callbacks = {}) {
+export function createPushSync(
+  client,
+  syncRenderWindow,
+  synchronizerContext,
+  rwId,
+  callbacks = {},
+) {
   const { onStateReceived, onQueueReady, onPartialUpdate } = callbacks;
 
   const fetchArrays = createFetchArrays(client);
@@ -237,15 +266,29 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
   let acceptBroadcasts = false;
   let resyncPending = false;
   let queueVersion = 0;
+  const queuedHashCounts = new Map();
 
   const session = client.getConnection().getSession();
 
-  function getQueuedHashes() {
-    return collectQueuedStateHashes(stateQueue);
+  function addQueuedStateHashes(state) {
+    getStateArrayInfo(state).descriptors.forEach((_descriptor, hash) => {
+      queuedHashCounts.set(hash, (queuedHashCounts.get(hash) || 0) + 1);
+    });
+  }
+
+  function removeQueuedStateHashes(state) {
+    getStateArrayInfo(state).descriptors.forEach((_descriptor, hash) => {
+      const count = queuedHashCounts.get(hash) || 0;
+      if (count <= 1) {
+        queuedHashCounts.delete(hash);
+      } else {
+        queuedHashCounts.set(hash, count - 1);
+      }
+    });
   }
 
   function pruneArrayCacheToQueue() {
-    pushArrayCache.prune(getQueuedHashes());
+    pushArrayCache.prune(queuedHashCounts);
   }
 
   async function prefetchArrayDescriptors(missingDescriptors, version) {
@@ -284,9 +327,8 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
             return;
           }
 
-          const queuedHashes = getQueuedHashes();
           hashesToFetch.forEach((hash) => {
-            if (!queuedHashes.has(hash)) {
+            if (!queuedHashCounts.has(hash)) {
               return;
             }
 
@@ -296,7 +338,10 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
               throw new Error(`Missing fetched payload for array ${hash}`);
             }
 
-            pushArrayCache.set(hash, createTypedArray(descriptor.dataType, buffer));
+            pushArrayCache.set(
+              hash,
+              createTypedArray(descriptor.dataType, buffer),
+            );
           });
         })
         .finally(() => {
@@ -331,7 +376,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
   function enqueueState(state) {
     stateQueue.push(state);
-    pruneArrayCacheToQueue();
+    addQueuedStateHashes(state);
 
     const version = queueVersion;
     const missingDescriptors = pushArrayCache.prepareState(state);
@@ -355,7 +400,10 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
             return;
           }
 
-          console.warn("[pushSync] Failed to prefetch missing arrays, requesting resync", error);
+          console.warn(
+            "[pushSync] Failed to prefetch missing arrays, requesting resync",
+            error,
+          );
           await requestResync();
         });
     }
@@ -363,30 +411,37 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     onStateReceived?.(state);
   }
 
-  const wsSubscription = session.subscribe("trame.vtk.delta", ([deltaState]) => {
-    if (!acceptBroadcasts) return;
-    if (!rwId || deltaState.id === rwId) {
-      enqueueState(deltaState);
-    }
-  });
+  const wsSubscription = session.subscribe(
+    "trame.vtk.delta",
+    ([deltaState]) => {
+      if (!acceptBroadcasts) return;
+      if (!rwId || deltaState.id === rwId) {
+        enqueueState(deltaState);
+      }
+    },
+  );
 
-  const wsPartialUpdateSubscription = session.subscribe("trame.vtk.array.partial", async ([update]) => {
-    if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
-    if (update?.rwId && String(update.rwId) !== rwId) return;
+  const wsPartialUpdateSubscription = session.subscribe(
+    "trame.vtk.array.partial",
+    async ([update]) => {
+      if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
+      if (update?.rwId && String(update.rwId) !== rwId) return;
 
-    if (stateQueue.length) {
-      pendingPartialUpdates.push(update);
-      return;
-    }
+      if (stateQueue.length) {
+        pendingPartialUpdates.push(update);
+        return;
+      }
 
-    await dispatchPartialUpdate(update);
-  });
+      await dispatchPartialUpdate(update);
+    },
+  );
 
   async function requestResync() {
     acceptBroadcasts = false;
     resyncPending = true;
     stateQueue.length = 0;
     pendingPartialUpdates.length = 0;
+    queuedHashCounts.clear();
     inflightFetches.clear();
     pruneArrayCacheToQueue();
 
@@ -425,12 +480,15 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
 
     while (stateQueue.length) {
       const nextState = stateQueue[0];
-      const missingDescriptors = pushArrayCache.prepareState(nextState);
+      const missingDescriptors = pushArrayCache.ensureDescriptorsReady(
+        getStateArrayInfo(nextState).descriptors,
+      );
       if (missingDescriptors.length) {
         break;
       }
 
       readyStates.push(stateQueue.shift());
+      removeQueuedStateHashes(nextState);
     }
 
     if (readyStates.length) {
@@ -470,6 +528,7 @@ export function createPushSync(client, syncRenderWindow, synchronizerContext, rw
     queueVersion += 1;
     stateQueue.length = 0;
     pendingPartialUpdates.length = 0;
+    queuedHashCounts.clear();
     inflightFetches.clear();
     pushArrayCache.clear();
 

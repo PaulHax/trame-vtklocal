@@ -125,7 +125,7 @@ export function useSceneSync({
     let latestExtraState = null;
     for (const state of states) {
       try {
-        if (syncCapability.synchronizeSync(state, true)) {
+        if (syncCapability.synchronizePreparedStateSync(state, true)) {
           synced = true;
         }
         if (state?.extra) {

@@ -52,6 +52,9 @@ test("useSceneSync applies immediate partial updates from pushSync", async () =>
         synchronizeSync() {
           return true;
         },
+        synchronizePreparedStateSync() {
+          return true;
+        },
         updateGarbageCollectorThreshold() {},
       }),
       createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, callbacks) {
@@ -132,6 +135,9 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
       }),
       withSyncCapability: () => ({
         synchronizeSync() {
+          return true;
+        },
+        synchronizePreparedStateSync() {
           return true;
         },
         updateGarbageCollectorThreshold() {},
@@ -220,6 +226,11 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
       }),
       withSyncCapability: () => ({
         synchronizeSync() {
+          throw new Error(
+            "Queued push states should use synchronizePreparedStateSync",
+          );
+        },
+        synchronizePreparedStateSync() {
           return synchronizeResult;
         },
         updateGarbageCollectorThreshold() {},
@@ -391,7 +402,12 @@ test("useSceneSync keeps partial updates buffered until the full-state queue dra
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync(state) {
+        synchronizeSync() {
+          throw new Error(
+            "Queued push states should use synchronizePreparedStateSync",
+          );
+        },
+        synchronizePreparedStateSync(state) {
           appliedStates.push(state);
           return true;
         },
@@ -495,6 +511,11 @@ test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra
       }),
       withSyncCapability: () => ({
         synchronizeSync() {
+          throw new Error(
+            "Queued push states should use synchronizePreparedStateSync",
+          );
+        },
+        synchronizePreparedStateSync() {
           return true;
         },
         updateGarbageCollectorThreshold() {},

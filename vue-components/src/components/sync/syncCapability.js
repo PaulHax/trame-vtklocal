@@ -10,6 +10,7 @@
  *
  *   const syncMethods = withSyncCapability(renderWindow, synchronizerContext, objectManager);
  *   syncMethods.synchronizeSync(state) - synchronous state application
+ *   syncMethods.synchronizePreparedStateSync(state) - synchronous application for push-queue-prepared states
  *   syncMethods.hasInlineData(state) - check if state has inline data
  */
 
@@ -35,7 +36,7 @@ export {
  * @param {Object} renderWindow - A vtkSynchronizableRenderWindow instance
  * @param {Object} synchronizerContext - The synchronizer context (from getSynchronizerContext)
  * @param {Object} objectManager - The object manager (vtkObjectManager) for building instances
- * @returns {Object} Object with synchronizeSync and hasInlineData methods
+ * @returns {Object} Object with synchronizeSync, synchronizePreparedStateSync and hasInlineData methods
  */
 export function withSyncCapability(
   renderWindow,
@@ -52,23 +53,7 @@ export function withSyncCapability(
   const getSynchronizedViewId = () =>
     renderWindow.get("synchronizedViewId").synchronizedViewId;
 
-  /**
-   * Synchronous state application - requires all arrays to have inline data.
-   * Use this when you need to apply state in a synchronous context
-   * (e.g., MapLibre render callback).
-   *
-   * @param {Object} state - State object with inline array data
-   * @param {boolean} skipRender - If true, skip the final render call
-   * @returns {boolean} - true if state was applied, false if skipped
-   */
-  function synchronizeSync(state, skipRender = false) {
-    if (!allArraysHaveInlineData(state, synchronizerContext)) {
-      throw new Error(
-        'synchronizeSync requires all arrays to have inline "content" field or be previously cached. ' +
-          "Push sync must prefetch missing hashes into the cache before sync apply."
-      );
-    }
-
+  function applyStateSync(state, skipRender = false) {
     if (!getSynchronizedViewId()) {
       setSynchronizedViewId(state.id);
     }
@@ -99,6 +84,34 @@ export function withSyncCapability(
   }
 
   /**
+   * Synchronous state application - requires all arrays to have inline data.
+   * Use this when you need to apply state in a synchronous context
+   * (e.g., MapLibre render callback).
+   *
+   * @param {Object} state - State object with inline array data
+   * @param {boolean} skipRender - If true, skip the final render call
+   * @returns {boolean} - true if state was applied, false if skipped
+   */
+  function synchronizeSync(state, skipRender = false) {
+    if (!allArraysHaveInlineData(state, synchronizerContext)) {
+      throw new Error(
+        'synchronizeSync requires all arrays to have inline "content" field or be previously cached. ' +
+          "Push sync must prefetch missing hashes into the cache before sync apply."
+      );
+    }
+
+    return applyStateSync(state, skipRender);
+  }
+
+  /**
+   * Synchronous state application for states already prepared by the push queue.
+   * The caller must have already cached all referenced arrays.
+   */
+  function synchronizePreparedStateSync(state, skipRender = false) {
+    return applyStateSync(state, skipRender);
+  }
+
+  /**
    * Check if state has all inline data required for synchronizeSync
    */
   function hasInlineData(state) {
@@ -114,6 +127,7 @@ export function withSyncCapability(
 
   return {
     synchronizeSync,
+    synchronizePreparedStateSync,
     hasInlineData,
     updateGarbageCollectorThreshold,
   };

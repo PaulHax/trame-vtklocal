@@ -6,8 +6,11 @@ import {
   applyCameraParams,
 } from "./vtkJsSync";
 import { withSyncCapability } from "./sync/syncCapability";
-import { createPullSync } from "./pullSync";
-import { createPushSync, applyPartialArrayUpdate } from "./pushSync";
+import {
+  createPushSync,
+  applyPartialArrayUpdate,
+  bindPartialResultToCache as bindPartialResultToCacheDefault,
+} from "./pushSync";
 import { createSyncController } from "./syncController";
 
 export function useSceneSync({
@@ -21,8 +24,9 @@ export function useSceneSync({
 }, dependencies = {}) {
   const {
     applyPartialArrayUpdate: applyPartialArrayUpdateImpl = applyPartialArrayUpdate,
+    bindPartialResultToCache: bindPartialResultToCacheImpl =
+      bindPartialResultToCacheDefault,
     createManagedSyncContext: createManagedSyncContextImpl = createManagedSyncContext,
-    createPullSync: createPullSyncImpl = createPullSync,
     createPushSync: createPushSyncImpl = createPushSync,
     createSyncController: createSyncControllerImpl = createSyncController,
     vtkObjectManager: vtkObjectManagerImpl = vtkObjectManager,
@@ -32,7 +36,7 @@ export function useSceneSync({
   let managedSyncContext = null;
   let sync = null;
   let syncCapability = null;
-  let currentSyncMode = "pull";
+  let pushCache = null;
   let disposed = false;
   let partialAppliedCallback = null;
 
@@ -62,13 +66,20 @@ export function useSceneSync({
     renderScene?.();
   }
 
+  function bindPartialResultToCache(partialUpdate, syncCtx) {
+    bindPartialResultToCacheImpl(partialUpdate, syncCtx, pushCache);
+  }
+
   function applySinglePartialUpdate(partialUpdate, syncCtx) {
     const applied = applyPartialArrayUpdateImpl(partialUpdate, syncCtx);
     if (!applied) {
       requestResync();
     }
-    if (applied && partialUpdate?.extra) {
-      emit?.("viewStateExtra", partialUpdate.extra);
+    if (applied) {
+      bindPartialResultToCache(partialUpdate, syncCtx);
+      if (partialUpdate?.extra) {
+        emit?.("viewStateExtra", partialUpdate.extra);
+      }
     }
     partialAppliedCallback?.(partialUpdate, syncCtx, applied);
     return applied;
@@ -122,11 +133,13 @@ export function useSceneSync({
     }
 
     let synced = false;
+    const appliedStates = [];
     let latestExtraState = null;
     for (const state of states) {
       try {
         if (syncCapability.synchronizePreparedStateSync(state, true)) {
           synced = true;
+          appliedStates.push(state);
         }
         if (state?.extra) {
           latestExtraState = state;
@@ -140,6 +153,7 @@ export function useSceneSync({
         return { status: "failed", didSync: false };
       }
     }
+    sync?.markStatesApplied?.(appliedStates);
 
     if (latestExtraState?.extra) {
       emit?.("viewStateExtra", latestExtraState.extra);
@@ -174,9 +188,7 @@ export function useSceneSync({
   const updateController = createSyncControllerImpl({
     canSync: () => !disposed && !!sync && !!getRenderWindow?.(),
     synchronize() {
-      return currentSyncMode === "push"
-        ? applyQueuedStateSync({ emitLifecycle: false, emitUpdated: false })
-        : sync.update();
+      return applyQueuedStateSync({ emitLifecycle: false, emitUpdated: false });
     },
     beforeSync() {
       emit?.("beforeSceneLoaded");
@@ -205,6 +217,7 @@ export function useSceneSync({
     sync?.cleanup?.();
     sync = null;
     syncCapability = null;
+    pushCache = null;
     partialAppliedCallback = null;
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
@@ -213,53 +226,47 @@ export function useSceneSync({
   function initialize({
     contextName,
     renderWindowId,
-    syncMode,
     onStateReceived,
     onQueueReady,
     onPartialApplied,
   }) {
     disposed = false;
     cleanupSyncContext();
-    currentSyncMode = syncMode;
     partialAppliedCallback = onPartialApplied || null;
 
     managedSyncContext = createManagedSyncContextImpl(
-      client,
       contextName,
       getRenderWindow(),
     );
 
     const { synchronizerContext, syncRenderWindow } = managedSyncContext;
     const rwId = String(renderWindowId);
+    pushCache = new Map();
 
-    if (syncMode === "push") {
-      syncCapability = withSyncCapabilityImpl(
-        syncRenderWindow,
-        synchronizerContext,
-        vtkObjectManagerImpl,
-      );
-      syncCapability.updateGarbageCollectorThreshold(10000);
-      sync = createPushSyncImpl(
-        client,
-        syncRenderWindow,
-        synchronizerContext,
-        rwId,
-        {
-          onStateReceived(deltaState) {
-            onStateReceived?.(deltaState);
-          },
-          onQueueReady() {
-            onQueueReady?.();
-          },
-          onPartialUpdate(partialUpdate, syncCtx) {
-            applySinglePartialUpdate(partialUpdate, syncCtx);
-          },
+    syncCapability = withSyncCapabilityImpl(
+      syncRenderWindow,
+      synchronizerContext,
+      vtkObjectManagerImpl,
+      pushCache,
+    );
+    sync = createPushSyncImpl(
+      client,
+      syncRenderWindow,
+      synchronizerContext,
+      rwId,
+      pushCache,
+      {
+        onStateReceived(deltaState) {
+          onStateReceived?.(deltaState);
         },
-      );
-      return;
-    }
-
-    sync = createPullSyncImpl(client, syncRenderWindow, synchronizerContext, rwId);
+        onQueueReady() {
+          onQueueReady?.();
+        },
+        onPartialUpdate(partialUpdate, syncCtx) {
+          applySinglePartialUpdate(partialUpdate, syncCtx);
+        },
+      },
+    );
   }
 
   function cleanup() {

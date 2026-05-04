@@ -43,6 +43,7 @@ class ObjectManagerAPI(LinkProtocol):
         self._last_publish_states = {}
         self._last_publish_hash = set()
         self._push_camera = False
+        self._push_views = {}
 
         self._debug_state = False
         self._debug_state_counter = 1
@@ -54,6 +55,22 @@ class ObjectManagerAPI(LinkProtocol):
         # self.vtk_object_manager.serializer.SetSerializerLogVerbosity(
         #     vtkLogger.VERBOSITY_WARNING
         # )
+
+    def register_push_view(self, rw_id, push_sync):
+        self._push_views[int(rw_id)] = push_sync
+
+    def unregister_push_view(self, rw_id):
+        self._push_views.pop(int(rw_id), None)
+
+    def get_active_client_id(self):
+        try:
+            return self.coreServer.server._server.last_active_client_id
+        except AttributeError:
+            return None
+
+    def onClose(self, client_id):
+        for push_view in self._push_views.values():
+            push_view.drop_client(client_id)
 
     def register_widget(self, root_obj, dep_obj):
         self.vtk_object_manager.RegisterObject(dep_obj)
@@ -167,29 +184,29 @@ class ObjectManagerAPI(LinkProtocol):
         # print("get_hash", hash)
         return self.addAttachment(memoryview(self.vtk_object_manager.GetBlob(hash)))
 
-    @export_rpc("vtkjs.get.state")
-    def get_vtkjs_state(self, obj_id):
-        """Get state translated to vtk.js format.
-
-        Returns state with array hashes only (no inline data).
-        The client fetches missing arrays via vtkjs.get.array as needed.
-        """
-        from .vtkjs_translator import translate_scene
-
-        self.vtk_object_manager.UpdateStatesFromObjects()
-        state = translate_scene(self.vtk_object_manager, obj_id)
-        return state
-
     @export_rpc("vtkjs.push.resync")
     def push_resync(self, obj_id):
-        """Return full scene state in vtk.js format for the requesting client."""
+        """Return full scene state in vtk.js format for the requesting client.
+
+        Routes to the registered PushSync for this render window so resync
+        shares the same state path as normal push updates.
+        """
+        rw_id = int(obj_id)
+        push_view = self._push_views.get(rw_id)
+        client_id = self.get_active_client_id()
+
+        if push_view is not None:
+            return push_view.client_resync(client_id)
+
+        # Fallback path used when the view hasn't registered a PushSync
+        # (e.g., during shutdown or for views that opt out).
         from .vtkjs_translator import translate_scene
 
-        render_window = self.vtk_object_manager.GetObjectAtId(int(obj_id))
+        render_window = self.vtk_object_manager.GetObjectAtId(rw_id)
         if render_window:
             render_window.Render()
         self.vtk_object_manager.UpdateStatesFromObjects()
-        state = translate_scene(self.vtk_object_manager, int(obj_id))
+        state = translate_scene(self.vtk_object_manager, rw_id)
         self._convert_bytes_to_attachments(state)
         return state
 
@@ -210,60 +227,6 @@ class ObjectManagerAPI(LinkProtocol):
         if "dependencies" in node:
             for dep in node["dependencies"]:
                 self._convert_bytes_to_attachments(dep)
-
-    @export_rpc("vtkjs.get.array")
-    def get_vtkjs_array(self, hash_str, convert_to=None):
-        """Get array data for vtk.js.
-
-        Args:
-            hash_str: The blob hash (or "cell:conn_hash:off_hash" for cell arrays)
-            convert_to: Optional target type for conversion (e.g., "Int32Array")
-        """
-        import numpy as np
-
-        if hash_str.startswith("cell:"):
-            parts = hash_str.split(":")
-            conn_hash = parts[1]
-            off_hash = parts[2]
-
-            conn_blob = self.vtk_object_manager.GetBlob(conn_hash)
-            off_blob = self.vtk_object_manager.GetBlob(off_hash)
-
-            connectivity = np.frombuffer(memoryview(conn_blob), dtype=np.int64)
-            offsets = np.frombuffer(memoryview(off_blob), dtype=np.int64)
-
-            sizes = np.diff(offsets).astype(np.uint32)
-            conn_uint32 = connectivity.astype(np.uint32)
-            result = np.empty(len(sizes) + len(conn_uint32), dtype=np.uint32)
-            cell_starts = np.arange(len(sizes), dtype=np.int64) + offsets[:-1]
-            result[cell_starts] = sizes
-            mask = np.ones(len(result), dtype=bool)
-            mask[cell_starts] = False
-            result[mask] = conn_uint32
-            data = result.tobytes()
-            return self.addAttachment(memoryview(data))
-
-        blob = self.vtk_object_manager.GetBlob(hash_str)
-        data = memoryview(blob)
-
-        if convert_to == "Int32Array":
-            arr = np.frombuffer(data, dtype=np.int64)
-            data = arr.astype(np.int32).tobytes()
-
-        return self.addAttachment(memoryview(data))
-
-    @export_rpc("vtkjs.get.arrays")
-    def get_vtkjs_arrays(self, hashes, convert_to=None):
-        """Get multiple arrays for vtk.js in one RPC response."""
-
-        unique_hashes = list(dict.fromkeys(hashes or []))
-        return [
-            {
-                "hash": hash_str,
-                "content": self.get_vtkjs_array(hash_str, convert_to),
-            }
-            for hash_str in unique_hashes
-        ]
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id):

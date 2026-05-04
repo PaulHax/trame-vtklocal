@@ -1,6 +1,4 @@
-import { createTypedArray } from "./sync/base64";
 import { extractInlineArrays } from "./sync/syncUpdaters";
-import { createFetchArrays } from "./vtkJsSync";
 
 const TYPED_ARRAY_CONSTRUCTORS = {
   Int8Array,
@@ -24,11 +22,7 @@ function isArrayDescriptor(value) {
   );
 }
 
-const stateArrayInfoCache = new WeakMap();
-
-function collectStateArrayInfo(state, descriptors = new Map()) {
-  let hasInlineContent = false;
-
+function collectStateHashes(state, into = new Set()) {
   function visit(value) {
     if (!value || typeof value !== "object") {
       return;
@@ -39,11 +33,8 @@ function collectStateArrayInfo(state, descriptors = new Map()) {
       return;
     }
 
-    if (isArrayDescriptor(value) && !descriptors.has(value.hash)) {
-      descriptors.set(value.hash, value);
-      if (value.content != null) {
-        hasInlineContent = true;
-      }
+    if (isArrayDescriptor(value)) {
+      into.add(value.hash);
     }
 
     if (value.arrays) {
@@ -62,114 +53,29 @@ function collectStateArrayInfo(state, descriptors = new Map()) {
   }
 
   visit(state);
-  return { descriptors, hasInlineContent };
+  return into;
 }
 
-function getStateArrayInfo(state) {
-  if (!state || typeof state !== "object") {
-    return { descriptors: new Map(), hasInlineContent: false };
-  }
-
-  let info = stateArrayInfoCache.get(state);
-  if (!info) {
-    info = collectStateArrayInfo(state);
-    stateArrayInfoCache.set(state, info);
-  }
-  return info;
+function collectStatesHashes(states) {
+  const hashes = new Set();
+  states.forEach((state) => collectStateHashes(state, hashes));
+  return hashes;
 }
 
-function createPushArrayCache(synchronizerContext) {
-  const durableCache = new Map();
-
-  function get(hash) {
-    if (!hash) {
-      return null;
+function pruneCacheToHashes(pushCache, live) {
+  pushCache.forEach((_value, hash) => {
+    if (!live.has(hash)) {
+      pushCache.delete(hash);
     }
-
-    let values = durableCache.get(hash);
-    if (!values && synchronizerContext?.getCachedArray) {
-      values = synchronizerContext.getCachedArray(hash, synchronizerContext);
-      if (values) {
-        durableCache.set(hash, values);
-      }
-    }
-
-    return values || null;
-  }
-
-  function set(hash, values) {
-    if (!hash || !values) {
-      return values;
-    }
-
-    durableCache.set(hash, values);
-    synchronizerContext?.cacheArray?.(hash, values, synchronizerContext);
-    return values;
-  }
-
-  function clear() {
-    durableCache.clear();
-  }
-
-  function prune(retainedHashes = new Map()) {
-    durableCache.forEach((_values, hash) => {
-      if (!retainedHashes.has(hash)) {
-        durableCache.delete(hash);
-      }
-    });
-  }
-
-  function captureInlineState(state, { stripInlineData = false } = {}) {
-    extractInlineArrays(state, synchronizerContext, durableCache, {
-      stripInlineData,
-    });
-  }
-
-  function ensureDescriptorsReady(descriptors) {
-    const missingDescriptors = [];
-    descriptors.forEach((descriptor, hash) => {
-      const values = get(hash);
-      if (!values) {
-        missingDescriptors.push(descriptor);
-        return;
-      }
-
-      synchronizerContext?.cacheArray?.(hash, values, synchronizerContext);
-    });
-
-    return missingDescriptors;
-  }
-
-  function prepareState(state) {
-    const { descriptors, hasInlineContent } = getStateArrayInfo(state);
-    // TSW normally sends hash-only states; avoid a second recursive walk unless
-    // this state actually contains inline payloads.
-    if (hasInlineContent) {
-      captureInlineState(state);
-    }
-
-    return ensureDescriptorsReady(descriptors);
-  }
-
-  return {
-    get,
-    set,
-    clear,
-    prune,
-    ensureDescriptorsReady,
-    prepareState,
-  };
+  });
 }
 
-export function applyPartialArrayUpdate(update, synchronizerContext) {
-  const { instanceId, arrayPath, offset, data, dataType } = update;
+function getPartialArrayTarget(update, synchronizerContext) {
+  const { instanceId, arrayPath } = update;
 
   const instance = synchronizerContext.getInstance(instanceId);
   if (!instance) {
-    console.warn(
-      `[pushSync] Instance ${instanceId} not found for partial update`,
-    );
-    return false;
+    return { instance: null, target: null, values: null };
   }
 
   let target = instance;
@@ -185,6 +91,24 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
     target = instance.getStrips();
   }
 
+  const values = target?.getData?.() || null;
+  return { instance, target, values };
+}
+
+export function applyPartialArrayUpdate(update, synchronizerContext) {
+  const { instanceId, arrayPath, offset, data, dataType } = update;
+
+  const { instance, target, values } = getPartialArrayTarget(
+    update,
+    synchronizerContext,
+  );
+  if (!instance) {
+    console.warn(
+      `[pushSync] Instance ${instanceId} not found for partial update`,
+    );
+    return false;
+  }
+
   if (!target || typeof target.getData !== "function") {
     console.warn(
       `[pushSync] Cannot find array at path ${arrayPath} on instance ${instanceId}`,
@@ -192,7 +116,6 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
     return false;
   }
 
-  const values = target.getData();
   if (!values) {
     console.warn(`[pushSync] No data array found at ${arrayPath}`);
     return false;
@@ -247,165 +170,73 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   return true;
 }
 
+export function bindPartialResultToCache(update, synchronizerContext, pushCache) {
+  if (!pushCache || !update?.newHash) {
+    return;
+  }
+
+  const { values } = getPartialArrayTarget(update, synchronizerContext);
+  if (values) {
+    pushCache.set(update.newHash, values);
+  }
+  if (update.oldHash && update.oldHash !== update.newHash) {
+    pushCache.delete(update.oldHash);
+  }
+}
+
 export function createPushSync(
   client,
   syncRenderWindow,
   synchronizerContext,
   rwId,
+  pushCache,
   callbacks = {},
 ) {
   const { onStateReceived, onQueueReady, onPartialUpdate } = callbacks;
-
-  const fetchArrays = createFetchArrays(client);
-  const pushArrayCache = createPushArrayCache(synchronizerContext);
-  const inflightFetches = new Map();
 
   let stateQueue = [];
   let pendingPartialUpdates = [];
   let visibilityHandler = null;
   let acceptBroadcasts = false;
   let resyncPending = false;
-  let queueVersion = 0;
-  const queuedHashCounts = new Map();
+  let resyncVersion = 0;
 
   const session = client.getConnection().getSession();
 
-  function addQueuedStateHashes(state) {
-    getStateArrayInfo(state).descriptors.forEach((_descriptor, hash) => {
-      queuedHashCounts.set(hash, (queuedHashCounts.get(hash) || 0) + 1);
-    });
+  function retainCacheForStates(states) {
+    pruneCacheToHashes(pushCache, collectStatesHashes(states));
   }
 
-  function removeQueuedStateHashes(state) {
-    getStateArrayInfo(state).descriptors.forEach((_descriptor, hash) => {
-      const count = queuedHashCounts.get(hash) || 0;
-      if (count <= 1) {
-        queuedHashCounts.delete(hash);
-      } else {
-        queuedHashCounts.set(hash, count - 1);
-      }
-    });
-  }
-
-  function pruneArrayCacheToQueue() {
-    pushArrayCache.prune(queuedHashCounts);
-  }
-
-  async function prefetchArrayDescriptors(missingDescriptors, version) {
-    const uniqueDescriptors = new Map();
-    (missingDescriptors || []).forEach((descriptor) => {
-      if (descriptor?.hash && !uniqueDescriptors.has(descriptor.hash)) {
-        uniqueDescriptors.set(descriptor.hash, descriptor);
-      }
-    });
-
-    if (!uniqueDescriptors.size) {
-      return false;
+  function markStatesApplied(states) {
+    if (!states?.length) {
+      return;
     }
-
-    const pendingFetches = [];
-    const hashesToFetch = [];
-
-    uniqueDescriptors.forEach((descriptor, hash) => {
-      if (pushArrayCache.get(hash)) {
-        return;
-      }
-
-      const inflight = inflightFetches.get(hash);
-      if (inflight) {
-        pendingFetches.push(inflight);
-        return;
-      }
-
-      hashesToFetch.push(hash);
-    });
-
-    if (hashesToFetch.length) {
-      const batchFetch = fetchArrays(hashesToFetch)
-        .then((buffersByHash) => {
-          if (version !== queueVersion) {
-            return;
-          }
-
-          hashesToFetch.forEach((hash) => {
-            if (!queuedHashCounts.has(hash)) {
-              return;
-            }
-
-            const descriptor = uniqueDescriptors.get(hash);
-            const buffer = buffersByHash.get(hash);
-            if (!descriptor || !buffer) {
-              throw new Error(`Missing fetched payload for array ${hash}`);
-            }
-
-            pushArrayCache.set(
-              hash,
-              createTypedArray(descriptor.dataType, buffer),
-            );
-          });
-        })
-        .finally(() => {
-          hashesToFetch.forEach((hash) => {
-            if (inflightFetches.get(hash) === batchFetch) {
-              inflightFetches.delete(hash);
-            }
-          });
-        });
-
-      hashesToFetch.forEach((hash) => {
-        inflightFetches.set(hash, batchFetch);
-      });
-      pendingFetches.push(batchFetch);
-    }
-
-    if (!pendingFetches.length) {
-      return false;
-    }
-
-    await Promise.all(pendingFetches);
-    return true;
+    pruneCacheToHashes(pushCache, collectStateHashes(states[states.length - 1]));
   }
 
   async function dispatchPartialUpdate(update) {
+    let applied = false;
     if (onPartialUpdate) {
-      await onPartialUpdate(update, synchronizerContext);
+      applied = await onPartialUpdate(update, synchronizerContext);
     } else {
-      applyPartialArrayUpdate(update, synchronizerContext);
+      applied = applyPartialArrayUpdate(update, synchronizerContext);
     }
+    if (applied) {
+      bindPartialResultToCache(update, synchronizerContext, pushCache);
+    }
+    return applied;
   }
 
   function enqueueState(state) {
+    // The server is authoritative: every hash referenced by `state` is either
+    // already in the push cache or inlined in this payload. Capture inline
+    // payloads now so consumers see a fully-populated cache.
+    extractInlineArrays(state, pushCache, { stripInlineData: true });
+
     stateQueue.push(state);
-    addQueuedStateHashes(state);
 
-    const version = queueVersion;
-    const missingDescriptors = pushArrayCache.prepareState(state);
-    if (!missingDescriptors.length) {
-      if (stateQueue[0] === state) {
-        onQueueReady?.();
-      }
-    } else {
-      prefetchArrayDescriptors(missingDescriptors, version)
-        .then((didPrefetch) => {
-          if (!didPrefetch || version !== queueVersion) {
-            return;
-          }
-
-          if (stateQueue[0] === state) {
-            onQueueReady?.();
-          }
-        })
-        .catch(async (error) => {
-          if (version !== queueVersion) {
-            return;
-          }
-
-          console.warn(
-            "[pushSync] Failed to prefetch missing arrays, requesting resync",
-            error,
-          );
-          await requestResync();
-        });
+    if (stateQueue[0] === state) {
+      onQueueReady?.();
     }
 
     onStateReceived?.(state);
@@ -441,25 +272,21 @@ export function createPushSync(
     resyncPending = true;
     stateQueue.length = 0;
     pendingPartialUpdates.length = 0;
-    queuedHashCounts.clear();
-    inflightFetches.clear();
-    pruneArrayCacheToQueue();
+    pushCache.clear();
+    const version = ++resyncVersion;
 
-    const version = ++queueVersion;
     try {
       const state = await session.call("vtkjs.push.resync", [rwId]);
-      if (version !== queueVersion) {
+      if (version !== resyncVersion) {
         return false;
       }
-
       enqueueState(state);
       acceptBroadcasts = true;
       return true;
     } catch (error) {
-      if (version !== queueVersion) {
+      if (version !== resyncVersion) {
         return false;
       }
-
       console.warn("[pushSync] Failed to request resync", error);
       acceptBroadcasts = true;
       return false;
@@ -476,26 +303,13 @@ export function createPushSync(
   requestResync();
 
   function drainReadyStates() {
-    const readyStates = [];
-
-    while (stateQueue.length) {
-      const nextState = stateQueue[0];
-      const missingDescriptors = pushArrayCache.ensureDescriptorsReady(
-        getStateArrayInfo(nextState).descriptors,
-      );
-      if (missingDescriptors.length) {
-        break;
-      }
-
-      readyStates.push(stateQueue.shift());
-      removeQueuedStateHashes(nextState);
+    if (!stateQueue.length) {
+      return [];
     }
 
-    if (readyStates.length) {
-      resyncPending = false;
-    }
-
-    pruneArrayCacheToQueue();
+    const readyStates = stateQueue.splice(0);
+    resyncPending = false;
+    retainCacheForStates(readyStates);
     return readyStates;
   }
 
@@ -516,6 +330,7 @@ export function createPushSync(
       if (!syncRenderWindow) continue;
       await syncRenderWindow.synchronize(state);
     }
+    markStatesApplied(states);
 
     for (const partialUpdate of partialUpdates) {
       await dispatchPartialUpdate(partialUpdate);
@@ -525,12 +340,10 @@ export function createPushSync(
   }
 
   function cleanup() {
-    queueVersion += 1;
+    resyncVersion += 1;
     stateQueue.length = 0;
     pendingPartialUpdates.length = 0;
-    queuedHashCounts.clear();
-    inflightFetches.clear();
-    pushArrayCache.clear();
+    pushCache.clear();
 
     if (wsSubscription) {
       session.unsubscribe(wsSubscription);
@@ -554,6 +367,7 @@ export function createPushSync(
     drainReadyPartialUpdates,
     drainReadyStates,
     getQueueLength,
+    markStatesApplied,
     requestResync,
   };
 }

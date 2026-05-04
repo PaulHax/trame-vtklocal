@@ -31,7 +31,8 @@ export default {
     },
     syncMode: {
       type: String,
-      default: "pull",
+      default: "push",
+      validator: (value) => value === "push",
     },
     interactorSettings: {
       type: Array,
@@ -58,17 +59,7 @@ export default {
       getRenderWindow: () => renderWindow,
       renderScene,
       syncErrorLabel: "VtkJsLocal",
-      beforeSync() {
-        const pauseInteractorRender = props.syncMode !== "push" && !!interactor;
-        if (pauseInteractorRender) {
-          interactor.setEnableRender(false);
-        }
-        return { pauseInteractorRender };
-      },
-      finalizeSync(syncContext) {
-        if (syncContext?.pauseInteractorRender && interactor) {
-          interactor.setEnableRender(true);
-        }
+      finalizeSync() {
         renderScene();
       },
     });
@@ -101,7 +92,6 @@ export default {
       scene.initialize({
         contextName: `vtkjs-local-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
-        syncMode: props.syncMode,
         onQueueReady() {
           scheduleUpdate();
         },
@@ -111,10 +101,6 @@ export default {
           }
         },
       });
-
-      if (props.syncMode === "pull") {
-        await scene.update();
-      }
 
       interactor = vtkRenderWindowInteractor.newInstance();
       interactor.setInteractorStyle(

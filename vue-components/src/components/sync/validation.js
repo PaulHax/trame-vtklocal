@@ -4,14 +4,14 @@
  */
 
 /**
- * Check if all arrays in state have inline content or are available in the cache.
- * This is required for synchronizeSync() to work.
+ * Check if every array referenced by state has either an inline `content`
+ * payload or a previously cached entry in `pushCache`.
  *
- * @param {Object} state - State object to validate
- * @param {Object} [context] - Synchronizer context with getCachedArray for cache lookups
- * @returns {boolean} - true if all arrays have inline data or are cached
+ * @param {Object} state     translated scene state
+ * @param {Map}    pushCache Map<hash, TypedArray> for previously cached arrays
+ * @returns {boolean} true when every array is resolvable
  */
-export function allArraysHaveInlineData(state, context) {
+export function allArraysHaveInlineData(state, pushCache) {
   const inlineHashes = new Set();
 
   function collectInlineHashes(obj) {
@@ -46,19 +46,17 @@ export function allArraysHaveInlineData(state, context) {
       return obj.every((item) => checkObj(item));
     }
 
-    // Check if this is an array descriptor (has hash and dataType)
     if (obj.hash && obj.dataType) {
       if (
         obj.content == null &&
         !inlineHashes.has(obj.hash) &&
-        !context?.getCachedArray?.(obj.hash, context)
+        !pushCache?.has(obj.hash)
       ) {
         console.warn('[validation] Missing array:', obj.hash, 'name:', obj.name);
         return false;
       }
     }
 
-    // Check properties
     if (obj.properties) {
       const propsValid = Object.values(obj.properties).every((value) =>
         checkObj(value)
@@ -66,13 +64,11 @@ export function allArraysHaveInlineData(state, context) {
       if (!propsValid) return false;
     }
 
-    // Check dependencies
     if (obj.dependencies) {
       const depsValid = obj.dependencies.every((dep) => checkObj(dep));
       if (!depsValid) return false;
     }
 
-    // Check arrays object
     if (obj.arrays) {
       const arraysValid = Object.values(obj.arrays).every((arr) =>
         checkObj(arr)

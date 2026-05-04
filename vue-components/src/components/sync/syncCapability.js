@@ -8,14 +8,17 @@
  * Usage:
  *   import { withSyncCapability } from "./sync/syncCapability";
  *
- *   const syncMethods = withSyncCapability(renderWindow, synchronizerContext, objectManager);
+ *   const syncMethods = withSyncCapability(
+ *     renderWindow, synchronizerContext, objectManager, pushCache,
+ *   );
  *   syncMethods.synchronizeSync(state) - synchronous state application
- *   syncMethods.synchronizePreparedStateSync(state) - synchronous application for push-queue-prepared states
+ *   syncMethods.synchronizePreparedStateSync(state) - synchronous application
+ *                                                    for push-queue-prepared states
  *   syncMethods.hasInlineData(state) - check if state has inline data
  */
 
 import { allArraysHaveInlineData } from "./validation";
-import { updateRenderWindowSync } from "./syncUpdaters";
+import { extractInlineArrays, updateRenderWindowSync } from "./syncUpdaters";
 
 // Re-export components for direct access
 export { base64ToArrayBuffer, createTypedArray } from "./base64";
@@ -23,6 +26,7 @@ export { allArraysHaveInlineData } from "./validation";
 export {
   genericUpdaterSync,
   updateRenderWindowSync,
+  extractInlineArrays,
   createDataSetUpdateSync,
   polydataUpdaterSync,
   imageDataUpdaterSync,
@@ -33,18 +37,20 @@ export {
 /**
  * Add synchronous sync capability to a SynchronizableRenderWindow.
  *
- * @param {Object} renderWindow - A vtkSynchronizableRenderWindow instance
- * @param {Object} synchronizerContext - The synchronizer context (from getSynchronizerContext)
- * @param {Object} objectManager - The object manager (vtkObjectManager) for building instances
- * @returns {Object} Object with synchronizeSync, synchronizePreparedStateSync and hasInlineData methods
+ * @param {Object} renderWindow         a vtkSynchronizableRenderWindow instance
+ * @param {Object} synchronizerContext  the synchronizer context
+ * @param {Object} objectManager        vtkObjectManager for building instances
+ * @param {Map}    pushCache            Map<hash, TypedArray> owned by the caller
+ * @returns {Object} sync API
  */
 export function withSyncCapability(
   renderWindow,
   synchronizerContext,
-  objectManager
+  objectManager,
+  pushCache
 ) {
   let lastMtime = -1;
-  let gcThreshold = 100;
+  const cache = pushCache || new Map();
 
   const setSynchronizedViewId = (synchronizedViewId) => {
     renderWindow.set({ synchronizedViewId }, true, true);
@@ -64,15 +70,16 @@ export function withSyncCapability(
       synchronizerContext.setActiveViewId(state.id);
       synchronizerContext.incrementMTime();
 
-      // Use synchronous updater - no Promises, no progress counter
+      // Capture any inline payloads from this delta into the persistent
+      // push cache, then drive the synchronous updater off of it.
+      extractInlineArrays(state, cache);
       updateRenderWindowSync(
         renderWindow,
         state,
         synchronizerContext,
-        objectManager
+        objectManager,
+        cache
       );
-
-      synchronizerContext.freeOldArrays(gcThreshold, synchronizerContext);
 
       if (!skipRender) {
         renderWindow.render();
@@ -84,19 +91,14 @@ export function withSyncCapability(
   }
 
   /**
-   * Synchronous state application - requires all arrays to have inline data.
-   * Use this when you need to apply state in a synchronous context
-   * (e.g., MapLibre render callback).
-   *
-   * @param {Object} state - State object with inline array data
-   * @param {boolean} skipRender - If true, skip the final render call
-   * @returns {boolean} - true if state was applied, false if skipped
+   * Synchronous state application - requires every referenced array to be
+   * inline in `state` or already present in the push cache.
    */
   function synchronizeSync(state, skipRender = false) {
-    if (!allArraysHaveInlineData(state, synchronizerContext)) {
+    if (!allArraysHaveInlineData(state, cache)) {
       throw new Error(
         'synchronizeSync requires all arrays to have inline "content" field or be previously cached. ' +
-          "Push sync must prefetch missing hashes into the cache before sync apply."
+          "The server must inline payloads for hashes the client has not yet received."
       );
     }
 
@@ -105,25 +107,20 @@ export function withSyncCapability(
 
   /**
    * Synchronous state application for states already prepared by the push queue.
-   * The caller must have already cached all referenced arrays.
+   * The caller must ensure every referenced array is in the push cache before
+   * calling this.
    */
   function synchronizePreparedStateSync(state, skipRender = false) {
     return applyStateSync(state, skipRender);
   }
 
-  /**
-   * Check if state has all inline data required for synchronizeSync
-   */
   function hasInlineData(state) {
-    return allArraysHaveInlineData(state, synchronizerContext);
+    return allArraysHaveInlineData(state, cache);
   }
 
-  /**
-   * Update the garbage collection threshold
-   */
-  function updateGarbageCollectorThreshold(v) {
-    gcThreshold = v;
-  }
+  // No-op kept for API compatibility while the GC threshold knob is unused
+  // in the push-only world (the cache is bounded by what the server inlines).
+  function updateGarbageCollectorThreshold() {}
 
   return {
     synchronizeSync,

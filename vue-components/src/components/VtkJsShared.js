@@ -28,6 +28,7 @@ export default {
     syncMode: {
       type: String,
       default: "push",
+      validator: (value) => value === "push",
     },
   },
   setup(props, { emit }) {
@@ -88,7 +89,6 @@ export default {
       scene.initialize({
         contextName: `vtkjs-shared-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
-        syncMode: props.syncMode,
         onStateReceived(deltaState) {
           requestQueuedStateApply(deltaState);
         },

@@ -57,12 +57,9 @@ test("useSceneSync applies immediate partial updates from pushSync", async () =>
         },
         updateGarbageCollectorThreshold() {},
       }),
-      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, callbacks) {
+      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, _pushCache, callbacks) {
         pushCallbacks = callbacks;
         return sync;
-      },
-      createPullSync() {
-        throw new Error("Pull sync should not be used in this test");
       },
       applyPartialArrayUpdate(update, ctx) {
         appliedPartials.push({ update, ctx });
@@ -142,7 +139,7 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
         },
         updateGarbageCollectorThreshold() {},
       }),
-      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, callbacks) {
+      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, _pushCache, callbacks) {
         pushCallbacks = callbacks;
         return {
           cleanup() {},
@@ -157,9 +154,6 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
             return [];
           },
         };
-      },
-      createPullSync() {
-        throw new Error("Pull sync should not be used in this test");
       },
       applyPartialArrayUpdate() {
         eventOrder.push({ type: "applyPartial" });
@@ -206,6 +200,7 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
   let queuedStatesBlocked = true;
   let remainingStates = queuedStates;
   let pushCallbacks = null;
+  let markedStates = null;
   const emittedEvents = [];
 
   const scene = useSceneSyncRef.useSceneSync(
@@ -235,7 +230,7 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
         },
         updateGarbageCollectorThreshold() {},
       }),
-      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, callbacks) {
+      createPushSync(_client, _syncRenderWindow, _syncCtx, _rwId, _pushCache, callbacks) {
         pushCallbacks = callbacks;
         return {
           cleanup() {},
@@ -254,10 +249,10 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
           drainReadyPartialUpdates() {
             return [];
           },
+          markStatesApplied(states) {
+            markedStates = states;
+          },
         };
-      },
-      createPullSync() {
-        throw new Error("Pull sync should not be used in this test");
       },
       createSyncController() {
         return {
@@ -283,6 +278,9 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
     },
     get pushCallbacks() {
       return pushCallbacks;
+    },
+    get markedStates() {
+      return markedStates;
     },
   };
 }
@@ -321,6 +319,7 @@ test("useSceneSync emits viewStateExtra only after queued push state is applied"
     harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
     [{ eventName: "viewStateExtra", payload: fullState.extra }],
   );
+  assert.deepEqual(harness.markedStates, [fullState]);
 });
 
 test("useSceneSync emits viewStateExtra when ready push state has stale mtime", async () => {
@@ -353,6 +352,7 @@ test("useSceneSync emits viewStateExtra when ready push state has stale mtime", 
     harness.emittedEvents.filter((event) => event.eventName === "viewStateExtra"),
     [{ eventName: "viewStateExtra", payload: fullState.extra }],
   );
+  assert.deepEqual(harness.markedStates, []);
 });
 
 test("useSceneSync does not emit viewStateExtra when full state has no extra", async () => {
@@ -434,9 +434,6 @@ test("useSceneSync keeps partial updates buffered until the full-state queue dra
             return readyPartials;
           },
         };
-      },
-      createPullSync() {
-        throw new Error("Pull sync should not be used in this test");
       },
       applyPartialArrayUpdate(update, ctx) {
         appliedPartials.push({ update, ctx });
@@ -538,9 +535,6 @@ test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra
             return ready;
           },
         };
-      },
-      createPullSync() {
-        throw new Error("Pull sync should not be used in this test");
       },
       applyPartialArrayUpdate() {
         return true;

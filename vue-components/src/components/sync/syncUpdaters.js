@@ -3,7 +3,10 @@
  * These bypass all Promise/progress machinery for use in sync render callbacks
  * (e.g., MapLibre custom layer render function).
  *
- * All arrays must have inline data (content field) for these to work.
+ * The push cache is a flat `Map<hash, TypedArray>` owned by the caller.
+ * Every array referenced by a state must be present in that map (either
+ * carried over from a previous push or extracted from the current delta's
+ * inline content).
  */
 
 import { capitalize } from "@kitware/vtk.js/macros";
@@ -167,34 +170,31 @@ function isInlineArrayMetadata(value) {
   );
 }
 
-function storeInlineArray(arrayMetadata, context, inlineValues, options) {
+function inlineContentToTypedArray(arrayMetadata) {
+  const content = arrayMetadata.content;
+  let buffer;
+  if (content instanceof ArrayBuffer) {
+    buffer = content;
+  } else if (ArrayBuffer.isView(content)) {
+    buffer = content.buffer.slice(
+      content.byteOffset,
+      content.byteOffset + content.byteLength,
+    );
+  } else {
+    buffer = base64ToArrayBuffer(content);
+  }
+  return createTypedArray(arrayMetadata.dataType, buffer);
+}
+
+function storeInlineArray(arrayMetadata, pushCache, options) {
   const { stripInlineData } = options;
   const hash = arrayMetadata.hash;
   if (!hash) {
     return;
   }
 
-  let values = inlineValues.get(hash);
-  if (!values) {
-    // Handle both binary (ArrayBuffer/Uint8Array) and base64 string
-    const content = arrayMetadata.content;
-    let buffer;
-    if (content instanceof ArrayBuffer) {
-      buffer = content;
-    } else if (ArrayBuffer.isView(content)) {
-      buffer = content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength
-      );
-    } else {
-      buffer = base64ToArrayBuffer(content);
-    }
-    values = createTypedArray(arrayMetadata.dataType, buffer);
-    inlineValues.set(hash, values);
-  }
-
-  if (context?.cacheArray) {
-    context.cacheArray(hash, values, context);
+  if (!pushCache.has(hash)) {
+    pushCache.set(hash, inlineContentToTypedArray(arrayMetadata));
   }
 
   if (stripInlineData) {
@@ -202,28 +202,23 @@ function storeInlineArray(arrayMetadata, context, inlineValues, options) {
   }
 }
 
-function isArrayDescriptor(value) {
-  return (
-    value &&
-    typeof value === "object" &&
-    value.hash !== undefined &&
-    value.dataType !== undefined
-  );
-}
-
-function populateFromCache(value, context, inlineValues) {
-  if (!context?.getCachedArray || !isArrayDescriptor(value)) return;
-  if (value.content != null || inlineValues.has(value.hash)) return;
-  const cached = context.getCachedArray(value.hash, context);
-  if (cached) {
-    inlineValues.set(value.hash, cached);
+/**
+ * Walk a state tree and copy any inline array payloads into `pushCache`.
+ * After this returns, `pushCache` contains every hash whose payload was
+ * inlined in this delta (plus whatever was already in it).
+ *
+ * @param {Object} state         translated scene state
+ * @param {Map}    pushCache     hash -> TypedArray map; mutated in place
+ * @param {Object} [options]
+ * @param {boolean} [options.stripInlineData=true] strip `content` after caching
+ * @returns {Map} the same `pushCache` reference
+ */
+export function extractInlineArrays(state, pushCache, options = {}) {
+  if (!pushCache) {
+    return pushCache;
   }
-}
-
-export function extractInlineArrays(state, context, inlineValues, options = {}) {
-  const resolvedInlineValues = inlineValues || new Map();
   if (!state) {
-    return resolvedInlineValues;
+    return pushCache;
   }
 
   const { stripInlineData = true } = options;
@@ -233,22 +228,14 @@ export function extractInlineArrays(state, context, inlineValues, options = {}) 
       return;
     }
     if (isInlineArrayMetadata(value)) {
-      storeInlineArray(value, context, resolvedInlineValues, {
-        stripInlineData,
-      });
-    } else {
-      populateFromCache(value, context, resolvedInlineValues);
+      storeInlineArray(value, pushCache, { stripInlineData });
     }
   };
 
   if (state.arrays) {
     Object.values(state.arrays).forEach((arrayMetadata) => {
       if (isInlineArrayMetadata(arrayMetadata)) {
-        storeInlineArray(arrayMetadata, context, resolvedInlineValues, {
-          stripInlineData,
-        });
-      } else {
-        populateFromCache(arrayMetadata, context, resolvedInlineValues);
+        storeInlineArray(arrayMetadata, pushCache, { stripInlineData });
       }
     });
   }
@@ -261,13 +248,11 @@ export function extractInlineArrays(state, context, inlineValues, options = {}) 
 
   if (state.dependencies) {
     state.dependencies.forEach((childState) => {
-      extractInlineArrays(childState, context, resolvedInlineValues, {
-        stripInlineData,
-      });
+      extractInlineArrays(childState, pushCache, { stripInlineData });
     });
   }
 
-  return resolvedInlineValues;
+  return pushCache;
 }
 
 // ----------------------------------------------------------------------------
@@ -290,14 +275,15 @@ export function getSyncUpdater(type) {
 
 /**
  * Synchronous generic updater - applies properties, dependencies, and arrays
- * without any async operations. All arrays must have inline data.
+ * without any async operations. Every array referenced by `state` must be
+ * present in `pushCache`.
  */
 export function genericUpdaterSync(
   instance,
   state,
   context,
   objectManager,
-  inlineValues
+  pushCache
 ) {
   if (!isLiveInstance(instance)) {
     return;
@@ -341,7 +327,7 @@ export function genericUpdaterSync(
           childState,
           context,
           objectManager,
-          inlineValues
+          pushCache
         );
       } else {
         genericUpdaterSync(
@@ -349,7 +335,7 @@ export function genericUpdaterSync(
           childState,
           context,
           objectManager,
-          inlineValues
+          pushCache
         );
       }
     });
@@ -362,47 +348,19 @@ export function genericUpdaterSync(
     });
   }
 
-  // Apply arrays SYNCHRONOUSLY - the key difference from async version
+  // Apply arrays SYNCHRONOUSLY - every value must be in pushCache.
   if (state.arrays) {
     const arraysToBind = [];
 
     Object.values(state.arrays).forEach((arrayMetadata) => {
       const hash = arrayMetadata.hash;
-      let values = inlineValues?.get(hash);
-      if (!values && arrayMetadata.content) {
-        // Handle both binary (ArrayBuffer/Uint8Array) and base64 string
-        const content = arrayMetadata.content;
-        let buffer;
-        if (content instanceof ArrayBuffer) {
-          buffer = content;
-        } else if (ArrayBuffer.isView(content)) {
-          buffer = content.buffer.slice(
-            content.byteOffset,
-            content.byteOffset + content.byteLength
-          );
-        } else {
-          buffer = base64ToArrayBuffer(content);
-        }
-        values = createTypedArray(arrayMetadata.dataType, buffer);
-        if (inlineValues && hash) {
-          inlineValues.set(hash, values);
-        }
-      }
-
-      if (!values && context?.getCachedArray) {
-        values = context.getCachedArray(hash, context);
-      }
+      const values = pushCache?.get(hash);
 
       if (!values) {
         throw new Error(
-          `Array ${arrayMetadata.hash} missing inline data and not in cache. ` +
-            "synchronizeSync requires all arrays to have inline data or be previously cached."
+          `Array ${hash} missing from push cache. ` +
+            "The server must inline payloads for hashes the client has not yet received."
         );
-      }
-
-      // Cache for future reference
-      if (context.cacheArray) {
-        context.cacheArray(arrayMetadata.hash, values, context);
       }
 
       // Create handler and invoke immediately
@@ -423,21 +381,21 @@ export function genericUpdaterSync(
 }
 
 /**
- * Synchronous render window update - no Promises, no progress tracking.
- * Requires all arrays to have inline data.
+ * Synchronous render window update. Caller must have populated `pushCache`
+ * with every hash referenced by `state`.
  */
 export function updateRenderWindowSync(
   instance,
   state,
   context,
-  objectManager
+  objectManager,
+  pushCache
 ) {
   SKIPPED_INSTANCE_IDS.clear();
-  const inlineValues = extractInlineArrays(state, context);
   cleanupRemovedRendererDependencies(state, context);
 
   // Apply state synchronously (skip pre-render to avoid flicker in shared contexts)
-  genericUpdaterSync(instance, state, context, objectManager, inlineValues);
+  genericUpdaterSync(instance, state, context, objectManager, pushCache);
 
   // Manage any associated behaviors
   BehaviorManager.applyBehaviors(instance, state, context);
@@ -483,7 +441,7 @@ export function cleanupRemovedRendererDependencies(state, context) {
  * Handles the conversion of old format (points, polys, etc.) to generic state.arrays.
  */
 export function createDataSetUpdateSync(piecesToFetch = []) {
-  return (instance, state, context, objectManager, inlineValues) => {
+  return (instance, state, context, objectManager, pushCache) => {
     // Make sure we provide container for std arrays
     const localProperties = { ...state.properties };
     if (!state.arrays) {
@@ -532,7 +490,7 @@ export function createDataSetUpdateSync(piecesToFetch = []) {
       cleanState,
       context,
       objectManager,
-      inlineValues
+      pushCache
     );
   };
 }

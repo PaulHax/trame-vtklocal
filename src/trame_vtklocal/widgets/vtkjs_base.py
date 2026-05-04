@@ -50,48 +50,52 @@ class VtkJsBaseView(HtmlElement):
     def ref_name(self):
         return self._ref
 
-    def _get_vtkjs_state(self):
+    def _get_vtkjs_state(self, version_registry=None, collection_tracker=None):
         from trame_vtklocal.module.vtkjs_translator import translate_scene
 
         self._render_window.Render()
         self.object_manager.UpdateStatesFromObjects()
+        tracker = (
+            self._collection_tracker
+            if collection_tracker is None
+            else collection_tracker
+        )
         return translate_scene(
-            self.object_manager, self._window_id, self._collection_tracker
+            self.object_manager,
+            self._window_id,
+            tracker,
+            version_registry=version_registry,
+            rw_id=self._window_id,
         )
 
     def get_instance_id(self, vtk_object):
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
 
-    def _init_push_sync(self, sync_mode):
+    def _init_push_sync(self):
         from trame_vtklocal.widgets.push_sync import PushSync
 
-        self._sync_mode = sync_mode
-        if sync_mode == "push":
-            self._push_sync = PushSync(
-                self.server,
-                self._get_vtkjs_state,
-                self.get_instance_id,
-                self._window_id,
-                api=self.api,
-            )
+        self._push_sync = PushSync(
+            self.server,
+            self._get_vtkjs_state,
+            self.get_instance_id,
+            self._window_id,
+            api=self.api,
+        )
 
     def _configure_sync_mode(self, sync_mode, extra_event_names=None):
-        self._attributes["sync_mode"] = f'sync-mode="{sync_mode}"'
+        if sync_mode != "push":
+            raise ValueError("vtk-js views only support sync_mode='push'")
+
+        self._attributes["sync_mode"] = 'sync-mode="push"'
         self._event_names += ["updated"]
         if extra_event_names:
             self._event_names += list(extra_event_names)
         self._event_names += self._scene_event_names[1:]
-        self._init_push_sync(sync_mode)
+        self._init_push_sync()
 
     def _update_view(self, extra=None):
-        if self._sync_mode == "push":
-            self._push_sync.update(extra=extra)
-            return
-
-        self._render_window.Render()
-        self.api.update()
-        self.server.js_call(self._ref, "update")
+        self._push_sync.update(extra=extra)
 
     def get_renderer(self):
         renderers = self._render_window.GetRenderers()

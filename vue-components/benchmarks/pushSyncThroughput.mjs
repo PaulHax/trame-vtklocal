@@ -106,7 +106,7 @@ function createSceneState(index, dependencyCount) {
   };
 }
 
-function buildCachedContext(dependencyCount) {
+function buildPushCache(dependencyCount) {
   const cache = new Map();
   const values = new Float32Array([1, 2, 3]);
 
@@ -116,14 +116,7 @@ function buildCachedContext(dependencyCount) {
     cache.set(`scalar-${i}`, values);
   }
 
-  return {
-    cacheArray(hash, array) {
-      cache.set(hash, array);
-    },
-    getCachedArray(hash) {
-      return cache.get(hash) || null;
-    },
-  };
+  return cache;
 }
 
 async function flushAsyncWork() {
@@ -146,14 +139,11 @@ async function createReadyPushSync(createPushSync, dependencyCount) {
         });
       }
 
-      if (method === "vtkjs.get.arrays") {
-        throw new Error("Benchmark expects all arrays to be cached");
-      }
-
       throw new Error(`Unexpected RPC: ${method}`);
     },
   });
 
+  const pushCache = buildPushCache(dependencyCount);
   const sync = createPushSync(
     client,
     {
@@ -161,8 +151,9 @@ async function createReadyPushSync(createPushSync, dependencyCount) {
         return true;
       },
     },
-    buildCachedContext(dependencyCount),
+    {},
     "rw",
+    pushCache,
   );
 
   await flushAsyncWork();

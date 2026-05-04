@@ -23,28 +23,27 @@ function createDocumentStub() {
   };
 }
 
-function createState(hash, mtime) {
-  return {
-    id: "rw",
-    mtime,
-    properties: {
-      points: {
-        hash,
-        dataType: "Float32Array",
-        numberOfComponents: 3,
-        size: 3,
-        name: "Points",
-      },
-    },
-  };
-}
-
-function createEmptyState(mtime = 0) {
-  return {
-    id: "rw",
+function createInlineState({ id = "rw", mtime = 0, hash, payload = [1, 2, 3] }) {
+  const state = {
+    id,
     mtime,
     properties: {},
   };
+  if (hash) {
+    state.properties.points = {
+      hash,
+      dataType: "Float32Array",
+      numberOfComponents: 3,
+      size: payload.length,
+      name: "Points",
+      content: new Uint8Array(new Float32Array(payload).buffer),
+    };
+  }
+  return state;
+}
+
+function createEmptyState(mtime = 0) {
+  return { id: "rw", mtime, properties: {} };
 }
 
 function createClientHarness({ onCall }) {
@@ -87,71 +86,92 @@ async function flushAsyncWork() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test("createPushSync refetches hashes pruned from the queued-state cache", async () => {
+test("createPushSync captures inlined payloads from delta states", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
 
   try {
     const { createPushSync } = await loadModule("/src/components/pushSync.js");
 
-    const synchronizerCache = new Map();
-    const fetchedHashes = [];
     const { client, emit } = createClientHarness({
       onCall(method, [arg]) {
         if (method === "vtkjs.push.resync") {
           assert.equal(arg, "rw");
           return Promise.resolve(createEmptyState());
         }
-
-        if (method === "vtkjs.get.arrays") {
-          fetchedHashes.push([...arg]);
-          return Promise.resolve(
-            arg.map((hash) => ({
-              hash,
-              content: new Uint8Array(new Float32Array([1, 2, 3]).buffer),
-            })),
-          );
-        }
-
         throw new Error(`Unexpected RPC: ${method}`);
       },
     });
 
+    const pushCache = new Map();
     const sync = createPushSync(
       client,
-      {
-        async synchronize() {
-          return true;
-        },
-      },
-      {
-        cacheArray(hash, values) {
-          synchronizerCache.set(hash, values);
-        },
-        getCachedArray(hash) {
-          return synchronizerCache.get(hash) || null;
-        },
-      },
+      { async synchronize() { return true; } },
+      { /* synchronizerContext stub */ },
       "rw",
+      pushCache,
     );
 
     await flushAsyncWork();
-    await sync.applyQueuedState();
+    sync.drainReadyStates(); // discard initial resync state
 
-    emit("trame.vtk.delta", createState("hash-a", 1));
-    await flushAsyncWork();
-    await sync.applyQueuedState();
-
-    emit("trame.vtk.delta", createState("hash-b", 2));
-    await flushAsyncWork();
-    await sync.applyQueuedState();
-
-    synchronizerCache.clear();
-
-    emit("trame.vtk.delta", createState("hash-a", 3));
+    emit("trame.vtk.delta", createInlineState({ mtime: 1, hash: "hash-a" }));
     await flushAsyncWork();
 
-    assert.deepEqual(fetchedHashes, [["hash-a"], ["hash-b"], ["hash-a"]]);
+    const states = sync.drainReadyStates();
+    assert.equal(states.length, 1);
+    assert.ok(pushCache.has("hash-a"));
+    assert.equal(pushCache.get("hash-a").length, 3);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync retains queued state payloads until states are marked applied", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      { async synchronize() { return true; } },
+      { /* synchronizerContext stub */ },
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    sync.drainReadyStates();
+
+    const stateA = createInlineState({ mtime: 1, hash: "hash-a" });
+    const stateB = createInlineState({ mtime: 2, hash: "hash-b" });
+    emit("trame.vtk.delta", stateA);
+    emit("trame.vtk.delta", stateB);
+    await flushAsyncWork();
+
+    const states = sync.drainReadyStates();
+    assert.deepEqual(states, [stateA, stateB]);
+    assert.ok(pushCache.has("hash-a"));
+    assert.ok(pushCache.has("hash-b"));
+
+    sync.markStatesApplied(states);
+    assert.equal(pushCache.has("hash-a"), false);
+    assert.equal(pushCache.has("hash-b"), true);
 
     sync.cleanup();
   } finally {
@@ -175,25 +195,16 @@ test("createPushSync keeps accepting delta states after a failed resync", async 
           assert.equal(arg, "rw");
           return Promise.reject(new Error("resync failed"));
         }
-
         throw new Error(`Unexpected RPC: ${method}`);
       },
     });
 
     const sync = createPushSync(
       client,
-      {
-        async synchronize() {
-          return true;
-        },
-      },
-      {
-        cacheArray() {},
-        getCachedArray() {
-          return null;
-        },
-      },
+      { async synchronize() { return true; } },
+      { /* synchronizerContext stub */ },
       "rw",
+      new Map(),
       {
         onStateReceived(state) {
           receivedStates.push(state);
@@ -217,17 +228,12 @@ test("createPushSync keeps accepting delta states after a failed resync", async 
   }
 });
 
-test("createPushSync buffers partial updates until queued states are ready", async () => {
+test("createPushSync buffers partial updates until queued states drain", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
 
   try {
     const { createPushSync } = await loadModule("/src/components/pushSync.js");
-
-    let resolveArrayFetch = null;
-    const arrayFetchPromise = new Promise((resolve) => {
-      resolveArrayFetch = resolve;
-    });
 
     const partialUpdateCalls = [];
     const { client, emit } = createClientHarness({
@@ -236,30 +242,16 @@ test("createPushSync buffers partial updates until queued states are ready", asy
           assert.equal(arg, "rw");
           return Promise.resolve(createEmptyState());
         }
-
-        if (method === "vtkjs.get.arrays") {
-          assert.deepEqual(arg, ["hash-a"]);
-          return arrayFetchPromise;
-        }
-
         throw new Error(`Unexpected RPC: ${method}`);
       },
     });
 
     const sync = createPushSync(
       client,
-      {
-        async synchronize() {
-          return true;
-        },
-      },
-      {
-        cacheArray() {},
-        getCachedArray() {
-          return null;
-        },
-      },
+      { async synchronize() { return true; } },
+      { /* synchronizerContext stub */ },
       "rw",
+      new Map(),
       {
         onPartialUpdate(update, ctx) {
           partialUpdateCalls.push({ update, ctx });
@@ -268,9 +260,10 @@ test("createPushSync buffers partial updates until queued states are ready", asy
     );
 
     await flushAsyncWork();
-    await sync.applyQueuedState();
+    // drain initial resync state so the queue is empty
+    sync.drainReadyStates();
 
-    const blockedState = createState("hash-a", 1);
+    const blockedState = createInlineState({ mtime: 1, hash: "hash-a" });
     const partialUpdate = {
       rwId: "rw",
       instanceId: "1",
@@ -281,25 +274,16 @@ test("createPushSync buffers partial updates until queued states are ready", asy
     };
 
     emit("trame.vtk.delta", blockedState);
-    await Promise.resolve();
     emit("trame.vtk.array.partial", partialUpdate);
     await flushAsyncWork();
 
-    assert.deepEqual(sync.drainReadyStates(), []);
-    assert.deepEqual(sync.drainReadyPartialUpdates(), []);
+    // Partial buffered behind pending state
     assert.deepEqual(partialUpdateCalls, []);
+    assert.deepEqual(sync.drainReadyPartialUpdates(), []);
 
-    resolveArrayFetch([
-      {
-        hash: "hash-a",
-        content: new Uint8Array(new Float32Array([1, 2, 3]).buffer),
-      },
-    ]);
-    await flushAsyncWork();
-
+    // Drain the state, then partial becomes ready
     assert.deepEqual(sync.drainReadyStates(), [blockedState]);
     assert.deepEqual(sync.drainReadyPartialUpdates(), [partialUpdate]);
-    assert.deepEqual(partialUpdateCalls, []);
 
     sync.cleanup();
   } finally {

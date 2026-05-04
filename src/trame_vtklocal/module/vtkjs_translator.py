@@ -417,11 +417,19 @@ def normalize_relation_spec(spec):
 
 
 class VtkJsTranslator:
-    def __init__(self, object_manager, collection_tracker=None):
+    def __init__(
+        self,
+        object_manager,
+        collection_tracker=None,
+        version_registry=None,
+        rw_id=None,
+    ):
         self.object_manager = object_manager
         self._states_cache = {}
         self._visited = set()
         self._collection_tracker = collection_tracker
+        self._version_registry = version_registry or {}
+        self._rw_id = rw_id
 
     def _get_state(self, obj_id):
         if obj_id not in self._states_cache:
@@ -511,6 +519,16 @@ class VtkJsTranslator:
                             array_meta = self._build_array_metadata(data_state)
                             if array_meta:
                                 array_meta["vtkClass"] = "vtkPoints"
+                                version_key = (
+                                    self._rw_id,
+                                    state["Id"],
+                                    "points",
+                                )
+                                version = self._version_registry.get(version_key)
+                                if version is not None:
+                                    array_meta["hash"] = (
+                                        f"v:{self._rw_id}:{state['Id']}:points:{version}"
+                                    )
                                 props["points"] = array_meta
 
                     elif container_class == "vtkCellArray":
@@ -838,9 +856,20 @@ class VtkJsTranslator:
         return result
 
 
-def translate_scene(object_manager, root_id, collection_tracker=None):
+def translate_scene(
+    object_manager,
+    root_id,
+    collection_tracker=None,
+    version_registry=None,
+    rw_id=None,
+):
     _scene_mtime_counter[0] += 1
-    translator = VtkJsTranslator(object_manager, collection_tracker)
+    translator = VtkJsTranslator(
+        object_manager,
+        collection_tracker,
+        version_registry=version_registry,
+        rw_id=rw_id if rw_id is not None else root_id,
+    )
     result = translator.translate(root_id)
     result["mtime"] = _scene_mtime_counter[0]
     return result

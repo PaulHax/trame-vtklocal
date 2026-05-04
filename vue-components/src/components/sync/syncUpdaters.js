@@ -79,8 +79,7 @@ function notSkippedInstance(call) {
 
 function bindArrays(arraysToBind) {
   while (arraysToBind.length) {
-    const [fn, args] = arraysToBind.shift();
-    fn(...args);
+    arraysToBind.shift()();
   }
 }
 
@@ -105,10 +104,11 @@ function createNewArrayHandler(instance, arrayMetadata, arraysToBind) {
 
     if (previousArray) {
       if (previousArray.getData() !== values) {
-        arraysToBind.push([
-          previousArray.setData,
-          [values, arrayMetadata.numberOfComponents],
-        ]);
+        arraysToBind.push(() => {
+          previousArray.setData(values, arrayMetadata.numberOfComponents);
+          previousArray.modified?.();
+          instance.modified?.();
+        });
       }
       return previousArray;
     }
@@ -135,7 +135,12 @@ function createNewArrayHandler(instance, arrayMetadata, arraysToBind) {
       values,
     });
 
-    arraysToBind.push([location[regMethod], [array]]);
+    arraysToBind.push(() => {
+      location[regMethod](array);
+      array.modified?.();
+      location.modified?.();
+      instance.modified?.();
+    });
     return array;
   };
 }
@@ -193,9 +198,7 @@ function storeInlineArray(arrayMetadata, pushCache, options) {
     return;
   }
 
-  if (!pushCache.has(hash)) {
-    pushCache.set(hash, inlineContentToTypedArray(arrayMetadata));
-  }
+  pushCache.set(hash, inlineContentToTypedArray(arrayMetadata));
 
   if (stripInlineData) {
     delete arrayMetadata.content;
@@ -372,10 +375,6 @@ export function genericUpdaterSync(
       handler(values);
     });
 
-    // Bind all arrays (already sync)
-    if (arraysToBind.length) {
-      instance.modified();
-    }
     bindArrays(arraysToBind);
   }
 }

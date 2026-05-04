@@ -59,14 +59,15 @@ export function withSyncCapability(
   const getSynchronizedViewId = () =>
     renderWindow.get("synchronizedViewId").synchronizedViewId;
 
-  function applyStateSync(state, skipRender = false) {
+  function applyStateSync(state, skipRender = false, options = {}) {
+    const { force = false } = options;
     if (!getSynchronizedViewId()) {
       setSynchronizedViewId(state.id);
     }
 
     const mtime = state.mtime || 0;
-    if (getSynchronizedViewId() === state.id && lastMtime < mtime) {
-      lastMtime = mtime;
+    if (getSynchronizedViewId() === state.id && (force || lastMtime < mtime)) {
+      lastMtime = Math.max(lastMtime, mtime);
       synchronizerContext.setActiveViewId(state.id);
       synchronizerContext.incrementMTime();
 
@@ -111,7 +112,9 @@ export function withSyncCapability(
    * calling this.
    */
   function synchronizePreparedStateSync(state, skipRender = false) {
-    return applyStateSync(state, skipRender);
+    // Push states are server-authoritative; array hashes/counts can change
+    // even when the root render-window mtime is unchanged.
+    return applyStateSync(state, skipRender, { force: true });
   }
 
   function hasInlineData(state) {

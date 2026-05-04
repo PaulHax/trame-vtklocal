@@ -8,6 +8,10 @@ SYNTHETIC_CELL_PREFIX = "cell:"
 RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
 
 
+def _is_synthetic_version_hash(hash_val):
+    return isinstance(hash_val, str) and hash_val.startswith(SYNTHETIC_VERSION_PREFIX)
+
+
 def _walk_descriptors(state):
     """Yield each array descriptor dict in a translated state tree."""
     if isinstance(state, list):
@@ -224,7 +228,10 @@ class PushSync:
         if force_full_inline:
             missing = set(live)
         else:
-            missing = live - known
+            synthetic_live = {
+                hash_val for hash_val in live if _is_synthetic_version_hash(hash_val)
+            }
+            missing = (live - known) | synthetic_live
 
         client_state = copy.deepcopy(state)
         inlined = self._inline_payloads(client_state, missing)

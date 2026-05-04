@@ -1,5 +1,6 @@
 import zipfile
 import json
+import logging
 from pathlib import Path
 from wslink import register as export_rpc
 from wslink.websocket import LinkProtocol
@@ -16,6 +17,7 @@ except ImportError:
     ZIP_COMPRESSION = zipfile.ZIP_STORED
 
 VTK_VERSION = vtkVersion()
+logger = logging.getLogger(__name__)
 API_NO_IDS_UPDATE = (
     VTK_VERSION.GetVTKMajorVersion() <= 9
     and VTK_VERSION.GetVTKMinorVersion() <= 4
@@ -44,6 +46,7 @@ class ObjectManagerAPI(LinkProtocol):
         self._last_publish_hash = set()
         self._push_camera = False
         self._push_views = {}
+        self._warned_missing_client_id = False
 
         self._debug_state = False
         self._debug_state_counter = 1
@@ -63,10 +66,15 @@ class ObjectManagerAPI(LinkProtocol):
         self._push_views.pop(int(rw_id), None)
 
     def get_active_client_id(self):
-        try:
-            return self.coreServer.server._server.last_active_client_id
-        except AttributeError:
+        core_server = getattr(self, "coreServer", None)
+        trame_server = getattr(core_server, "server", None)
+        ws_server = getattr(trame_server, "_server", None)
+        if ws_server is None or not hasattr(ws_server, "last_active_client_id"):
+            if not self._warned_missing_client_id:
+                logger.warning("Unable to resolve active wslink client id")
+                self._warned_missing_client_id = True
             return None
+        return ws_server.last_active_client_id
 
     def onClose(self, client_id):
         for push_view in self._push_views.values():

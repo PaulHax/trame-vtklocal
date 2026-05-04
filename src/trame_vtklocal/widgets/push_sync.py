@@ -3,6 +3,11 @@ import copy
 import numpy as np
 
 
+SYNTHETIC_VERSION_PREFIX = "v:"
+SYNTHETIC_CELL_PREFIX = "cell:"
+RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
+
+
 def _walk_descriptors(state):
     """Yield each array descriptor dict in a translated state tree."""
     if isinstance(state, list):
@@ -149,10 +154,13 @@ class PushSync:
 
         hash_val = descriptor["hash"]
 
-        if hash_val.startswith("v:"):
+        # `v:` and `cell:` are synthetic hash namespaces owned by PushSync.
+        # Real object-manager blobs should not use these prefixes.
+        if hash_val.startswith(SYNTHETIC_VERSION_PREFIX):
             return self._resolve_version_payload(hash_val)
-        if hash_val.startswith("cell:"):
+        if hash_val.startswith(SYNTHETIC_CELL_PREFIX):
             return _pack_cell_array_payload(self._api.vtk_object_manager, hash_val)
+        assert not hash_val.startswith(RESERVED_HASH_PREFIXES)
 
         blob = self._api.vtk_object_manager.GetBlob(hash_val)
         if blob is None:
@@ -225,7 +233,7 @@ class PushSync:
         self._server.protocol.publish(
             "trame.vtk.delta", client_state, client_id=client_id
         )
-        self._known_hashes[client_id] = (known & live) | (live - missing) | inlined
+        self._known_hashes[client_id] = (known & live) | inlined
 
     # ------------------------------------------------------------------
     # Public API
@@ -252,6 +260,8 @@ class PushSync:
         if not self._server.protocol or not self._view_clients:
             return
 
+        # Translation is per-client because collection membership tracking is
+        # per-client. Revisit if many subscribers make that cost material.
         for sid in list(self._view_clients):
             state = self._get_client_state(sid, reset_tracker=True)
             if extra:
@@ -267,6 +277,8 @@ class PushSync:
             return
 
         self._pending_changes.clear()
+        # Translation is per-client because collection membership tracking is
+        # per-client. Revisit if many subscribers make that cost material.
         for sid in list(self._view_clients):
             state = self._get_client_state(sid)
             if extra:
@@ -313,8 +325,8 @@ class PushSync:
                 self._array_versions[key] = self._array_versions.get(key, 0) + 1
                 old_hash = self._current_array_hashes.get(key)
                 new_hash = (
-                    f"v:{self._rw_id_int}:{iid}:{array_path}:"
-                    f"{self._array_versions[key]}"
+                    f"{SYNTHETIC_VERSION_PREFIX}{self._rw_id_int}:"
+                    f"{iid}:{array_path}:{self._array_versions[key]}"
                 )
                 self._current_array_hashes[key] = new_hash
                 bumped[key] = (old_hash, new_hash)
@@ -323,14 +335,15 @@ class PushSync:
             if raw_data is not None:
                 data = raw_data
                 data_type = raw_type
-                element_offset = start * 3
             else:
                 data, data_type, _bytes_per_elem = self.extract_array_region(
                     vtk_obj, array_path, start, count
                 )
                 if data is None:
                     continue
-                element_offset = start * 3
+
+            # Non-points paths fall back to update() above; points are flat xyz.
+            element_offset = start * 3
 
             old_hash, new_hash = bumped[(self._rw_id_int, int(iid), array_path)]
             payload = {

@@ -215,12 +215,11 @@ export function createPushSync(
   }
 
   async function dispatchPartialUpdate(update) {
-    let applied = false;
     if (onPartialUpdate) {
-      applied = await onPartialUpdate(update, synchronizerContext);
-    } else {
-      applied = applyPartialArrayUpdate(update, synchronizerContext);
+      return onPartialUpdate(update, synchronizerContext);
     }
+
+    const applied = applyPartialArrayUpdate(update, synchronizerContext);
     if (applied) {
       bindPartialResultToCache(update, synchronizerContext, pushCache);
     }

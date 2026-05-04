@@ -526,6 +526,8 @@ class VtkJsTranslator:
                                 )
                                 version = self._version_registry.get(version_key)
                                 if version is not None:
+                                    # `v:` is a PushSync-reserved synthetic hash
+                                    # namespace for versioned partial arrays.
                                     array_meta["hash"] = (
                                         f"v:{self._rw_id}:{state['Id']}:points:{version}"
                                     )
@@ -542,6 +544,8 @@ class VtkJsTranslator:
                                 conn_hash = conn_state.get("Hash")
                                 off_hash = off_state.get("Hash")
                                 if conn_hash and off_hash:
+                                    # `cell:` is a PushSync-reserved synthetic hash
+                                    # namespace for packed vtk.js cell arrays.
                                     combined_hash = f"cell:{conn_hash}:{off_hash}"
                                     num_conn = conn_state.get("NumberOfTuples", 0)
                                     array_meta = {

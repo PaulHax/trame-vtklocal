@@ -21,6 +21,40 @@ class _FakeServer:
         self.protocol = _FakeProtocol()
 
 
+class _FakePoints:
+    def GetData(self):
+        return [(1.0, 2.0, 3.0)]
+
+
+class _FakePolyData:
+    def GetPoints(self):
+        return _FakePoints()
+
+
+class _FakeObjectManager:
+    def GetObjectAtId(self, vtk_id):
+        if vtk_id == 62:
+            return _FakePolyData()
+        return None
+
+    def GetBlob(self, _hash):
+        return None
+
+
+class _FakeApi:
+    def __init__(self):
+        self.vtk_object_manager = _FakeObjectManager()
+
+    def register_push_view(self, *_args):
+        pass
+
+    def unregister_push_view(self, *_args):
+        pass
+
+    def _convert_bytes_to_attachments(self, _state):
+        pass
+
+
 def _state_with_points(instance_id, points_hash):
     return {
         "id": "rw",
@@ -137,11 +171,22 @@ def test_push_sync_flush_preserves_extra_metadata():
 
 def test_push_sync_partial_flush_does_not_ack_synthetic_hash_until_full_state():
     server = _FakeServer()
+
+    def get_state(version_registry=None, _collection_tracker=None):
+        version = (version_registry or {}).get((1, 62, "points"))
+        points_hash = (
+            f"v:1:62:points:{version}"
+            if version is not None
+            else "initial-points"
+        )
+        return deepcopy(_state_with_points("62", points_hash))
+
     push_sync = PushSync(
         server,
-        _make_points_state_getter(points_hash="v:1:62:points:1"),
+        get_state,
         lambda vtk_object: str(vtk_object),
         render_window_id=1,
+        api=_FakeApi(),
     )
 
     push_sync.client_resync("client-a")
@@ -149,7 +194,16 @@ def test_push_sync_partial_flush_does_not_ack_synthetic_hash_until_full_state():
     push_sync.flush()
 
     _, payload, _ = server.protocol.messages[0]
-    assert payload["newHash"] not in push_sync._known_hashes["client-a"]
+    server.protocol.messages.clear()
+
+    push_sync.update()
+
+    assert len(server.protocol.messages) == 1
+    _, delta_state, client_id = server.protocol.messages[0]
+    assert client_id == "client-a"
+    points = _find_points_array(delta_state, "62")
+    assert points["hash"] == payload["newHash"]
+    assert "content" in points
 
 
 def test_vtkjs_views_do_not_expose_inline_array_policy():

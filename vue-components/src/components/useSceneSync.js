@@ -263,7 +263,7 @@ export function useSceneSync({
           onQueueReady?.();
         },
         onPartialUpdate(partialUpdate, syncCtx) {
-          applySinglePartialUpdate(partialUpdate, syncCtx);
+          return applySinglePartialUpdate(partialUpdate, syncCtx);
         },
       },
     );

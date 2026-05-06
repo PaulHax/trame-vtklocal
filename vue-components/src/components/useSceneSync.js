@@ -52,8 +52,8 @@ export function useSceneSync(
     return getPrimaryRenderer(getRenderWindow?.() || null);
   }
 
-  function requestResync() {
-    sync?.requestResync?.();
+  function requestResync(reason = "scene-sync") {
+    sync?.requestResync?.(reason);
   }
 
   function getQueueLength() {
@@ -81,7 +81,7 @@ export function useSceneSync(
   function applySinglePartialUpdate(partialUpdate, syncCtx) {
     const applied = applyPartialArrayUpdateImpl(partialUpdate, syncCtx);
     if (!applied) {
-      requestResync();
+      requestResync("partial-apply-failed");
     }
     if (applied) {
       bindPartialResultToCache(partialUpdate, syncCtx);
@@ -105,7 +105,7 @@ export function useSceneSync(
 
       const applied = applyPartialArrayUpdateImpl(update, syncCtx);
       if (!applied) {
-        requestResync();
+        requestResync("partial-message-apply-failed");
         partialAppliedCallback?.(update, syncCtx, false);
         return { didApply: appliedUpdates.length > 0, failed: true };
       }
@@ -129,9 +129,14 @@ export function useSceneSync(
 
   function applyPatchMessage(message, syncCtx) {
     const payload = message?.payload || message;
-    const applied = applyPatchUpdateImpl(payload, syncCtx);
+    const applied = applyPatchUpdateImpl(
+      payload,
+      syncCtx,
+      vtkObjectManagerImpl,
+      pushCache,
+    );
     if (!applied) {
-      requestResync();
+      requestResync("patch-apply-failed");
       return { didApply: false, failed: true };
     }
 
@@ -211,7 +216,7 @@ export function useSceneSync(
         }
       } catch (error) {
         console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
-        requestResync();
+        requestResync("full-state-apply-exception");
         if (emitLifecycle) {
           emit?.("afterSceneLoaded");
         }
@@ -277,7 +282,7 @@ export function useSceneSync(
           }
         } catch (error) {
           console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
-          requestResync();
+          requestResync("full-state-apply-exception");
           if (emitLifecycle && emittedLifecycleStart) {
             emit?.("afterSceneLoaded");
           }
@@ -292,7 +297,7 @@ export function useSceneSync(
       } else if (message.kind === "arrayPartial") {
         const resolvedSyncContext = managedSyncContext?.synchronizerContext;
         if (!resolvedSyncContext) {
-          requestResync();
+          requestResync("missing-sync-context-for-partial");
           return { status: "failed", didSync: false };
         }
 
@@ -308,7 +313,7 @@ export function useSceneSync(
       } else if (message.kind === "patch") {
         const resolvedSyncContext = managedSyncContext?.synchronizerContext;
         if (!resolvedSyncContext) {
-          requestResync();
+          requestResync("missing-sync-context-for-patch");
           return { status: "failed", didSync: false };
         }
 
@@ -323,7 +328,7 @@ export function useSceneSync(
           `[${syncErrorLabel}] Unknown push message kind`,
           message.kind,
         );
-        requestResync();
+        requestResync("unknown-message-kind");
         return { status: "failed", didSync: synced };
       }
 
@@ -365,7 +370,7 @@ export function useSceneSync(
     },
     onError(error) {
       console.error(`${syncErrorLabel}: synchronize error`, error);
-      requestResync();
+      requestResync("sync-controller-failed");
     },
     finalizeSync(syncContext) {
       finalizeSync?.(syncContext);

@@ -1,4 +1,8 @@
-import { extractInlineArrays } from "./sync/syncUpdaters";
+import {
+  extractInlineArrays,
+  genericUpdaterSync,
+  getSyncUpdater,
+} from "./sync/syncUpdaters";
 
 const TYPED_ARRAY_CONSTRUCTORS = {
   Int8Array,
@@ -50,9 +54,10 @@ function collectStateHashes(state, into = new Set()) {
 }
 
 function pruneCacheToHashes(pushCache, live) {
-  // Full-state hashes are server-authoritative but delivery is not
-  // acknowledged. Keep payloads that arrived once; partial updates explicitly
-  // delete superseded array hashes via bindPartialResultToCache().
+  // The server's known-hash ledger is based on delivered payloads, not on the
+  // client's current scene. Do not evict full-state payloads here unless the
+  // server also observes that eviction. Partial updates still delete superseded
+  // hashes explicitly via bindPartialResultToCache().
   void pushCache;
   void live;
 }
@@ -231,11 +236,50 @@ export function bindPartialResultToCache(
   }
 }
 
-export function applyPatchUpdate(patch, synchronizerContext) {
+function applyObjectStatePatch(op, synchronizerContext, objectManager, pushCache) {
+  const state = op?.state;
+  if (!state?.id || !state?.type) {
+    console.warn("[pushSync] Missing object state for patch update");
+    return false;
+  }
+
+  const instance = synchronizerContext?.getInstance?.(state.id);
+  if (!instance) {
+    console.warn(`[pushSync] Instance ${state.id} not found for object patch`);
+    return false;
+  }
+
+  try {
+    extractInlineArrays(state, pushCache, { stripInlineData: true });
+
+    const updater = getSyncUpdater(state.type) || genericUpdaterSync;
+    updater(instance, state, synchronizerContext, objectManager, pushCache);
+    instance.modified?.();
+    return true;
+  } catch (error) {
+    console.warn(
+      `[pushSync] Failed to apply object patch for ${state.id}: ${error.message}`,
+    );
+    return false;
+  }
+}
+
+export function applyPatchUpdate(
+  patch,
+  synchronizerContext,
+  objectManager = null,
+  pushCache = null,
+) {
   const ops = Array.isArray(patch?.ops) ? patch.ops : [];
   const targets = [];
+  const objectPatches = [];
 
   for (const op of ops) {
+    if (op?.op === "updateObject") {
+      objectPatches.push(op);
+      continue;
+    }
+
     if (op?.op !== "setProperties") {
       console.warn(`[pushSync] Unsupported patch op ${op?.op}`);
       return false;
@@ -256,6 +300,19 @@ export function applyPatchUpdate(patch, synchronizerContext) {
     targets.push({ instance, properties: op.properties || {} });
   }
 
+  for (const op of objectPatches) {
+    if (
+      !applyObjectStatePatch(
+        op,
+        synchronizerContext,
+        objectManager,
+        pushCache,
+      )
+    ) {
+      return false;
+    }
+  }
+
   targets.forEach(({ instance, properties }) => {
     instance.set(properties);
     instance.modified?.();
@@ -272,11 +329,18 @@ export function createPushSync(
   pushCache,
   callbacks = {},
 ) {
-  const { onStateReceived, onQueueReady, onPartialUpdate } = callbacks;
+  const {
+    gapResyncDelayMs = 1000,
+    onStateReceived,
+    onQueueReady,
+    onPartialUpdate,
+  } = callbacks;
 
   let messageQueue = [];
-  let visibilityHandler = null;
   let acceptBroadcasts = false;
+  let bufferBroadcasts = false;
+  const broadcastBuffer = [];
+  let gapResyncTimer = null;
   let resyncVersion = 0;
   let clientEpoch = null;
   let clientLastSeq = 0;
@@ -316,6 +380,25 @@ export function createPushSync(
     retainCacheForAppliedStateAndQueue(states[states.length - 1]);
   }
 
+  function clearGapResyncTimer() {
+    if (gapResyncTimer !== null) {
+      clearTimeout(gapResyncTimer);
+      gapResyncTimer = null;
+    }
+  }
+
+  function scheduleGapResync(reason) {
+    if (gapResyncTimer !== null || gapResyncDelayMs === null) {
+      return;
+    }
+    gapResyncTimer = setTimeout(() => {
+      gapResyncTimer = null;
+      if (messageQueue.length) {
+        requestResync(reason);
+      }
+    }, gapResyncDelayMs);
+  }
+
   async function dispatchPartialUpdate(update) {
     if (onPartialUpdate) {
       return onPartialUpdate(update, synchronizerContext);
@@ -330,6 +413,7 @@ export function createPushSync(
 
   function enqueueMessage(payload, fallbackKind) {
     const kind = getMessageKind(payload, fallbackKind);
+    const wasEmpty = messageQueue.length === 0;
 
     // The server is authoritative: every hash referenced by `state` is either
     // already in the push cache or inlined in this payload. Capture inline
@@ -337,11 +421,10 @@ export function createPushSync(
     if (kind === "full") {
       extractInlineArrays(payload, pushCache, { stripInlineData: true });
     }
+    const message = { kind, payload };
+    messageQueue.push(message);
 
-    const wasEmpty = messageQueue.length === 0;
-    messageQueue.push({ kind, payload });
-
-    if (wasEmpty) {
+    if (wasEmpty || validateMessageEnvelope(message) === "ready") {
       onQueueReady?.();
     }
 
@@ -350,13 +433,22 @@ export function createPushSync(
     }
   }
 
+  function receiveBroadcast(payload, fallbackKind) {
+    if (!acceptBroadcasts) {
+      if (bufferBroadcasts) {
+        broadcastBuffer.push({ payload, fallbackKind });
+      }
+      return;
+    }
+    enqueueMessage(payload, fallbackKind);
+  }
+
   const wsSubscription = session.subscribe(
     "trame.vtk.delta",
     ([deltaState]) => {
-      if (!acceptBroadcasts) return;
       const messageRwId = getMessageRwId(deltaState);
       if (!rwId || String(messageRwId) === rwId) {
-        enqueueMessage(deltaState, "full");
+        receiveBroadcast(deltaState, "full");
       }
     },
   );
@@ -364,27 +456,33 @@ export function createPushSync(
   const wsPartialUpdateSubscription = session.subscribe(
     "trame.vtk.array.partial",
     ([update]) => {
-      if (!acceptBroadcasts || !synchronizerContext) return;
+      if (!synchronizerContext) return;
       const messageRwId = getMessageRwId(update);
       if (messageRwId && String(messageRwId) !== rwId) return;
 
-      enqueueMessage(update, "arrayPartial");
+      receiveBroadcast(update, "arrayPartial");
     },
   );
 
   const wsPatchSubscription = session.subscribe(
     "trame.vtk.patch",
     ([patch]) => {
-      if (!acceptBroadcasts || !synchronizerContext) return;
+      if (!synchronizerContext) return;
       const messageRwId = getMessageRwId(patch);
       if (messageRwId && String(messageRwId) !== rwId) return;
 
-      enqueueMessage(patch, "patch");
+      receiveBroadcast(patch, "patch");
     },
   );
 
-  async function requestResync() {
+  async function requestResync(reason = "client-request") {
+    if (reason !== "initial") {
+      console.warn(`[pushSync] Requesting full resync: ${reason}`);
+    }
+    clearGapResyncTimer();
     acceptBroadcasts = false;
+    bufferBroadcasts = true;
+    broadcastBuffer.length = 0;
     messageQueue.length = 0;
     pushCache.clear();
     arrayPathHashes.clear();
@@ -397,59 +495,77 @@ export function createPushSync(
       if (version !== resyncVersion) {
         return false;
       }
+      const buffered = broadcastBuffer.splice(0);
+      bufferBroadcasts = false;
       enqueueMessage(state, "full");
       acceptBroadcasts = true;
+      buffered.forEach(({ payload, fallbackKind }) => {
+        enqueueMessage(payload, fallbackKind);
+      });
       return true;
     } catch (error) {
       if (version !== resyncVersion) {
         return false;
       }
+      bufferBroadcasts = false;
+      broadcastBuffer.length = 0;
       console.warn("[pushSync] Failed to request resync", error);
       acceptBroadcasts = true;
       return false;
     }
   }
 
-  visibilityHandler = () => {
-    if (document.visibilityState === "visible") {
-      requestResync();
-    }
-  };
-  document.addEventListener("visibilitychange", visibilityHandler);
+  requestResync("initial");
 
-  requestResync();
-
-  function validateMessageEnvelope(message) {
+  function validateMessageEnvelope(
+    message,
+    currentEpoch = clientEpoch,
+    currentSeq = clientLastSeq,
+  ) {
     const { kind, payload } = message;
     const { epoch, seq, baseSeq } = payload || {};
 
-    if (epoch !== undefined && clientEpoch !== null && epoch < clientEpoch) {
+    if (epoch !== undefined && currentEpoch !== null && epoch < currentEpoch) {
       return "drop";
     }
 
     if (
       epoch !== undefined &&
-      clientEpoch !== null &&
-      epoch === clientEpoch &&
+      currentEpoch !== null &&
+      epoch === currentEpoch &&
       seq !== undefined &&
-      seq <= clientLastSeq
+      seq <= currentSeq
     ) {
       return "drop";
     }
 
+    if (currentEpoch === null) {
+      return kind === "full" ? "ready" : "resync";
+    }
+
+    if (epoch !== undefined && epoch !== currentEpoch) {
+      return "resync";
+    }
+
     if (kind === "full") {
-      return "ready";
+      if (seq === undefined || seq === currentSeq + 1) {
+        return "ready";
+      }
+      if (seq > currentSeq + 1) {
+        return "blocked";
+      }
+      return "drop";
     }
 
-    if (clientEpoch === null) {
+    if (baseSeq === undefined) {
       return "resync";
     }
 
-    if (epoch !== undefined && epoch !== clientEpoch) {
-      return "resync";
+    if (baseSeq > currentSeq) {
+      return "blocked";
     }
 
-    if (baseSeq === undefined || baseSeq !== clientLastSeq) {
+    if (baseSeq !== currentSeq) {
       return "resync";
     }
 
@@ -457,18 +573,26 @@ export function createPushSync(
   }
 
   function takeNextMessage() {
-    while (messageQueue.length) {
-      const message = messageQueue[0];
+    for (let index = 0; index < messageQueue.length; ) {
+      const message = messageQueue[index];
       const status = validateMessageEnvelope(message);
       if (status === "drop") {
-        messageQueue.shift();
+        messageQueue.splice(index, 1);
         continue;
       }
       if (status === "resync") {
-        requestResync();
+        clearGapResyncTimer();
+        requestResync("message-envelope");
         return null;
       }
-      return messageQueue.shift();
+      if (status === "ready") {
+        clearGapResyncTimer();
+        return messageQueue.splice(index, 1)[0];
+      }
+      index += 1;
+    }
+    if (messageQueue.length) {
+      scheduleGapResync("message-envelope-gap-timeout");
     }
     return null;
   }
@@ -485,7 +609,7 @@ export function createPushSync(
         `[pushSync] Partial update hash mismatch at ${key}: ` +
           `expected=${currentHash}, oldHash=${update.oldHash}`,
       );
-      requestResync();
+      requestResync("partial-old-hash-mismatch");
       return false;
     }
     return true;
@@ -522,22 +646,41 @@ export function createPushSync(
   }
 
   function markMessageFailed() {
-    requestResync();
+    requestResync("message-apply-failed");
   }
 
   function drainReadyStates() {
     const readyStates = [];
+    let currentEpoch = clientEpoch;
+    let currentSeq = clientLastSeq;
     while (messageQueue.length && messageQueue[0].kind === "full") {
-      const status = validateMessageEnvelope(messageQueue[0]);
+      const status = validateMessageEnvelope(
+        messageQueue[0],
+        currentEpoch,
+        currentSeq,
+      );
       if (status === "drop") {
         messageQueue.shift();
         continue;
       }
       if (status === "resync") {
-        requestResync();
+        clearGapResyncTimer();
+        requestResync("full-state-envelope");
         break;
       }
-      readyStates.push(messageQueue.shift().payload);
+      if (status === "blocked") {
+        scheduleGapResync("full-state-envelope-gap-timeout");
+        break;
+      }
+      clearGapResyncTimer();
+      const state = messageQueue.shift().payload;
+      if (state?.epoch !== undefined) {
+        currentEpoch = state.epoch;
+      }
+      if (state?.seq !== undefined) {
+        currentSeq = state.seq;
+      }
+      readyStates.push(state);
     }
     return readyStates;
   }
@@ -551,9 +694,15 @@ export function createPushSync(
         continue;
       }
       if (status === "resync") {
-        requestResync();
+        clearGapResyncTimer();
+        requestResync("partial-envelope");
         break;
       }
+      if (status === "blocked") {
+        scheduleGapResync("partial-envelope-gap-timeout");
+        break;
+      }
+      clearGapResyncTimer();
       const message = messageQueue.shift();
       readyUpdates.push(...getPartialUpdates(message.payload));
     }
@@ -593,7 +742,10 @@ export function createPushSync(
 
   function cleanup() {
     resyncVersion += 1;
+    clearGapResyncTimer();
     messageQueue.length = 0;
+    broadcastBuffer.length = 0;
+    bufferBroadcasts = false;
     pushCache.clear();
     arrayPathHashes.clear();
 
@@ -605,10 +757,6 @@ export function createPushSync(
     }
     if (wsPatchSubscription) {
       session.unsubscribe(wsPatchSubscription);
-    }
-    if (visibilityHandler) {
-      document.removeEventListener("visibilitychange", visibilityHandler);
-      visibilityHandler = null;
     }
   }
 

@@ -877,3 +877,20 @@ def translate_scene(
     result = translator.translate(root_id)
     result["mtime"] = _scene_mtime_counter[0]
     return result
+
+
+def translate_object(
+    object_manager,
+    obj_id,
+    collection_tracker=None,
+    version_registry=None,
+    rw_id=None,
+):
+    """Translate one vtkObjectManager object into the vtk.js state shape."""
+    translator = VtkJsTranslator(
+        object_manager,
+        collection_tracker,
+        version_registry=version_registry,
+        rw_id=rw_id,
+    )
+    return translator._translate_object(obj_id)

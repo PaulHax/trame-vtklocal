@@ -57,14 +57,9 @@ IGNORED_DELTA_CLASS_NAMES = {
 DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
 STRUCTURAL_DIRTY_CLASS_NAMES = {
     "vtkActorCollection",
-    "vtkGenericOpenGLRenderWindow",
     "vtkLightCollection",
-    "vtkOpenGLRenderer",
     "vtkPropCollection",
-    "vtkRenderer",
     "vtkRendererCollection",
-    "vtkRenderWindow",
-    "vtkXOpenGLRenderWindow",
 }
 JS_ARRAY_DTYPE_MAP = {
     "Int8Array": np.int8,
@@ -620,6 +615,8 @@ class PushSync:
             self._dirty_structural_ids.clear()
             return
 
+        pending_dirty_ids = set(self._dirty_object_ids)
+        pending_structural_dirty = self._dirty_structure_pending
         self._clear_dirty_observers()
         live_ids = {str(object_id) for object_id in (status.get("ids") or set())}
         owner_ids = {}
@@ -647,8 +644,16 @@ class PushSync:
             for object_id, class_name in classes.items()
             if class_name in STRUCTURAL_DIRTY_CLASS_NAMES
         }
-        self._dirty_object_ids.clear()
-        self._dirty_structure_pending = False
+        self._dirty_object_ids = {
+            object_id
+            for object_id in pending_dirty_ids
+            if object_id in live_ids
+            or object_id in owner_ids
+            or object_id in pipeline_updates
+        }
+        self._dirty_structure_pending = pending_structural_dirty or bool(
+            self._dirty_object_ids & self._dirty_structural_ids
+        )
 
     def _sync_dataset_dirty_children(
         self,
@@ -1180,6 +1185,24 @@ class PushSync:
             payload["extra"] = extra
         return payload, ledger_state, None, translate_ms
 
+    def _build_sequence_patch(self, client_id, base_seq, seq, extra=None):
+        previous_state = self._client_states.get(client_id)
+        if previous_state is None:
+            return None, None
+
+        payload = {
+            "version": PUSH_PROTOCOL_VERSION,
+            "rwId": self._render_window_id,
+            "kind": "patch",
+            "epoch": self._get_client_epoch(client_id),
+            "baseSeq": base_seq,
+            "seq": seq,
+            "ops": [],
+        }
+        if extra is not None:
+            payload["extra"] = extra
+        return payload, previous_state
+
     def _publish_client_state(
         self,
         client_id,
@@ -1487,6 +1510,20 @@ class PushSync:
         self._sequence = seq
         for result_type, sid, reason, payload_data, translate_ms in results:
             if result_type == "noop":
+                patch, ledger_state = self._build_sequence_patch(
+                    sid,
+                    base_seq,
+                    seq,
+                    extra=extra,
+                )
+                if patch is not None:
+                    self._publish_patch(
+                        sid,
+                        patch,
+                        ledger_state,
+                        translate_ms=translate_ms,
+                        status=status,
+                    )
                 continue
             if result_type == "patch":
                 patch, ledger_state = payload_data
@@ -1601,6 +1638,19 @@ class PushSync:
         self._sequence = seq
         for result_type, sid, reason, payload_data, translate_ms, candidate_ids in results:
             if result_type == "noop":
+                patch, ledger_state = self._build_sequence_patch(
+                    sid,
+                    base_seq,
+                    seq,
+                    extra=extra,
+                )
+                if patch is not None:
+                    self._publish_patch(
+                        sid,
+                        patch,
+                        ledger_state,
+                        translate_ms=translate_ms,
+                    )
                 continue
             if result_type == "patch":
                 patch, ledger_state = payload_data

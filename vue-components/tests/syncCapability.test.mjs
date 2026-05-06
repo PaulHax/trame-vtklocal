@@ -61,3 +61,34 @@ test("prepared push states apply even when root mtime is unchanged", async () =>
     { marker: "second" },
   ]);
 });
+
+test("array validation finds descriptors nested in arbitrary state objects", async () => {
+  const { allArraysHaveInlineData } = await loadModule(
+    "/src/components/sync/syncCapability.js",
+  );
+
+  const state = {
+    id: "rw",
+    properties: {
+      custom: {
+        arbitrary: {
+          payload: {
+            hash: "nested-hash",
+            dataType: "Float32Array",
+            numberOfComponents: 3,
+            size: 3,
+          },
+        },
+      },
+    },
+  };
+
+  assert.equal(allArraysHaveInlineData(state, new Map()), false);
+  assert.equal(
+    allArraysHaveInlineData(
+      state,
+      new Map([["nested-hash", new Float32Array([1, 2, 3])]]),
+    ),
+    true,
+  );
+});

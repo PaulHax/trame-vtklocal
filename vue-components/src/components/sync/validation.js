@@ -14,73 +14,60 @@
 export function allArraysHaveInlineData(state, pushCache) {
   const inlineHashes = new Set();
 
-  function collectInlineHashes(obj) {
-    if (!obj || typeof obj !== 'object') return;
-
-    if (Array.isArray(obj)) {
-      obj.forEach((item) => collectInlineHashes(item));
-      return;
-    }
-
-    if (obj.hash && obj.dataType && obj.content != null) {
-      inlineHashes.add(obj.hash);
-    }
-
-    if (obj.properties) {
-      Object.values(obj.properties).forEach((value) => collectInlineHashes(value));
-    }
-
-    if (obj.dependencies) {
-      obj.dependencies.forEach((dep) => collectInlineHashes(dep));
-    }
-
-    if (obj.arrays) {
-      Object.values(obj.arrays).forEach((arr) => collectInlineHashes(arr));
-    }
+  function isArrayDescriptor(value) {
+    return (
+      value &&
+      typeof value === "object" &&
+      value.hash !== undefined &&
+      value.dataType !== undefined
+    );
   }
 
-  function checkObj(obj) {
-    if (!obj || typeof obj !== 'object') return true;
+  function isBinaryLike(value) {
+    return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+  }
 
-    if (Array.isArray(obj)) {
-      return obj.every((item) => checkObj(item));
+  function visitArrayDescriptors(value, callback) {
+    if (!value || typeof value !== "object" || isBinaryLike(value)) {
+      return true;
     }
 
-    if (obj.hash && obj.dataType) {
-      if (
-        obj.content == null &&
-        !inlineHashes.has(obj.hash) &&
-        !pushCache?.has(obj.hash)
-      ) {
-        console.warn('[validation] Missing array:', obj.hash, 'name:', obj.name);
-        return false;
-      }
+    if (Array.isArray(value)) {
+      return value.every((item) => visitArrayDescriptors(item, callback));
     }
 
-    if (obj.properties) {
-      const propsValid = Object.values(obj.properties).every((value) =>
-        checkObj(value)
-      );
-      if (!propsValid) return false;
+    if (isArrayDescriptor(value)) {
+      return callback(value) !== false;
     }
 
-    if (obj.dependencies) {
-      const depsValid = obj.dependencies.every((dep) => checkObj(dep));
-      if (!depsValid) return false;
-    }
+    return Object.values(value).every((child) =>
+      visitArrayDescriptors(child, callback),
+    );
+  }
 
-    if (obj.arrays) {
-      const arraysValid = Object.values(obj.arrays).every((arr) =>
-        checkObj(arr)
-      );
-      if (!arraysValid) return false;
+  visitArrayDescriptors(state, (descriptor) => {
+    if (descriptor.content != null) {
+      inlineHashes.add(descriptor.hash);
     }
-
     return true;
-  }
+  });
 
-  collectInlineHashes(state);
-  return checkObj(state);
+  return visitArrayDescriptors(state, (descriptor) => {
+    if (
+      descriptor.content == null &&
+      !inlineHashes.has(descriptor.hash) &&
+      !pushCache?.has(descriptor.hash)
+    ) {
+      console.warn(
+        "[validation] Missing array:",
+        descriptor.hash,
+        "name:",
+        descriptor.name,
+      );
+      return false;
+    }
+    return true;
+  });
 }
 
 export default {

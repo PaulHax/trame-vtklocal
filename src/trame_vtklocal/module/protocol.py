@@ -229,12 +229,10 @@ class ObjectManagerAPI(LinkProtocol):
         if isinstance(node.get("content"), (bytes, memoryview)):
             node["content"] = self.addAttachment(memoryview(node["content"]))
 
-        if "properties" in node and isinstance(node["properties"], dict):
-            for value in node["properties"].values():
-                self._convert_bytes_to_attachments(value)
-        if "dependencies" in node:
-            for dep in node["dependencies"]:
-                self._convert_bytes_to_attachments(dep)
+        for key, value in node.items():
+            if key == "content":
+                continue
+            self._convert_bytes_to_attachments(value)
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id):

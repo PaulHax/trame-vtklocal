@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+import numpy as np
+
 from trame_vtklocal.widgets.push_sync import PushSync
 from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
 from trame_vtklocal.widgets.vtkjs_shared_view import VtkJsSharedView
@@ -22,19 +24,32 @@ class _FakeServer:
 
 
 class _FakePoints:
+    def __init__(self, data=None):
+        self._data = (
+            data
+            if data is not None
+            else np.asarray([(1.0, 2.0, 3.0)], dtype=np.float32)
+        )
+
     def GetData(self):
-        return [(1.0, 2.0, 3.0)]
+        return self._data
 
 
 class _FakePolyData:
+    def __init__(self, points_data=None):
+        self._points = _FakePoints(points_data)
+
     def GetPoints(self):
-        return _FakePoints()
+        return self._points
 
 
 class _FakeObjectManager:
+    def __init__(self, points_data=None):
+        self._points_data = points_data
+
     def GetObjectAtId(self, vtk_id):
         if vtk_id == 62:
-            return _FakePolyData()
+            return _FakePolyData(self._points_data)
         return None
 
     def GetBlob(self, _hash):
@@ -42,8 +57,8 @@ class _FakeObjectManager:
 
 
 class _FakeApi:
-    def __init__(self):
-        self.vtk_object_manager = _FakeObjectManager()
+    def __init__(self, points_data=None):
+        self.vtk_object_manager = _FakeObjectManager(points_data)
 
     def register_push_view(self, *_args):
         pass
@@ -308,6 +323,46 @@ def test_push_sync_partial_flush_advances_synthetic_hash_ledger():
     points = _find_points_array(delta_state, "62")
     assert points["hash"] == partial_update["newHash"]
     assert "content" not in points
+
+
+def test_push_sync_extract_points_region_preserves_float64_dtype():
+    polydata = _FakePolyData(
+        np.asarray([(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)], dtype=np.float64)
+    )
+
+    payload, data_type, bytes_per_tuple = PushSync.extract_array_region(
+        polydata, "points", start=1, count=1
+    )
+
+    assert data_type == "Float64Array"
+    assert bytes_per_tuple == 24
+    assert np.frombuffer(payload, dtype=np.float64).tolist() == [4.0, 5.0, 6.0]
+
+
+def test_push_sync_synthetic_points_payload_matches_descriptor_type():
+    push_sync = PushSync(
+        _FakeServer(),
+        _make_points_state_getter(),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+        api=_FakeApi(
+            np.asarray([(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)], dtype=np.float64)
+        ),
+    )
+
+    payload = push_sync._resolve_payload(
+        {"hash": "v:1:62:points:1", "dataType": "Float64Array"}
+    )
+
+    assert len(payload) == 6 * 8
+    assert np.frombuffer(payload, dtype=np.float64).tolist() == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+    ]
 
 
 def test_push_sync_client_resync_returns_ordered_full_state_with_fresh_epoch():

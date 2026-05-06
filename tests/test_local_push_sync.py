@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import numpy as np
 
+from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.widgets.push_sync import PushSync
 from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
 from trame_vtklocal.widgets.vtkjs_shared_view import VtkJsSharedView
@@ -44,21 +45,22 @@ class _FakePolyData:
 
 
 class _FakeObjectManager:
-    def __init__(self, points_data=None):
+    def __init__(self, points_data=None, blobs=None):
         self._points_data = points_data
+        self._blobs = blobs or {}
 
     def GetObjectAtId(self, vtk_id):
         if vtk_id == 62:
             return _FakePolyData(self._points_data)
         return None
 
-    def GetBlob(self, _hash):
-        return None
+    def GetBlob(self, blob_hash):
+        return self._blobs.get(blob_hash)
 
 
 class _FakeApi:
-    def __init__(self, points_data=None):
-        self.vtk_object_manager = _FakeObjectManager(points_data)
+    def __init__(self, points_data=None, blobs=None):
+        self.vtk_object_manager = _FakeObjectManager(points_data, blobs)
 
     def register_push_view(self, *_args):
         pass
@@ -68,6 +70,18 @@ class _FakeApi:
 
     def _convert_bytes_to_attachments(self, _state):
         pass
+
+
+class _FakeAttachmentProtocol:
+    def __init__(self):
+        self.attachments = []
+
+    def addAttachment(self, payload):
+        self.attachments.append(bytes(payload))
+        return f"attachment:{len(self.attachments)}"
+
+    def _convert_bytes_to_attachments(self, node):
+        ObjectManagerAPI._convert_bytes_to_attachments(self, node)
 
 
 def _state_with_points(instance_id, points_hash):
@@ -97,6 +111,27 @@ def _find_points_array(state, instance_id):
 def _make_points_state_getter(instance_id="62", points_hash="shared-points"):
     def get_state(_version_registry=None, _collection_tracker=None):
         return deepcopy(_state_with_points(instance_id, points_hash))
+
+    return get_state
+
+
+def _make_nested_array_state_getter(array_hash="nested-array"):
+    def get_state(_version_registry=None, _collection_tracker=None):
+        return {
+            "id": "rw",
+            "properties": {
+                "custom": {
+                    "arbitrary": {
+                        "payload": {
+                            "hash": array_hash,
+                            "dataType": "Float32Array",
+                            "numberOfComponents": 1,
+                            "size": 3,
+                        }
+                    }
+                }
+            },
+        }
 
     return get_state
 
@@ -236,6 +271,73 @@ def test_push_sync_resync_is_hash_first():
     assert "content" not in _find_points_array(full_state, "62")
 
 
+def test_push_sync_inlines_nested_array_descriptors_in_full_state():
+    payload = np.asarray([1, 2, 3], dtype=np.float32).tobytes()
+    push_sync = PushSync(
+        _FakeServer(),
+        _make_nested_array_state_getter("nested-array"),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+        api=_FakeApi(blobs={"nested-array": payload}),
+    )
+
+    state = push_sync.client_resync("client-a")
+    descriptor = state["properties"]["custom"]["arbitrary"]["payload"]
+
+    assert descriptor["content"] == payload
+    assert push_sync._known_hashes["client-a"] == {"nested-array"}
+
+
+def test_push_sync_reinlines_known_arrays_on_full_update():
+    payload = np.asarray([1, 2, 3], dtype=np.float32).tobytes()
+    server = _FakeServer()
+    push_sync = PushSync(
+        server,
+        _make_nested_array_state_getter("small-array"),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+        api=_FakeApi(blobs={"small-array": payload}),
+    )
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+    push_sync.update()
+
+    assert len(server.protocol.messages) == 1
+    _, state, _ = server.protocol.messages[0]
+    descriptor = state["properties"]["custom"]["arbitrary"]["payload"]
+    assert descriptor["content"] == payload
+
+
+def test_protocol_converts_nested_inline_bytes_to_attachments():
+    protocol = _FakeAttachmentProtocol()
+    state = {
+        "id": "rw",
+        "arrays": {
+            "nested": {
+                "hash": "nested-array",
+                "dataType": "Float32Array",
+                "content": b"abc",
+            }
+        },
+        "properties": {
+            "custom": {
+                "payload": {
+                    "hash": "custom-array",
+                    "dataType": "Uint8Array",
+                    "content": memoryview(b"def"),
+                }
+            }
+        },
+    }
+
+    ObjectManagerAPI._convert_bytes_to_attachments(protocol, state)
+
+    assert protocol.attachments == [b"abc", b"def"]
+    assert state["arrays"]["nested"]["content"] == "attachment:1"
+    assert state["properties"]["custom"]["payload"]["content"] == "attachment:2"
+
+
 def test_push_sync_uses_independent_collection_trackers_per_client():
     def get_state(_version_registry=None, collection_tracker=None):
         prev_ids = collection_tracker.get("items", set())
@@ -322,7 +424,7 @@ def test_push_sync_partial_flush_advances_synthetic_hash_ledger():
     assert client_id == "client-a"
     points = _find_points_array(delta_state, "62")
     assert points["hash"] == partial_update["newHash"]
-    assert "content" not in points
+    assert "content" in points
 
 
 def test_push_sync_extract_points_region_preserves_float64_dtype():

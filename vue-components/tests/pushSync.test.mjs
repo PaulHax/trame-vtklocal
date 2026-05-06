@@ -59,6 +59,37 @@ function createInlineState({
   return withFullEnvelope(state, { epoch, seq });
 }
 
+function createNestedInlineState({
+  id = "rw",
+  mtime = 0,
+  hash = "nested-hash",
+  payload = [1, 2, 3],
+  epoch = 1,
+  seq = 0,
+} = {}) {
+  return withFullEnvelope(
+    {
+      id,
+      mtime,
+      properties: {
+        custom: {
+          arbitrary: {
+            payload: {
+              hash,
+              dataType: "Float32Array",
+              numberOfComponents: 3,
+              size: payload.length,
+              name: "NestedPoints",
+              content: new Uint8Array(new Float32Array(payload).buffer),
+            },
+          },
+        },
+      },
+    },
+    { epoch, seq },
+  );
+}
+
 function createEmptyState(mtime = 0, { epoch = 1, seq = 0 } = {}) {
   return withFullEnvelope({ id: "rw", mtime, properties: {} }, { epoch, seq });
 }
@@ -207,7 +238,67 @@ test("createPushSync captures inlined payloads from delta states", async () => {
   }
 });
 
-test("createPushSync retains queued state payloads until states are marked applied", async () => {
+test("createPushSync retains nested inlined payloads after states are applied", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    sync.markStatesApplied(sync.drainReadyStates());
+
+    const state = createNestedInlineState({
+      mtime: 1,
+      hash: "nested-hash",
+      seq: 1,
+    });
+    emit("trame.vtk.delta", state);
+    await flushAsyncWork();
+
+    const states = sync.drainReadyStates();
+    assert.equal(states.length, 1);
+    assert.ok(pushCache.has("nested-hash"));
+    assert.equal(
+      states[0].properties.custom.arbitrary.payload.content,
+      undefined,
+    );
+
+    sync.markStatesApplied(states);
+    assert.ok(pushCache.has("nested-hash"));
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync retains full-state payloads after states are marked applied", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
 
@@ -254,7 +345,7 @@ test("createPushSync retains queued state payloads until states are marked appli
     assert.ok(pushCache.has("hash-b"));
 
     sync.markStatesApplied(states);
-    assert.equal(pushCache.has("hash-a"), false);
+    assert.equal(pushCache.has("hash-a"), true);
     assert.equal(pushCache.has("hash-b"), true);
 
     sync.cleanup();

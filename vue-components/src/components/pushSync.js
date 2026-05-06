@@ -22,9 +22,13 @@ function isArrayDescriptor(value) {
   );
 }
 
+function isBinaryLike(value) {
+  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+}
+
 function collectStateHashes(state, into = new Set()) {
   function visit(value) {
-    if (!value || typeof value !== "object") {
+    if (!value || typeof value !== "object" || isBinaryLike(value)) {
       return;
     }
 
@@ -35,21 +39,10 @@ function collectStateHashes(state, into = new Set()) {
 
     if (isArrayDescriptor(value)) {
       into.add(value.hash);
+      return;
     }
 
-    if (value.arrays) {
-      Object.values(value.arrays).forEach((arrayValue) => visit(arrayValue));
-    }
-
-    if (value.properties) {
-      Object.values(value.properties).forEach((propertyValue) =>
-        visit(propertyValue),
-      );
-    }
-
-    if (value.dependencies) {
-      value.dependencies.forEach((dependency) => visit(dependency));
-    }
+    Object.values(value).forEach((child) => visit(child));
   }
 
   visit(state);
@@ -57,11 +50,11 @@ function collectStateHashes(state, into = new Set()) {
 }
 
 function pruneCacheToHashes(pushCache, live) {
-  pushCache.forEach((_value, hash) => {
-    if (!live.has(hash)) {
-      pushCache.delete(hash);
-    }
-  });
+  // Full-state hashes are server-authoritative but delivery is not
+  // acknowledged. Keep payloads that arrived once; partial updates explicitly
+  // delete superseded array hashes via bindPartialResultToCache().
+  void pushCache;
+  void live;
 }
 
 function getPartialArrayTarget(update, synchronizerContext) {
@@ -110,7 +103,12 @@ export function getPartialUpdates(message) {
 
 function collectStateArrayPathHashes(state, into = new Map()) {
   function visit(value) {
-    if (!value || typeof value !== "object") {
+    if (!value || typeof value !== "object" || isBinaryLike(value)) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item));
       return;
     }
 
@@ -125,9 +123,11 @@ function collectStateArrayPathHashes(state, into = new Map()) {
       });
     }
 
-    if (Array.isArray(value.dependencies)) {
-      value.dependencies.forEach((dependency) => visit(dependency));
+    if (isArrayDescriptor(value)) {
+      return;
     }
+
+    Object.values(value).forEach((child) => visit(child));
   }
 
   visit(state);

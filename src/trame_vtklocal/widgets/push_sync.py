@@ -44,20 +44,8 @@ def _walk_descriptors(state):
         yield state
         return
 
-    properties = state.get("properties")
-    if isinstance(properties, dict):
-        for value in properties.values():
-            yield from _walk_descriptors(value)
-
-    arrays = state.get("arrays")
-    if isinstance(arrays, dict):
-        for value in arrays.values():
-            yield from _walk_descriptors(value)
-
-    deps = state.get("dependencies")
-    if isinstance(deps, list):
-        for dep in deps:
-            yield from _walk_descriptors(dep)
+    for value in state.values():
+        yield from _walk_descriptors(value)
 
 
 def _collect_hashes(state):
@@ -327,14 +315,10 @@ class PushSync:
             return None
         return bytes(memoryview(blob))
 
-    def _inline_payloads(self, state, missing):
+    def _inline_payloads(self, state, _missing):
         inlined = set()
-        if not missing:
-            return inlined
         for descriptor in _walk_descriptors(state):
             hash_val = descriptor["hash"]
-            if hash_val not in missing:
-                continue
             if descriptor.get("content") is not None:
                 inlined.add(hash_val)
                 continue

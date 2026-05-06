@@ -175,6 +175,19 @@ function isInlineArrayMetadata(value) {
   );
 }
 
+function isArrayMetadata(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    value.hash !== undefined &&
+    value.dataType !== undefined
+  );
+}
+
+function isBinaryLike(value) {
+  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+}
+
 function inlineContentToTypedArray(arrayMetadata) {
   const content = arrayMetadata.content;
   let buffer;
@@ -226,35 +239,25 @@ export function extractInlineArrays(state, pushCache, options = {}) {
 
   const { stripInlineData = true } = options;
   const extractFromValue = (value) => {
+    if (!value || typeof value !== "object" || isBinaryLike(value)) {
+      return;
+    }
     if (Array.isArray(value)) {
       value.forEach((item) => extractFromValue(item));
       return;
     }
     if (isInlineArrayMetadata(value)) {
       storeInlineArray(value, pushCache, { stripInlineData });
+      return;
     }
+    if (isArrayMetadata(value)) {
+      return;
+    }
+
+    Object.values(value).forEach((child) => extractFromValue(child));
   };
 
-  if (state.arrays) {
-    Object.values(state.arrays).forEach((arrayMetadata) => {
-      if (isInlineArrayMetadata(arrayMetadata)) {
-        storeInlineArray(arrayMetadata, pushCache, { stripInlineData });
-      }
-    });
-  }
-
-  if (state.properties) {
-    Object.values(state.properties).forEach((value) => {
-      extractFromValue(value);
-    });
-  }
-
-  if (state.dependencies) {
-    state.dependencies.forEach((childState) => {
-      extractInlineArrays(childState, pushCache, { stripInlineData });
-    });
-  }
-
+  extractFromValue(state);
   return pushCache;
 }
 

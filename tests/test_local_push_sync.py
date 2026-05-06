@@ -521,6 +521,81 @@ def test_push_sync_dirty_update_skips_render_window_refresh(monkeypatch):
     assert server.protocol.messages[0][0] == "trame.vtk.patch"
 
 
+def test_push_sync_client_resync_preserves_pending_dirty_for_other_clients():
+    server = _FakeServer()
+    api, _rw, _renderer, actor, _polydata, _points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, _rw, rw_id)
+
+    actor_id = str(api.vtk_object_manager.GetId(actor))
+    push_sync.client_resync("client-a")
+    assert calls["full_translate"] == 1
+
+    actor.SetVisibility(False)
+    assert actor_id in push_sync._dirty_object_ids
+    push_sync.client_resync("client-b")
+    assert calls["full_translate"] == 2
+    assert actor_id in push_sync._dirty_object_ids
+
+    server.protocol.messages.clear()
+    push_sync.update()
+
+    assert calls["full_translate"] == 2
+    assert len(server.protocol.messages) == 2
+    messages_by_client = {
+        client_id: (topic, payload)
+        for topic, payload, client_id in server.protocol.messages
+    }
+    topic_a, patch_a = messages_by_client["client-a"]
+    topic_b, patch_b = messages_by_client["client-b"]
+    assert topic_a == "trame.vtk.patch"
+    assert patch_a["ops"] == [
+        {
+            "op": "setProperties",
+            "id": actor_id,
+            "properties": {"visibility": 0},
+        }
+    ]
+    assert topic_b == "trame.vtk.patch"
+    assert patch_b["ops"] == []
+    assert patch_b["baseSeq"] == 0
+    assert patch_b["seq"] == 1
+
+    server.protocol.messages.clear()
+    actor.SetVisibility(True)
+    push_sync.update()
+
+    assert calls["full_translate"] == 2
+    assert len(server.protocol.messages) == 2
+    assert {topic for topic, _payload, _client in server.protocol.messages} == {
+        "trame.vtk.patch"
+    }
+    assert {
+        client_id: payload["ops"][0]["properties"]["visibility"]
+        for _topic, payload, client_id in server.protocol.messages
+    } == {"client-a": 1, "client-b": 1}
+
+
+def test_push_sync_renderer_and_render_window_dirty_do_not_force_full_fallback():
+    server = _FakeServer()
+    api, rw, renderer, _actor, _polydata, _points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    renderer.Modified()
+    rw.Modified()
+    push_sync.update(extra={"camera": {"reason": "routine-render-dirty"}})
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert client_id == "client-a"
+    assert patch["kind"] == "patch"
+    assert patch["extra"] == {"camera": {"reason": "routine-render-dirty"}}
+
+
 def test_push_sync_extra_only_update_skips_vtk_refresh(monkeypatch):
     server = _FakeServer()
     api, rw, _renderer, _actor, _polydata, _points, rw_id = _make_real_vtk_scene()

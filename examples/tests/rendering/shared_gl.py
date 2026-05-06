@@ -221,6 +221,7 @@ class SharedGLTest:
         server = self.server
         ctrl = server.controller
         server.state.rendering_ready = 0
+        server.state.mark_then_update_error = ""
 
         server.enable_module(
             {"scripts": [f"data:text/javascript,{url_quote(JS_CODE)}"]}
@@ -228,9 +229,11 @@ class SharedGLTest:
 
         with DivLayout(server):
             html.Div("{{ rendering_ready }}", classes="readyCount")
+            html.Div("{{ mark_then_update_error }}", classes="markThenUpdateError")
             client.Style(
                 "body { margin: 0; } "
                 ".readyCount { z-index: 10; position: absolute; left: 0; top: 0; }"
+                ".markThenUpdateError { display: none; }"
             )
             html.Canvas(
                 id="shared-canvas",
@@ -276,6 +279,7 @@ class SharedGLTest:
 
         @server.trigger("mark_then_update")
         def mark_then_update():
+            server.state.mark_then_update_error = ""
             self.cone.Update()
             polydata = self.cone.GetOutput()
             pts = polydata.GetPoints()
@@ -286,7 +290,10 @@ class SharedGLTest:
             pts.Modified()
             polydata.Modified()
             view.mark_modified(polydata, "points", start=0, count=len(arr))
-            view.update()
+            try:
+                view.update()
+            except RuntimeError as exc:
+                server.state.mark_then_update_error = str(exc)
 
 
 def main():

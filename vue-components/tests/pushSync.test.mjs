@@ -32,6 +32,7 @@ function createDocumentStub() {
 function withFullEnvelope(state, { epoch = 1, seq = 0 } = {}) {
   return {
     ...state,
+    version: 1,
     rwId: state.rwId ?? state.id,
     kind: "full",
     epoch,
@@ -139,6 +140,7 @@ function createPatchMessage({
   extra,
 } = {}) {
   const message = {
+    version: 1,
     rwId,
     kind: "patch",
     epoch,
@@ -152,7 +154,7 @@ function createPatchMessage({
   return message;
 }
 
-function createClientHarness({ onCall }) {
+function createClientHarness({ onCall, onDispose }) {
   const subscriptions = new Map();
 
   const session = {
@@ -164,6 +166,9 @@ function createClientHarness({ onCall }) {
       subscriptions.delete(subscription.topic);
     },
     call(method, args) {
+      if (method === "vtkjs.push.dispose") {
+        return onDispose ? onDispose(args) : Promise.resolve(true);
+      }
       return onCall(method, args);
     },
   };
@@ -239,6 +244,51 @@ test("createPushSync captures inlined payloads from delta states", async () => {
     assert.equal(pushCache.get("hash-a").length, 3);
 
     sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync cleanup disposes server-side push state", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const disposeCalls = [];
+    const { client } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+      onDispose(args) {
+        disposeCalls.push(args);
+        return Promise.resolve(true);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.cleanup();
+
+    assert.deepEqual(disposeCalls, [["rw"]]);
   } finally {
     globalThis.document = previousDocument;
   }
@@ -526,6 +576,260 @@ test("createPushSync does not request resync on visibility changes", async () =>
   }
 });
 
+test("createPushSync requests resync for missing message protocol version", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        getInstance() {
+          return null;
+        },
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const patch = createPatchMessage({ baseSeq: 0, seq: 1 });
+    delete patch.version;
+    emit("trame.vtk.patch", patch);
+
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 2);
+    assert.equal(sync.getQueueLength(), 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync requests resync for missing arrayPartial protocol version", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    emit("trame.vtk.array.partial", {
+      rwId: "rw",
+      kind: "arrayPartial",
+      epoch: 1,
+      baseSeq: 0,
+      seq: 1,
+      updates: [],
+    });
+
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 2);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync requests resync for missing message kind", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        getInstance() {
+          return null;
+        },
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const patch = createPatchMessage({ baseSeq: 0, seq: 1 });
+    delete patch.kind;
+    emit("trame.vtk.patch", patch);
+
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 2);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync requests resync for missing render-window id", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        getInstance() {
+          return null;
+        },
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const patch = createPatchMessage({ baseSeq: 0, seq: 1 });
+    delete patch.rwId;
+    emit("trame.vtk.patch", patch);
+
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 2);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync rejects unsupported resync protocol version", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve({
+            ...createEmptyState(),
+            version: 999,
+          });
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 1);
+    assert.equal(sync.getQueueLength(), 0);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test("createPushSync buffers partial updates until queued states drain", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
@@ -580,6 +884,7 @@ test("createPushSync buffers partial updates until queued states drain", async (
       dataType: "Float32Array",
     };
     const partialMessage = {
+      version: 1,
       rwId: "rw",
       kind: "arrayPartial",
       epoch: 1,
@@ -644,6 +949,7 @@ test("createPushSync preserves full, partial, full stream order", async () => {
 
     const stateA = createEmptyState(1, { seq: 1 });
     const partial = {
+      version: 1,
       rwId: "rw",
       kind: "arrayPartial",
       epoch: 1,
@@ -1016,6 +1322,7 @@ test("createPushSync coalesces consecutive property patches before apply", async
     assert.equal(sync.getQueueLength(), 0);
 
     emit("trame.vtk.array.partial", {
+      version: 1,
       rwId: "rw",
       kind: "arrayPartial",
       epoch: 1,
@@ -1035,6 +1342,73 @@ test("createPushSync coalesces consecutive property patches before apply", async
 
     assert.equal(await sync.applyQueuedState(), true);
     assert.equal(partialCount, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync does not coalesce patches with unsupported ops", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        getInstance() {
+          return null;
+        },
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 0,
+        seq: 1,
+        ops: [{ op: "removeObject", id: "actor" }],
+      }),
+    );
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 1,
+        seq: 2,
+        ops: [
+          {
+            op: "setProperties",
+            id: "actor",
+            properties: { visibility: false },
+          },
+        ],
+      }),
+    );
+
+    assert.equal(sync.getQueueLength(), 2);
 
     sync.cleanup();
   } finally {
@@ -1171,6 +1545,72 @@ test("applyPatchUpdate applies object-state patches and caches inline payloads",
   assert.deepEqual(Array.from(pushCache.get("payload-hash")), [1, 2, 3]);
 });
 
+test("applyPatchUpdate applies ops in declaration order", async () => {
+  const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
+
+  const order = [];
+  const actor = {
+    set(properties) {
+      order.push(["actor", properties]);
+    },
+    modified() {
+      order.push(["actor", "modified"]);
+    },
+  };
+  const mapper = {
+    set(properties) {
+      order.push(["mapper", properties]);
+    },
+    modified() {
+      order.push(["mapper", "modified"]);
+    },
+  };
+  const synchronizerContext = {
+    getInstance(id) {
+      return { actor, mapper }[id] || null;
+    },
+  };
+
+  const ok = applyPatchUpdate(
+    {
+      ops: [
+        {
+          op: "setProperties",
+          id: "actor",
+          properties: { opacity: 0.5 },
+        },
+        {
+          op: "updateObject",
+          id: "mapper",
+          state: {
+            id: "mapper",
+            type: "vtkMapper",
+            properties: { scalarVisibility: false },
+          },
+        },
+        {
+          op: "setProperties",
+          id: "actor",
+          properties: { visibility: false },
+        },
+      ],
+    },
+    synchronizerContext,
+    null,
+    new Map(),
+  );
+
+  assert.equal(ok, true);
+  assert.deepEqual(order, [
+    ["actor", { opacity: 0.5 }],
+    ["actor", "modified"],
+    ["mapper", { scalarVisibility: false }],
+    ["mapper", "modified"],
+    ["actor", { visibility: false }],
+    ["actor", "modified"],
+  ]);
+});
+
 test("applyPatchUpdate applies vtkPolyData object patches with arrays", async () => {
   const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
   const vtkPolyData = (
@@ -1305,6 +1745,7 @@ test("createPushSync requests resync on sequence gaps", async () => {
     sync.markMessageApplied(sync.takeNextMessage());
 
     emit("trame.vtk.array.partial", {
+      version: 1,
       rwId: "rw",
       kind: "arrayPartial",
       epoch: 1,

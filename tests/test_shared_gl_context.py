@@ -127,27 +127,16 @@ def test_partial_flush_sends_no_delta(server, server_path, page: Page):
     )
 
 
-def test_update_after_mark_modified_prefetches_missing_arrays(
+def test_update_after_mark_modified_is_rejected(
     server, server_path, page: Page
 ):
-    """update() after mark_modified() must prefetch missing arrays before sync apply."""
+    """update() after mark_modified() must fail loudly instead of dropping partials."""
     url = f"http://127.0.0.1:{server.port}/"
     page.goto(url)
     wait_for_ready(page)
 
     page.evaluate("window.trame.trigger('mark_then_update')")
-    time.sleep(1)
-
-    errors = page.evaluate("""() => {
-        return (window.__consoleErrors || []).filter(
-            m => m.includes('synchronizeSync') || m.includes('inline') || m.includes('prefetch')
-        );
-    }""")
-    assert len(errors) == 0, (
-        f"Expected no synchronizeSync/prefetch errors, got: {errors}"
-    )
-
-    queue_len = page.evaluate("window.testGetDeltaQueueLength()")
-    assert queue_len == 0, (
-        f"Delta queue should be drained after update(), but has {queue_len} items"
+    expect(page.locator(".markThenUpdateError")).to_contain_text(
+        "flush() before calling update",
+        timeout=5000,
     )

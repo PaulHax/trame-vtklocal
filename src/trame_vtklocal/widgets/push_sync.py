@@ -16,7 +16,16 @@ SYNTHETIC_VERSION_PREFIX = "v:"
 SYNTHETIC_CELL_PREFIX = "cell:"
 RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
 PARTIAL_ARRAY_PATHS = {"points"}
-MESSAGE_ENVELOPE_KEYS = {"rwId", "kind", "epoch", "seq", "baseSeq", "extra"}
+PUSH_PROTOCOL_VERSION = 1
+MESSAGE_ENVELOPE_KEYS = {
+    "version",
+    "rwId",
+    "kind",
+    "epoch",
+    "seq",
+    "baseSeq",
+    "extra",
+}
 IGNORED_DELTA_CLASS_NAMES = {
     "vtkActorCollection",
     "vtkCellArray",
@@ -532,6 +541,7 @@ class PushSync:
         return self._client_epochs.get(client_id, 0)
 
     def _annotate_full_state(self, state, client_id, seq):
+        state["version"] = PUSH_PROTOCOL_VERSION
         state["rwId"] = self._render_window_id
         state["kind"] = "full"
         state["epoch"] = self._get_client_epoch(client_id)
@@ -657,7 +667,6 @@ class PushSync:
         self,
         client_id,
         state,
-        force_full_inline=False,
         seq=None,
         debug_source="update",
         translate_ms=None,
@@ -674,10 +683,7 @@ class PushSync:
 
         live = self._partial_arrays.reconcile_state(state)
         known = self._known_hashes.get(client_id, set())
-        if force_full_inline:
-            missing = set(live)
-        else:
-            missing = live - known
+        missing = set(live)
 
         client_state = copy.deepcopy(state)
         self._annotate_full_state(client_state, client_id, seq)
@@ -694,7 +700,7 @@ class PushSync:
             "trame.vtk.delta", client_state, client_id=client_id
         )
         publish_ms = _debug_ms(publish_start) if debug else None
-        self._known_hashes[client_id] = (known & live) | inlined
+        self._known_hashes[client_id] = set(inlined)
         self._client_sequences[client_id] = seq
         self._client_states[client_id] = _state_for_ledger(client_state)
         if status is not None:
@@ -716,7 +722,7 @@ class PushSync:
                 missing=len(missing),
                 inlined=len(inlined),
                 inline_bytes=inline_bytes,
-                force_full_inline=int(force_full_inline),
+                self_contained=1,
                 fallback_reason=fallback_reason or "",
                 translate_ms=translate_ms if translate_ms is not None else "",
                 inline_ms=inline_ms,
@@ -860,6 +866,7 @@ class PushSync:
             return None, None, "no-op", translate_ms
 
         payload = {
+            "version": PUSH_PROTOCOL_VERSION,
             "rwId": self._render_window_id,
             "kind": "patch",
             "epoch": self._get_client_epoch(client_id),
@@ -1020,19 +1027,23 @@ class PushSync:
             self._publish_client_state(
                 sid,
                 state,
-                force_full_inline=True,
                 seq=seq,
                 debug_source="server_request_resync",
                 translate_ms=translate_ms,
             )
 
     def update(self, extra=None):
+        if self._pending_changes:
+            raise RuntimeError(
+                "Pending partial array changes must be published with flush() "
+                "before calling update()"
+            )
+
         if not self._server.protocol or not self._view_clients:
             return
 
         self._require_object_delta()
 
-        self._pending_changes.clear()
         self._refresh_object_manager_state()
         status = self._snapshot_status()
         if status is None:
@@ -1122,13 +1133,12 @@ class PushSync:
             self._pending_changes.clear()
             return False
 
-        # Bump version once per (rw_id, iid, path); only "points" is supported
-        # as a partial path. Anything else falls back to a full update.
         for _vtk, _iid, array_path, *_ in self._pending_changes:
-            if array_path != "points":
-                self._pending_changes.clear()
-                self.update(extra=extra)
-                return True
+            if array_path not in PARTIAL_ARRAY_PATHS:
+                raise ValueError(
+                    f"Partial array path {array_path!r} is not supported; "
+                    f"supported paths are {sorted(PARTIAL_ARRAY_PATHS)!r}"
+                )
 
         base_seq = self._sequence
         seq = self._next_sequence()
@@ -1154,7 +1164,7 @@ class PushSync:
                 if data is None:
                     continue
 
-            # Non-points paths fall back to update() above; points are flat xyz.
+            # Points partials are flat xyz tuples.
             element_offset = start * 3
 
             old_hash, new_hash = bumped[(self._rw_id_int, int(iid), array_path)]
@@ -1188,7 +1198,6 @@ class PushSync:
                 self._publish_client_state(
                     sid,
                     state,
-                    force_full_inline=True,
                     seq=seq,
                     debug_source="flush_sequence_fallback",
                     translate_ms=translate_ms,
@@ -1199,6 +1208,7 @@ class PushSync:
             total_start = time.perf_counter() if debug else None
             data_bytes = sum(_payload_nbytes(update.get("data")) for update in updates)
             payload = {
+                "version": PUSH_PROTOCOL_VERSION,
                 "rwId": self._render_window_id,
                 "kind": "arrayPartial",
                 "epoch": self._get_client_epoch(sid),
@@ -1269,29 +1279,5 @@ class PushSync:
                         * n_components
                     )
                     return payload, data_type, bytes_per_tuple
-
-        elif array_path == "lines" and hasattr(vtk_object, "GetLines"):
-            lines = vtk_object.GetLines()
-            if lines:
-                data = lines.GetData()
-                if data:
-                    arr = np.array(data)
-                    if count is None:
-                        count = len(arr) - start
-                    end = start + count
-                    region = arr[start:end]
-                    return region.astype(np.int64).tobytes(), "BigInt64Array", 8
-
-        elif array_path == "polys" and hasattr(vtk_object, "GetPolys"):
-            polys = vtk_object.GetPolys()
-            if polys:
-                data = polys.GetData()
-                if data:
-                    arr = np.array(data)
-                    if count is None:
-                        count = len(arr) - start
-                    end = start + count
-                    region = arr[start:end]
-                    return region.astype(np.int64).tobytes(), "BigInt64Array", 8
 
         return None, None, None

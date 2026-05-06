@@ -3,12 +3,32 @@ from collections.abc import Mapping
 
 import numpy as np
 
+try:
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+except ImportError:  # pragma: no cover - VTK is an optional dependency
+    vtk_to_numpy = None
+
 
 SYNTHETIC_VERSION_PREFIX = "v:"
 SYNTHETIC_CELL_PREFIX = "cell:"
 RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
 PARTIAL_ARRAY_PATHS = {"points"}
 MESSAGE_ENVELOPE_KEYS = {"rwId", "kind", "epoch", "seq", "baseSeq", "extra"}
+JS_ARRAY_DTYPE_MAP = {
+    "Int8Array": np.int8,
+    "Uint8Array": np.uint8,
+    "Int16Array": np.int16,
+    "Uint16Array": np.uint16,
+    "Int32Array": np.int32,
+    "Uint32Array": np.uint32,
+    "Float32Array": np.float32,
+    "Float64Array": np.float64,
+    "BigInt64Array": np.int64,
+    "BigUint64Array": np.uint64,
+}
+NP_DTYPE_JS_ARRAY_MAP = {
+    np.dtype(np_type): js_type for js_type, np_type in JS_ARRAY_DTYPE_MAP.items()
+}
 
 
 def _walk_descriptors(state):
@@ -124,6 +144,49 @@ def _dependency_signature(obj):
     return [(str(dep.get("id")), dep.get("type")) for dep in deps]
 
 
+def _numpy_array_from_vtk_data(data):
+    if vtk_to_numpy is not None and hasattr(data, "GetDataType"):
+        try:
+            return vtk_to_numpy(data)
+        except Exception:
+            pass
+    return np.asarray(data)
+
+
+def _js_type_for_numpy_array(array):
+    dtype = np.asarray(array).dtype
+    js_type = NP_DTYPE_JS_ARRAY_MAP.get(dtype)
+    if js_type is not None:
+        return js_type
+
+    if dtype.kind == "f":
+        return "Float64Array" if dtype.itemsize == 8 else "Float32Array"
+    if dtype.kind == "u":
+        if dtype.itemsize == 1:
+            return "Uint8Array"
+        if dtype.itemsize == 2:
+            return "Uint16Array"
+        if dtype.itemsize == 4:
+            return "Uint32Array"
+        return "BigUint64Array"
+    if dtype.kind in {"i", "b"}:
+        if dtype.itemsize == 1:
+            return "Int8Array"
+        if dtype.itemsize == 2:
+            return "Int16Array"
+        if dtype.itemsize == 4:
+            return "Int32Array"
+        return "BigInt64Array"
+    return "Float32Array"
+
+
+def _array_payload_for_js_type(array, js_type=None):
+    flat = np.asarray(array).reshape(-1)
+    resolved_js_type = js_type or _js_type_for_numpy_array(flat)
+    np_type = JS_ARRAY_DTYPE_MAP.get(resolved_js_type, np.float32)
+    return flat.astype(np_type, copy=False).tobytes(), resolved_js_type
+
+
 def _pack_cell_array_payload(vtk_object_manager, cell_hash):
     """Recreate the packed vtk.js Uint32 cell-array bytes for a `cell:conn:off` hash."""
     parts = cell_hash.split(":")
@@ -216,7 +279,7 @@ class PushSync:
     # Payload resolution
     # ------------------------------------------------------------------
 
-    def _resolve_version_payload(self, hash_val):
+    def _resolve_version_payload(self, hash_val, descriptor=None):
         """Resolve a synthetic `v:{rw_id}:{iid}:{path}:{version}` hash."""
         parts = hash_val.split(":")
         if len(parts) < 5:
@@ -234,13 +297,16 @@ class PushSync:
         if obj is None or not hasattr(obj, "GetPoints"):
             return None
         pts = obj.GetPoints()
-        if not pts:
+        if pts is None:
             return None
         data = pts.GetData()
-        if not data:
+        if data is None:
             return None
-        arr = np.array(data).flatten().astype(np.float32)
-        return arr.tobytes()
+        arr = _numpy_array_from_vtk_data(data)
+        payload, _js_type = _array_payload_for_js_type(
+            arr, (descriptor or {}).get("dataType")
+        )
+        return payload
 
     def _resolve_payload(self, descriptor):
         if self._api is None:
@@ -251,7 +317,7 @@ class PushSync:
         # `v:` and `cell:` are synthetic hash namespaces owned by PushSync.
         # Real object-manager blobs should not use these prefixes.
         if hash_val.startswith(SYNTHETIC_VERSION_PREFIX):
-            return self._resolve_version_payload(hash_val)
+            return self._resolve_version_payload(hash_val, descriptor)
         if hash_val.startswith(SYNTHETIC_CELL_PREFIX):
             return _pack_cell_array_payload(self._api.vtk_object_manager, hash_val)
         assert not hash_val.startswith(RESERVED_HASH_PREFIXES)
@@ -657,16 +723,27 @@ class PushSync:
     def extract_array_region(vtk_object, array_path, start, count):
         if array_path == "points" and hasattr(vtk_object, "GetPoints"):
             pts = vtk_object.GetPoints()
-            if pts:
+            if pts is not None:
                 data = pts.GetData()
-                if data:
-                    arr = np.array(data)
-                    n_components = 3
+                if data is not None:
+                    arr = _numpy_array_from_vtk_data(data)
+                    n_components = (
+                        data.GetNumberOfComponents()
+                        if hasattr(data, "GetNumberOfComponents")
+                        else 3
+                    )
+                    flat = np.asarray(arr).reshape(-1)
                     if count is None:
-                        count = len(arr) - start
-                    end = start + count
-                    region = arr[start:end].flatten().astype(np.float32)
-                    return region.tobytes(), "Float32Array", 4 * n_components
+                        count = (len(flat) // n_components) - start
+                    element_start = start * n_components
+                    element_end = (start + count) * n_components
+                    region = flat[element_start:element_end]
+                    payload, data_type = _array_payload_for_js_type(region)
+                    bytes_per_tuple = (
+                        np.dtype(JS_ARRAY_DTYPE_MAP[data_type]).itemsize
+                        * n_components
+                    )
+                    return payload, data_type, bytes_per_tuple
 
         elif array_path == "lines" and hasattr(vtk_object, "GetLines"):
             lines = vtk_object.GetLines()

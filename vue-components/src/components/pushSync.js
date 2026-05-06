@@ -17,6 +17,10 @@ const TYPED_ARRAY_CONSTRUCTORS = {
   BigUint64Array,
 };
 
+const PUSH_PROTOCOL_VERSION = 1;
+const SUPPORTED_MESSAGE_KINDS = new Set(["full", "patch", "arrayPartial"]);
+const SUPPORTED_PATCH_OPS = new Set(["updateObject", "setProperties"]);
+
 function isArrayDescriptor(value) {
   return (
     value &&
@@ -91,12 +95,12 @@ function arrayPathKey(instanceId, arrayPath) {
   return `${instanceId}:${arrayPath}`;
 }
 
-function getMessageKind(message, fallbackKind = null) {
-  return message?.kind || fallbackKind;
+function getMessageKind(message) {
+  return message?.kind;
 }
 
 function getMessageRwId(message) {
-  return message?.rwId ?? message?.id;
+  return message?.rwId;
 }
 
 function isPlainObject(value) {
@@ -174,6 +178,15 @@ function appendMergedPatchOp(ops, op) {
   ops.push({ ...op, properties: { ...properties } });
 }
 
+function isSupportedPatchOp(op) {
+  return SUPPORTED_PATCH_OPS.has(op?.op);
+}
+
+function hasOnlySupportedPatchOps(message) {
+  const ops = Array.isArray(message?.ops) ? message.ops : [];
+  return ops.every((op) => isSupportedPatchOp(op));
+}
+
 function mergePatchOps(firstOps = [], secondOps = []) {
   const merged = [];
   [...firstOps, ...secondOps].forEach((op) => {
@@ -187,6 +200,9 @@ function canMergePatchMessages(previous, next) {
     return false;
   }
   if (previous.epoch !== next.epoch) {
+    return false;
+  }
+  if (!hasOnlySupportedPatchOps(previous) || !hasOnlySupportedPatchOps(next)) {
     return false;
   }
   if (previous.seq === undefined || next.baseSeq === undefined) {
@@ -233,6 +249,25 @@ function collectStateArrayPathHashes(state, into = new Map()) {
 
   visit(state);
   return into;
+}
+
+function hasSupportedProtocolVersion(payload) {
+  return payload?.version === PUSH_PROTOCOL_VERSION;
+}
+
+function hasSupportedMessageKind(payload) {
+  return SUPPORTED_MESSAGE_KINDS.has(payload?.kind);
+}
+
+function warnUnsupportedProtocolVersion(payload, kind) {
+  console.warn(
+    `[pushSync] Unsupported ${kind || "message"} protocol version ` +
+      `${payload?.version}; expected ${PUSH_PROTOCOL_VERSION}`,
+  );
+}
+
+function warnUnsupportedMessageKind(payload) {
+  console.warn(`[pushSync] Unsupported message kind ${payload?.kind}`);
 }
 
 export function applyPartialArrayUpdate(update, synchronizerContext) {
@@ -372,12 +407,14 @@ export function applyPatchUpdate(
   pushCache = null,
 ) {
   const ops = Array.isArray(patch?.ops) ? patch.ops : [];
-  const targets = [];
-  const objectPatches = [];
 
   for (const op of ops) {
     if (op?.op === "updateObject") {
-      objectPatches.push(op);
+      if (
+        !applyObjectStatePatch(op, synchronizerContext, objectManager, pushCache)
+      ) {
+        return false;
+      }
       continue;
     }
 
@@ -398,21 +435,9 @@ export function applyPatchUpdate(
       return false;
     }
 
-    targets.push({ instance, properties: op.properties || {} });
-  }
-
-  for (const op of objectPatches) {
-    if (
-      !applyObjectStatePatch(op, synchronizerContext, objectManager, pushCache)
-    ) {
-      return false;
-    }
-  }
-
-  targets.forEach(({ instance, properties }) => {
-    instance.set(properties);
+    instance.set(op.properties || {});
     instance.modified?.();
-  });
+  }
 
   return true;
 }
@@ -507,8 +532,40 @@ export function createPushSync(
     return applied;
   }
 
-  function enqueueMessage(payload, fallbackKind) {
-    const kind = getMessageKind(payload, fallbackKind);
+  function payloadMatchesRenderWindow(payload) {
+    return !rwId || String(getMessageRwId(payload)) === rwId;
+  }
+
+  function warnMismatchedRenderWindow(payload) {
+    console.warn(
+      `[pushSync] Message rwId ${getMessageRwId(payload)} does not match ` +
+        `view ${rwId}`,
+    );
+  }
+
+  function enqueueMessage(payload, { requestOnInvalidEnvelope = true } = {}) {
+    const kind = getMessageKind(payload);
+    if (!hasSupportedProtocolVersion(payload)) {
+      warnUnsupportedProtocolVersion(payload, kind);
+      if (requestOnInvalidEnvelope) {
+        requestResync("message-version");
+      }
+      return false;
+    }
+    if (!hasSupportedMessageKind(payload)) {
+      warnUnsupportedMessageKind(payload);
+      if (requestOnInvalidEnvelope) {
+        requestResync("message-kind");
+      }
+      return false;
+    }
+    if (!payloadMatchesRenderWindow(payload)) {
+      warnMismatchedRenderWindow(payload);
+      if (requestOnInvalidEnvelope) {
+        requestResync("message-rw-id");
+      }
+      return false;
+    }
     const wasEmpty = messageQueue.length === 0;
 
     // The server is authoritative: every hash referenced by `state` is either
@@ -530,7 +587,7 @@ export function createPushSync(
         if (previous.payload.extra === undefined) {
           delete previous.payload.extra;
         }
-        return;
+        return true;
       }
     }
 
@@ -544,16 +601,17 @@ export function createPushSync(
     if (kind === "full") {
       onStateReceived?.(payload);
     }
+    return true;
   }
 
-  function receiveBroadcast(payload, fallbackKind) {
+  function receiveBroadcast(payload) {
     if (!acceptBroadcasts) {
       if (bufferBroadcasts) {
-        broadcastBuffer.push({ payload, fallbackKind });
+        broadcastBuffer.push(payload);
       }
       return;
     }
-    enqueueMessage(payload, fallbackKind);
+    enqueueMessage(payload);
   }
 
   const wsSubscription = session.subscribe(
@@ -561,7 +619,9 @@ export function createPushSync(
     ([deltaState]) => {
       const messageRwId = getMessageRwId(deltaState);
       if (!rwId || String(messageRwId) === rwId) {
-        receiveBroadcast(deltaState, "full");
+        receiveBroadcast(deltaState);
+      } else if (messageRwId === undefined || messageRwId === null) {
+        receiveBroadcast(deltaState);
       }
     },
   );
@@ -573,7 +633,7 @@ export function createPushSync(
       const messageRwId = getMessageRwId(update);
       if (messageRwId && String(messageRwId) !== rwId) return;
 
-      receiveBroadcast(update, "arrayPartial");
+      receiveBroadcast(update);
     },
   );
 
@@ -584,7 +644,7 @@ export function createPushSync(
       const messageRwId = getMessageRwId(patch);
       if (messageRwId && String(messageRwId) !== rwId) return;
 
-      receiveBroadcast(patch, "patch");
+      receiveBroadcast(patch);
     },
   );
 
@@ -608,12 +668,33 @@ export function createPushSync(
       if (version !== resyncVersion) {
         return false;
       }
+      if (!hasSupportedProtocolVersion(state)) {
+        warnUnsupportedProtocolVersion(state, "full");
+        bufferBroadcasts = false;
+        broadcastBuffer.length = 0;
+        acceptBroadcasts = true;
+        return false;
+      }
+      if (!hasSupportedMessageKind(state)) {
+        warnUnsupportedMessageKind(state);
+        bufferBroadcasts = false;
+        broadcastBuffer.length = 0;
+        acceptBroadcasts = true;
+        return false;
+      }
+      if (!payloadMatchesRenderWindow(state)) {
+        warnMismatchedRenderWindow(state);
+        bufferBroadcasts = false;
+        broadcastBuffer.length = 0;
+        acceptBroadcasts = true;
+        return false;
+      }
       const buffered = broadcastBuffer.splice(0);
       bufferBroadcasts = false;
-      enqueueMessage(state, "full");
+      enqueueMessage(state, { requestOnInvalidEnvelope: false });
       acceptBroadcasts = true;
-      buffered.forEach(({ payload, fallbackKind }) => {
-        enqueueMessage(payload, fallbackKind);
+      buffered.forEach((payload) => {
+        enqueueMessage(payload);
       });
       return true;
     } catch (error) {
@@ -637,6 +718,10 @@ export function createPushSync(
   ) {
     const { kind, payload } = message;
     const { epoch, seq, baseSeq } = payload || {};
+
+    if (!hasSupportedProtocolVersion(payload)) {
+      return "resync";
+    }
 
     if (epoch !== undefined && currentEpoch !== null && epoch < currentEpoch) {
       return "drop";
@@ -859,6 +944,11 @@ export function createPushSync(
   }
 
   function cleanup() {
+    try {
+      session.call("vtkjs.push.dispose", [rwId])?.catch?.(() => {});
+    } catch {
+      // Best-effort cleanup only; local unsubscribe/cache cleanup still matters.
+    }
     resyncVersion += 1;
     clearGapResyncTimer();
     messageQueue.length = 0;

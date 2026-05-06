@@ -206,17 +206,18 @@ class ObjectManagerAPI(LinkProtocol):
         if push_view is not None:
             return push_view.client_resync(client_id)
 
-        # Fallback path used when the view hasn't registered a PushSync
-        # (e.g., during shutdown or for views that opt out).
-        from .vtkjs_translator import translate_scene
+        raise RuntimeError(f"No registered push view for render window {rw_id}")
 
-        render_window = self.vtk_object_manager.GetObjectAtId(rw_id)
-        if render_window:
-            render_window.Render()
-        self.vtk_object_manager.UpdateStatesFromObjects()
-        state = translate_scene(self.vtk_object_manager, rw_id)
-        self._convert_bytes_to_attachments(state)
-        return state
+    @export_rpc("vtkjs.push.dispose")
+    def push_dispose(self, obj_id):
+        """Drop per-client push state for a view being disposed on the client."""
+        rw_id = int(obj_id)
+        push_view = self._push_views.get(rw_id)
+        client_id = self.get_active_client_id()
+        if push_view is None or client_id is None:
+            return False
+        push_view.drop_client(client_id)
+        return True
 
     def _convert_bytes_to_attachments(self, node):
         if isinstance(node, list):

@@ -38,6 +38,12 @@ class VtkJsBaseView(HtmlElement):
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self._ref}"'
 
+    def __del__(self):
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+
     @property
     def api(self):
         return module.get_helper(self.server).api
@@ -75,6 +81,7 @@ class VtkJsBaseView(HtmlElement):
     def _init_push_sync(self):
         from trame_vtklocal.widgets.push_sync import PushSync
 
+        self.cleanup()
         self._push_sync = PushSync(
             self.server,
             self._get_vtkjs_state,
@@ -140,3 +147,11 @@ class VtkJsBaseView(HtmlElement):
         if self._push_sync:
             self._collection_tracker.clear()
             self._push_sync.request_resync(extra)
+
+    def cleanup(self):
+        if self._push_sync:
+            self._push_sync.cleanup()
+            self._push_sync = None
+
+    def close(self):
+        self.cleanup()

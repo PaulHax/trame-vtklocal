@@ -1,4 +1,7 @@
 import copy
+import json
+import os
+import time
 from collections.abc import Mapping
 
 import numpy as np
@@ -14,6 +17,35 @@ SYNTHETIC_CELL_PREFIX = "cell:"
 RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
 PARTIAL_ARRAY_PATHS = {"points"}
 MESSAGE_ENVELOPE_KEYS = {"rwId", "kind", "epoch", "seq", "baseSeq", "extra"}
+IGNORED_DELTA_CLASS_NAMES = {
+    "vtkActorCollection",
+    "vtkCellArray",
+    "vtkCellData",
+    "vtkCullerCollection",
+    "vtkDoubleArray",
+    "vtkFieldData",
+    "vtkFloatArray",
+    "vtkIdTypeArray",
+    "vtkInformation",
+    "vtkLightCollection",
+    "vtkMatrix4x4",
+    "vtkPoints",
+    "vtkPointData",
+    "vtkPropCollection",
+    "vtkRendererCollection",
+    "vtkTypeInt16Array",
+    "vtkTypeInt32Array",
+    "vtkTypeInt64Array",
+    "vtkTypeInt8Array",
+    "vtkTypeUInt16Array",
+    "vtkTypeUInt32Array",
+    "vtkTypeUInt64Array",
+    "vtkTypeUInt8Array",
+    "vtkUnsignedCharArray",
+    "vtkUnsignedIntArray",
+    "vtkUnsignedShortArray",
+}
+DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
 JS_ARRAY_DTYPE_MAP = {
     "Int8Array": np.int8,
     "Uint8Array": np.uint8,
@@ -29,6 +61,41 @@ JS_ARRAY_DTYPE_MAP = {
 NP_DTYPE_JS_ARRAY_MAP = {
     np.dtype(np_type): js_type for js_type, np_type in JS_ARRAY_DTYPE_MAP.items()
 }
+
+
+def _debug_push_enabled():
+    return bool(os.environ.get("TRAME_VTKLOCAL_PUSH_DEBUG"))
+
+
+def _debug_push_event(event, **fields):
+    if not _debug_push_enabled():
+        return
+    details = " ".join(f"{key}={value}" for key, value in fields.items())
+    print(f"TRAME_VTKLOCAL_PUSH_DEBUG event={event} {details}", flush=True)
+
+
+def _debug_ms(start):
+    return f"{(time.perf_counter() - start) * 1000:.3f}"
+
+
+def _payload_nbytes(value):
+    if value is None:
+        return 0
+    if isinstance(value, memoryview):
+        return value.nbytes
+    if isinstance(value, bytes):
+        return len(value)
+    try:
+        return memoryview(value).nbytes
+    except TypeError:
+        return 0
+
+
+def _inline_payload_bytes(state):
+    return sum(
+        _payload_nbytes(descriptor.get("content"))
+        for descriptor in _walk_descriptors(state)
+    )
 
 
 def _walk_descriptors(state):
@@ -127,9 +194,43 @@ def _flatten_state_objects(state):
     return objects
 
 
+def _replace_object_in_state(state, object_id, replacement):
+    """Return a copy of state with object_id's node replaced by replacement."""
+    if isinstance(state, list):
+        return [
+            _replace_object_in_state(item, object_id, replacement)
+            for item in state
+        ]
+    if not isinstance(state, dict):
+        return copy.deepcopy(state)
+
+    if str(state.get("id")) == str(object_id):
+        return _state_for_ledger(replacement)
+
+    result = {}
+    for key, value in state.items():
+        if key == "dependencies" and isinstance(value, list):
+            result[key] = [
+                _replace_object_in_state(item, object_id, replacement)
+                for item in value
+            ]
+        else:
+            result[key] = _state_for_ledger(value)
+    return result
+
+
 def _dependency_signature(obj):
     deps = obj.get("dependencies") or []
     return [(str(dep.get("id")), dep.get("type")) for dep in deps]
+
+
+def _object_patch_signature(obj):
+    return {
+        "type": obj.get("type"),
+        "calls": obj.get("calls") or [],
+        "arrays": obj.get("arrays") or {},
+        "dependencies": _dependency_signature(obj),
+    }
 
 
 def _numpy_array_from_vtk_data(data):
@@ -238,6 +339,7 @@ class PushSync:
         self._client_epochs = {}
         self._client_sequences = {}
         self._client_states = {}
+        self._client_statuses = {}
 
         if api is not None:
             api.register_push_view(self._rw_id_int, self)
@@ -254,6 +356,7 @@ class PushSync:
         self._client_epochs.clear()
         self._client_sequences.clear()
         self._client_states.clear()
+        self._client_statuses.clear()
 
     def drop_client(self, client_id):
         self._view_clients.discard(client_id)
@@ -262,6 +365,7 @@ class PushSync:
         self._client_epochs.pop(client_id, None)
         self._client_sequences.pop(client_id, None)
         self._client_states.pop(client_id, None)
+        self._client_statuses.pop(client_id, None)
 
     # ------------------------------------------------------------------
     # Payload resolution
@@ -315,10 +419,14 @@ class PushSync:
             return None
         return bytes(memoryview(blob))
 
-    def _inline_payloads(self, state, _missing):
+    def _inline_payloads(self, state, missing):
         inlined = set()
+        if not missing:
+            return inlined
         for descriptor in _walk_descriptors(state):
             hash_val = descriptor["hash"]
+            if hash_val not in missing:
+                continue
             if descriptor.get("content") is not None:
                 inlined.add(hash_val)
                 continue
@@ -377,11 +485,104 @@ class PushSync:
         tracker = self._get_client_tracker(client_id, reset=reset_tracker)
         return self._get_vtkjs_state(self._array_versions, tracker)
 
+    def _object_manager(self):
+        if self._api is None:
+            return None
+        return getattr(self._api, "vtk_object_manager", None)
+
+    def _can_build_object_delta(self):
+        object_manager = self._object_manager()
+        return (
+            object_manager is not None
+            and hasattr(object_manager, "UpdateStatesFromObjects")
+            and hasattr(object_manager, "GetAllDependencies")
+            and hasattr(object_manager, "GetBlobHashes")
+            and hasattr(object_manager, "GetState")
+            and hasattr(object_manager, "GetObjectAtId")
+        )
+
+    def _refresh_object_manager_state(self):
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return
+
+        render_window = object_manager.GetObjectAtId(self._rw_id_int)
+        if render_window is not None and hasattr(render_window, "Render"):
+            render_window.Render()
+
+        object_manager.UpdateStatesFromObjects([self._rw_id_int])
+
+    def _snapshot_status(self):
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return None
+
+        ids = list(object_manager.GetAllDependencies(self._rw_id_int))
+        mtimes = {}
+        classes = {}
+        for vtk_id in ids:
+            vtk_obj = object_manager.GetObjectAtId(vtk_id)
+            if vtk_obj is not None and hasattr(vtk_obj, "GetMTime"):
+                mtimes[str(vtk_id)] = vtk_obj.GetMTime()
+            class_name = self._get_state_class_name(vtk_id)
+            if class_name:
+                classes[str(vtk_id)] = class_name
+
+        return {
+            "ids": {str(vtk_id) for vtk_id in ids},
+            "mtimes": mtimes,
+            "classes": classes,
+            "hashes": set(object_manager.GetBlobHashes(ids)),
+        }
+
+    def _get_state_class_name(self, object_id):
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return ""
+        try:
+            state_json = object_manager.GetState(int(object_id))
+        except (TypeError, ValueError, RuntimeError):
+            return ""
+        if not state_json:
+            return ""
+        try:
+            return json.loads(state_json).get("ClassName", "")
+        except (TypeError, ValueError):
+            return ""
+
+    @staticmethod
+    def _is_ignored_delta_class(class_name):
+        return (
+            class_name in IGNORED_DELTA_CLASS_NAMES
+            or "Array" in class_name
+            or class_name.endswith("Collection")
+        )
+
+    def _translate_object_state(self, object_id):
+        from trame_vtklocal.module.vtkjs_translator import translate_object
+
+        return translate_object(
+            self._object_manager(),
+            int(object_id),
+            version_registry=self._array_versions,
+            rw_id=self._rw_id_int,
+        )
+
     def _publish_client_state(
-        self, client_id, state, force_full_inline=False, seq=None
+        self,
+        client_id,
+        state,
+        force_full_inline=False,
+        seq=None,
+        debug_source="update",
+        translate_ms=None,
+        status=None,
+        fallback_reason=None,
     ):
         if not self._server.protocol:
             return
+        debug = _debug_push_enabled()
+        total_start = time.perf_counter() if debug else None
 
         if seq is None:
             seq = self._sequence
@@ -395,15 +596,49 @@ class PushSync:
 
         client_state = copy.deepcopy(state)
         self._annotate_full_state(client_state, client_id, seq)
+        inline_start = time.perf_counter() if debug else None
         inlined = self._inline_payloads(client_state, missing)
+        inline_ms = _debug_ms(inline_start) if debug else None
+        inline_bytes = _inline_payload_bytes(client_state) if debug else 0
+        convert_start = time.perf_counter() if debug else None
         self._convert_attachments(client_state)
+        convert_ms = _debug_ms(convert_start) if debug else None
 
+        publish_start = time.perf_counter() if debug else None
         self._server.protocol.publish(
             "trame.vtk.delta", client_state, client_id=client_id
         )
+        publish_ms = _debug_ms(publish_start) if debug else None
         self._known_hashes[client_id] = (known & live) | inlined
         self._client_sequences[client_id] = seq
         self._client_states[client_id] = _state_for_ledger(client_state)
+        if status is not None:
+            self._client_statuses[client_id] = copy.deepcopy(status)
+        elif self._can_build_object_delta():
+            snapshot = self._snapshot_status()
+            if snapshot is not None:
+                self._client_statuses[client_id] = snapshot
+        if debug:
+            _debug_push_event(
+                "full_publish",
+                source=debug_source,
+                rw=self._render_window_id,
+                client=client_id,
+                epoch=self._get_client_epoch(client_id),
+                seq=seq,
+                live=len(live),
+                known=len(known),
+                missing=len(missing),
+                inlined=len(inlined),
+                inline_bytes=inline_bytes,
+                force_full_inline=int(force_full_inline),
+                fallback_reason=fallback_reason or "",
+                translate_ms=translate_ms if translate_ms is not None else "",
+                inline_ms=inline_ms,
+                convert_ms=convert_ms,
+                publish_ms=publish_ms,
+                total_ms=_debug_ms(total_start),
+            )
 
     def _build_property_patch(self, client_id, state, base_seq, seq):
         previous_state = self._client_states.get(client_id)
@@ -478,11 +713,199 @@ class PushSync:
             payload["extra"] = state["extra"]
         return payload, current_state
 
-    def _publish_patch(self, client_id, payload, ledger_state):
+    def _build_object_delta_patch(self, client_id, status, base_seq, seq, extra=None):
+        previous_status = self._client_statuses.get(client_id)
+        previous_state = self._client_states.get(client_id)
+        if previous_status is None or previous_state is None:
+            return None, None, "missing-client-ledger", None
+
+        previous_ids = previous_status.get("ids") or set()
+        current_ids = status.get("ids") or set()
+        added_ids = current_ids - previous_ids
+        removed_ids = previous_ids - current_ids
+        structural_id_changes = []
+        for object_id in added_ids:
+            class_name = (status.get("classes") or {}).get(object_id, "")
+            if not self._is_ignored_delta_class(class_name):
+                structural_id_changes.append(f"+{object_id}:{class_name or 'unknown'}")
+        for object_id in removed_ids:
+            class_name = (previous_status.get("classes") or {}).get(object_id, "")
+            if not self._is_ignored_delta_class(class_name):
+                structural_id_changes.append(f"-{object_id}:{class_name or 'unknown'}")
+        if structural_id_changes:
+            return (
+                None,
+                None,
+                f"dependency-id-set-changed:{','.join(structural_id_changes[:5])}",
+                None,
+            )
+
+        previous_objects = _flatten_state_objects(previous_state)
+        changed_ids = {
+            object_id
+            for object_id, mtime in (status.get("mtimes") or {}).items()
+            if mtime != (previous_status.get("mtimes") or {}).get(object_id)
+        }
+
+        candidate_ids = {
+            object_id for object_id in changed_ids if object_id in previous_objects
+        }
+
+        if (status.get("hashes") or set()) != (previous_status.get("hashes") or set()):
+            candidate_ids.update(
+                object_id
+                for object_id, obj in previous_objects.items()
+                if obj.get("type") in DATASET_PATCH_TYPES
+            )
+
+        unsupported_changed = []
+        for object_id in changed_ids - set(previous_objects):
+            class_name = (status.get("classes") or {}).get(object_id, "")
+            if self._is_ignored_delta_class(class_name):
+                continue
+            unsupported_changed.append(f"{object_id}:{class_name or 'unknown'}")
+        if unsupported_changed and not candidate_ids:
+            return (
+                None,
+                None,
+                f"unsupported-changed-ids:{','.join(unsupported_changed[:5])}",
+                None,
+            )
+
+        ops = []
+        ledger_state = copy.deepcopy(previous_state)
+        translate_start = time.perf_counter()
+
+        for object_id in sorted(candidate_ids, key=lambda value: int(value)):
+            previous_obj = previous_objects.get(object_id)
+            if previous_obj is None:
+                continue
+
+            current_obj = self._translate_object_state(object_id)
+            if current_obj is None:
+                return None, None, f"unsupported-object:{object_id}", None
+
+            current_obj = _state_for_ledger(current_obj)
+            if current_obj == previous_obj:
+                continue
+
+            if _object_patch_signature(previous_obj) != _object_patch_signature(
+                current_obj
+            ):
+                return None, None, f"structural-object-change:{object_id}", None
+
+            previous_props = previous_obj.get("properties") or {}
+            current_props = current_obj.get("properties") or {}
+            if not isinstance(previous_props, Mapping) or not isinstance(
+                current_props, Mapping
+            ):
+                return None, None, f"unsupported-properties:{object_id}", None
+
+            removed_keys = set(previous_props) - set(current_props)
+            if removed_keys:
+                return None, None, f"removed-properties:{object_id}", None
+
+            changed_props = {
+                key: copy.deepcopy(value)
+                for key, value in current_props.items()
+                if previous_props.get(key) != value
+            }
+
+            if not changed_props:
+                ledger_state = _replace_object_in_state(
+                    ledger_state, object_id, current_obj
+                )
+                continue
+
+            if any(
+                _contains_array_descriptor(previous_props.get(key))
+                or _contains_array_descriptor(value)
+                for key, value in changed_props.items()
+            ):
+                ops.append(
+                    {
+                        "op": "updateObject",
+                        "id": object_id,
+                        "state": copy.deepcopy(current_obj),
+                    }
+                )
+            else:
+                ops.append(
+                    {
+                        "op": "setProperties",
+                        "id": object_id,
+                        "properties": changed_props,
+                    }
+                )
+
+            ledger_state = _replace_object_in_state(ledger_state, object_id, current_obj)
+
+        translate_ms = f"{(time.perf_counter() - translate_start) * 1000:.3f}"
+
+        if not ops and extra is None:
+            return None, None, "no-op", translate_ms
+
+        payload = {
+            "rwId": self._render_window_id,
+            "kind": "patch",
+            "epoch": self._get_client_epoch(client_id),
+            "baseSeq": base_seq,
+            "seq": seq,
+            "ops": ops,
+        }
+        if extra is not None:
+            payload["extra"] = extra
+        return payload, ledger_state, None, translate_ms
+
+    def _publish_patch(
+        self,
+        client_id,
+        payload,
+        ledger_state,
+        translate_ms=None,
+        status=None,
+    ):
+        debug = _debug_push_enabled()
+        total_start = time.perf_counter() if debug else None
+        live = _collect_hashes(ledger_state)
+        patch_hashes = _collect_hashes(payload)
+        known = self._known_hashes.get(client_id, set())
+        missing = patch_hashes - known
+        inline_start = time.perf_counter() if debug else None
+        inlined = self._inline_payloads(payload, missing)
+        inline_ms = _debug_ms(inline_start) if debug else None
+        inline_bytes = _inline_payload_bytes(payload) if debug else 0
+        convert_start = time.perf_counter() if debug else None
         self._convert_attachments(payload)
+        convert_ms = _debug_ms(convert_start) if debug else None
+        publish_start = time.perf_counter() if debug else None
         self._server.protocol.publish("trame.vtk.patch", payload, client_id=client_id)
+        publish_ms = _debug_ms(publish_start) if debug else None
+        self._known_hashes[client_id] = (known & live) | inlined
         self._client_sequences[client_id] = payload["seq"]
         self._client_states[client_id] = ledger_state
+        if status is not None:
+            self._client_statuses[client_id] = copy.deepcopy(status)
+        if debug:
+            _debug_push_event(
+                "patch_publish",
+                rw=self._render_window_id,
+                client=client_id,
+                epoch=payload.get("epoch"),
+                base_seq=payload.get("baseSeq"),
+                seq=payload.get("seq"),
+                ops=len(payload.get("ops") or []),
+                live=len(live),
+                known=len(known),
+                missing=len(missing),
+                inlined=len(inlined),
+                inline_bytes=inline_bytes,
+                translate_ms=translate_ms if translate_ms is not None else "",
+                inline_ms=inline_ms,
+                convert_ms=convert_ms,
+                publish_ms=publish_ms,
+                total_ms=_debug_ms(total_start),
+            )
 
     def _advance_client_ledger_for_partials(self, client_id, updates):
         state = self._client_states.get(client_id)
@@ -511,23 +934,51 @@ class PushSync:
 
     def client_resync(self, client_id):
         """Return a fully-inlined state for one client; refresh tracking."""
+        debug = _debug_push_enabled()
+        total_start = time.perf_counter() if debug else None
         if client_id is not None:
             self._client_epochs[client_id] = self._client_epochs.get(client_id, 0) + 1
 
+        translate_start = time.perf_counter() if debug else None
         state = self._get_client_state(client_id, reset_tracker=True)
+        translate_ms = _debug_ms(translate_start) if debug else None
         live = _collect_hashes(state)
         self._prune_dead_array_versions(live)
         self._refresh_partial_array_hashes(state)
         self._annotate_full_state(state, client_id, self._sequence)
 
+        inline_start = time.perf_counter() if debug else None
         inlined = self._inline_payloads(state, live)
+        inline_ms = _debug_ms(inline_start) if debug else None
+        inline_bytes = _inline_payload_bytes(state) if debug else 0
+        convert_start = time.perf_counter() if debug else None
         self._convert_attachments(state)
+        convert_ms = _debug_ms(convert_start) if debug else None
 
         if client_id is not None:
             self._known_hashes[client_id] = set(inlined)
             self._view_clients.add(client_id)
             self._client_sequences[client_id] = self._sequence
             self._client_states[client_id] = _state_for_ledger(state)
+            if self._can_build_object_delta():
+                snapshot = self._snapshot_status()
+                if snapshot is not None:
+                    self._client_statuses[client_id] = snapshot
+        if debug:
+            _debug_push_event(
+                "client_resync",
+                rw=self._render_window_id,
+                client=client_id,
+                epoch=self._get_client_epoch(client_id),
+                seq=self._sequence,
+                live=len(live),
+                inlined=len(inlined),
+                inline_bytes=inline_bytes,
+                translate_ms=translate_ms,
+                inline_ms=inline_ms,
+                convert_ms=convert_ms,
+                total_ms=_debug_ms(total_start),
+            )
         return state
 
     def request_resync(self, extra=None):
@@ -542,7 +993,10 @@ class PushSync:
         # Translation is per-client because collection membership tracking is
         # per-client. Revisit if many subscribers make that cost material.
         for sid in list(self._view_clients):
+            debug = _debug_push_enabled()
+            translate_start = time.perf_counter() if debug else None
             state = self._get_client_state(sid, reset_tracker=True)
+            translate_ms = _debug_ms(translate_start) if debug else None
             if extra:
                 state.setdefault("extra", {}).update(extra)
 
@@ -550,9 +1004,16 @@ class PushSync:
             self._prune_dead_array_versions(live)
             self._refresh_partial_array_hashes(state)
             self._known_hashes[sid] = set()
-            self._publish_client_state(sid, state, force_full_inline=True, seq=seq)
+            self._publish_client_state(
+                sid,
+                state,
+                force_full_inline=True,
+                seq=seq,
+                debug_source="server_request_resync",
+                translate_ms=translate_ms,
+            )
 
-    def update(self, extra=None):
+    def _legacy_update(self, extra=None):
         if not self._server.protocol or not self._view_clients:
             return
 
@@ -562,7 +1023,10 @@ class PushSync:
         # Translation is per-client because collection membership tracking is
         # per-client. Revisit if many subscribers make that cost material.
         for sid in list(self._view_clients):
+            debug = _debug_push_enabled()
+            translate_start = time.perf_counter() if debug else None
             state = self._get_client_state(sid)
+            translate_ms = _debug_ms(translate_start) if debug else None
             if extra:
                 state.setdefault("extra", {}).update(extra)
 
@@ -574,9 +1038,93 @@ class PushSync:
                 if patch_result is not None:
                     patch, ledger_state = patch_result
                     self._known_hashes[sid] = self._known_hashes.get(sid, set()) & live
-                    self._publish_patch(sid, patch, ledger_state)
+                    self._publish_patch(sid, patch, ledger_state, translate_ms=translate_ms)
                     continue
-            self._publish_client_state(sid, state, seq=seq)
+            self._publish_client_state(
+                sid,
+                state,
+                seq=seq,
+                debug_source="update",
+                translate_ms=translate_ms,
+            )
+
+    def update(self, extra=None):
+        if not self._server.protocol or not self._view_clients:
+            return
+
+        if not self._can_build_object_delta():
+            self._legacy_update(extra=extra)
+            return
+
+        self._pending_changes.clear()
+        self._refresh_object_manager_state()
+        status = self._snapshot_status()
+        if status is None:
+            self._legacy_update(extra=extra)
+            return
+
+        base_seq = self._sequence
+        seq = base_seq + 1
+        results = []
+        any_publish = False
+
+        for sid in list(self._view_clients):
+            if self._client_sequences.get(sid, 0) != base_seq:
+                results.append(("full", sid, "sequence-mismatch", None, None))
+                any_publish = True
+                continue
+
+            patch, ledger_state, fallback_reason, translate_ms = (
+                self._build_object_delta_patch(sid, status, base_seq, seq, extra=extra)
+            )
+            if fallback_reason == "no-op":
+                results.append(("noop", sid, fallback_reason, None, translate_ms))
+                continue
+            if fallback_reason is not None:
+                results.append(("full", sid, fallback_reason, None, translate_ms))
+                any_publish = True
+                continue
+            results.append(("patch", sid, None, (patch, ledger_state), translate_ms))
+            any_publish = True
+
+        if not any_publish:
+            return
+
+        self._sequence = seq
+        for result_type, sid, reason, payload_data, translate_ms in results:
+            if result_type == "noop":
+                continue
+            if result_type == "patch":
+                patch, ledger_state = payload_data
+                self._publish_patch(
+                    sid,
+                    patch,
+                    ledger_state,
+                    translate_ms=translate_ms,
+                    status=status,
+                )
+                continue
+
+            debug = _debug_push_enabled()
+            translate_start = time.perf_counter() if debug else None
+            state = self._get_client_state(sid)
+            full_translate_ms = _debug_ms(translate_start) if debug else None
+            if extra:
+                state.setdefault("extra", {}).update(extra)
+
+            live = _collect_hashes(state)
+            self._prune_dead_array_versions(live)
+            self._refresh_partial_array_hashes(state)
+            full_status = self._snapshot_status() or status
+            self._publish_client_state(
+                sid,
+                state,
+                seq=seq,
+                debug_source="update_fallback",
+                translate_ms=full_translate_ms or translate_ms,
+                status=full_status,
+                fallback_reason=reason,
+            )
 
     def mark_modified(
         self,
@@ -665,16 +1213,29 @@ class PushSync:
 
         for sid in list(self._view_clients):
             if self._client_sequences.get(sid, 0) != base_seq:
+                debug = _debug_push_enabled()
+                translate_start = time.perf_counter() if debug else None
                 state = self._get_client_state(sid, reset_tracker=True)
+                translate_ms = _debug_ms(translate_start) if debug else None
                 if extra:
                     state.setdefault("extra", {}).update(extra)
                 live = _collect_hashes(state)
                 self._prune_dead_array_versions(live)
                 self._refresh_partial_array_hashes(state)
                 self._known_hashes[sid] = set()
-                self._publish_client_state(sid, state, force_full_inline=True, seq=seq)
+                self._publish_client_state(
+                    sid,
+                    state,
+                    force_full_inline=True,
+                    seq=seq,
+                    debug_source="flush_sequence_fallback",
+                    translate_ms=translate_ms,
+                )
                 continue
 
+            debug = _debug_push_enabled()
+            total_start = time.perf_counter() if debug else None
+            data_bytes = sum(_payload_nbytes(update.get("data")) for update in updates)
             payload = {
                 "rwId": self._render_window_id,
                 "kind": "arrayPartial",
@@ -686,10 +1247,14 @@ class PushSync:
             if extra is not None:
                 payload["extra"] = extra
 
+            convert_start = time.perf_counter() if debug else None
             self._convert_attachments(payload)
+            convert_ms = _debug_ms(convert_start) if debug else None
+            publish_start = time.perf_counter() if debug else None
             self._server.protocol.publish(
                 "trame.vtk.array.partial", payload, client_id=sid
             )
+            publish_ms = _debug_ms(publish_start) if debug else None
 
             client_known = self._known_hashes.setdefault(sid, set())
             for update in updates:
@@ -699,6 +1264,20 @@ class PushSync:
                 client_known.add(update["newHash"])
             self._client_sequences[sid] = seq
             self._advance_client_ledger_for_partials(sid, updates)
+            if debug:
+                _debug_push_event(
+                    "partial_publish",
+                    rw=self._render_window_id,
+                    client=sid,
+                    epoch=self._get_client_epoch(sid),
+                    base_seq=base_seq,
+                    seq=seq,
+                    updates=len(updates),
+                    data_bytes=data_bytes,
+                    convert_ms=convert_ms,
+                    publish_ms=publish_ms,
+                    total_ms=_debug_ms(total_start),
+                )
 
         self._pending_changes.clear()
         return True

@@ -5,6 +5,7 @@ from copy import deepcopy
 import numpy as np
 
 from trame_vtklocal.module.protocol import ObjectManagerAPI
+from trame_vtklocal.module.vtkjs_translator import translate_scene
 from trame_vtklocal.widgets.push_sync import PushSync
 from trame_vtklocal.widgets.vtkjs_base import VtkJsBaseView
 from trame_vtklocal.widgets.vtkjs_shared_view import VtkJsSharedView
@@ -84,6 +85,21 @@ class _FakeAttachmentProtocol:
         ObjectManagerAPI._convert_bytes_to_attachments(self, node)
 
 
+class _ObjectManagerApiNoAttachments:
+    def __init__(self):
+        self._api = ObjectManagerAPI()
+        self.vtk_object_manager = self._api.vtk_object_manager
+
+    def register_push_view(self, *_args):
+        pass
+
+    def unregister_push_view(self, *_args):
+        pass
+
+    def _convert_bytes_to_attachments(self, _state):
+        pass
+
+
 def _state_with_points(instance_id, points_hash):
     return {
         "id": "rw",
@@ -102,9 +118,13 @@ def _state_with_points(instance_id, points_hash):
 
 
 def _find_points_array(state, instance_id):
+    if state.get("id") == str(instance_id):
+        return state["properties"]["points"]
     for dep in state.get("dependencies", []):
-        if dep.get("id") == str(instance_id):
-            return dep["properties"]["points"]
+        try:
+            return _find_points_array(dep, instance_id)
+        except AssertionError:
+            pass
     raise AssertionError(f"points array for instance {instance_id} not found")
 
 
@@ -154,6 +174,256 @@ def _state_with_actor_visibility(visible):
             }
         ],
     }
+
+
+def _make_real_vtk_scene():
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkPolyData
+    from vtkmodules.vtkRenderingCore import (
+        vtkActor,
+        vtkPolyDataMapper,
+        vtkRenderer,
+        vtkRenderWindow,
+    )
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    renderer = vtkRenderer()
+    rw.AddRenderer(renderer)
+
+    points = vtkPoints()
+    points.InsertNextPoint(0.0, 0.0, 0.0)
+    points.InsertNextPoint(1.0, 0.0, 0.0)
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(polydata)
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    renderer.AddActor(actor)
+
+    render_window_id = api.vtk_object_manager.RegisterObject(rw)
+    rw.Render()
+    api.vtk_object_manager.UpdateStatesFromObjects()
+    return api, rw, renderer, actor, polydata, points, render_window_id
+
+
+def _make_real_push_sync(server, api, render_window, render_window_id):
+    calls = {"full_translate": 0}
+
+    def get_state(version_registry=None, collection_tracker=None):
+        calls["full_translate"] += 1
+        render_window.Render()
+        api.vtk_object_manager.UpdateStatesFromObjects()
+        return translate_scene(
+            api.vtk_object_manager,
+            render_window_id,
+            collection_tracker,
+            version_registry,
+            render_window_id,
+        )
+
+    push_sync = PushSync(
+        server,
+        get_state,
+        lambda vtk_object: str(api.vtk_object_manager.GetId(vtk_object)),
+        render_window_id=render_window_id,
+        api=api,
+    )
+    return push_sync, calls
+
+
+def _set_float_array_values(vtk_array, values):
+    vtk_array.SetNumberOfTuples(len(values))
+    for index, tuple_values in enumerate(values):
+        for component, value in enumerate(tuple_values):
+            vtk_array.SetComponent(index, component, value)
+    vtk_array.Modified()
+
+
+def _make_float_array(name, components, values):
+    from vtkmodules.vtkCommonCore import vtkFloatArray
+
+    array = vtkFloatArray()
+    array.SetName(name)
+    array.SetNumberOfComponents(components)
+    _set_float_array_values(array, values)
+    return array
+
+
+def _make_quad_polydata():
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+
+    points = vtkPoints()
+    for point in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)]:
+        points.InsertNextPoint(*point)
+
+    polys = vtkCellArray()
+    polys.InsertNextCell(4)
+    for point_id in range(4):
+        polys.InsertCellPoint(point_id)
+
+    tcoords = _make_float_array(
+        "TextureCoordinates",
+        2,
+        [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+    )
+    homography = _make_float_array(
+        "HomographyInverse",
+        16,
+        [(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)],
+    )
+
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetPolys(polys)
+    polydata.GetPointData().SetTCoords(tcoords)
+    polydata.GetFieldData().AddArray(homography)
+    return polydata, points, tcoords, homography
+
+
+def _make_line_polydata():
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+
+    points = vtkPoints()
+    for point in [(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.5, 0.0)]:
+        points.InsertNextPoint(*point)
+
+    lines = vtkCellArray()
+    lines.InsertNextCell(3)
+    for point_id in range(3):
+        lines.InsertCellPoint(point_id)
+
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetLines(lines)
+    return polydata, points
+
+
+def _add_actor(renderer, polydata, visible=True):
+    from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(polydata)
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    actor.SetVisibility(visible)
+    renderer.AddActor(actor)
+    return actor
+
+
+def _make_tsw_like_vtk_scene():
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    renderer = vtkRenderer()
+    rw.AddRenderer(renderer)
+
+    footprint, footprint_points, footprint_tcoords, homography = _make_quad_polydata()
+    frustum, frustum_points = _make_line_polydata()
+    connection, connection_points = _make_line_polydata()
+    trail, trail_points = _make_line_polydata()
+
+    footprint_actor = _add_actor(renderer, footprint, visible=True)
+    frustum_actor = _add_actor(renderer, frustum, visible=False)
+    connection_actor = _add_actor(renderer, connection, visible=True)
+    trail_actor = _add_actor(renderer, trail, visible=True)
+
+    render_window_id = api.vtk_object_manager.RegisterObject(rw)
+    rw.Render()
+    api.vtk_object_manager.UpdateStatesFromObjects()
+    return {
+        "api": api,
+        "render_window": rw,
+        "render_window_id": render_window_id,
+        "actors": [footprint_actor, frustum_actor, connection_actor, trail_actor],
+        "footprint": footprint,
+        "footprint_points": footprint_points,
+        "footprint_tcoords": footprint_tcoords,
+        "homography": homography,
+        "frustum": frustum,
+        "frustum_points": frustum_points,
+        "connection": connection,
+        "connection_points": connection_points,
+        "trail": trail,
+        "trail_points": trail_points,
+    }
+
+
+def _mutate_tsw_like_frame(scene, frame_index):
+    offset = frame_index * 0.1
+    for index in range(4):
+        x = float(index % 2) + offset
+        y = float(index // 2) + offset * 0.5
+        scene["footprint_points"].SetPoint(index, x, y, 0.0)
+    scene["footprint_points"].Modified()
+
+    _set_float_array_values(
+        scene["footprint_tcoords"],
+        [
+            (0.0 + offset, 0.0),
+            (1.0 + offset, 0.0),
+            (1.0 + offset, 1.0),
+            (0.0 + offset, 1.0),
+        ],
+    )
+    _set_float_array_values(
+        scene["homography"],
+        [
+            (
+                1.0,
+                0.0,
+                offset,
+                0.0,
+                0.0,
+                1.0,
+                offset * 0.5,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                offset,
+                offset * 0.5,
+                0.0,
+                1.0,
+            )
+        ],
+    )
+
+    for index in range(3):
+        scene["frustum_points"].SetPoint(index, offset + index, offset, index * 0.25)
+        scene["connection_points"].SetPoint(index, offset, index + offset, 0.0)
+        scene["trail_points"].SetPoint(index, index * 0.5, offset + index * 0.1, 0.0)
+    for key in ["frustum_points", "connection_points", "trail_points"]:
+        scene[key].Modified()
+
+    scene["actors"][0].SetVisibility(True)
+    scene["actors"][1].SetVisibility(frame_index % 2 == 0)
+    scene["actors"][2].SetVisibility(True)
+    scene["actors"][3].SetVisibility(frame_index % 3 != 0)
+    for key in ["footprint", "frustum", "connection", "trail"]:
+        scene[key].Modified()
+
+
+def _inline_descriptor_hashes(value):
+    hashes = []
+    if isinstance(value, list):
+        for item in value:
+            hashes.extend(_inline_descriptor_hashes(item))
+        return hashes
+    if not isinstance(value, dict):
+        return hashes
+    if "hash" in value and "dataType" in value and "content" in value:
+        hashes.append(value["hash"])
+        return hashes
+    for child in value.values():
+        hashes.extend(_inline_descriptor_hashes(child))
+    return hashes
 
 
 def test_push_sync_incremental_updates_are_hash_first():
@@ -216,6 +486,62 @@ def test_push_sync_update_uses_property_patch_for_stable_object_graph():
     ]
 
 
+def test_push_sync_update_uses_object_manager_delta_for_actor_property():
+    server = _FakeServer()
+    api, rw, _renderer, actor, _polydata, _points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    actor_id = str(api.vtk_object_manager.GetId(actor))
+    push_sync.client_resync("client-a")
+    assert calls["full_translate"] == 1
+
+    actor.SetVisibility(False)
+    push_sync.update(extra={"mapCamera": {"zoom": 10}})
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert client_id == "client-a"
+    assert patch["kind"] == "patch"
+    assert patch["extra"] == {"mapCamera": {"zoom": 10}}
+    assert patch["ops"] == [
+        {
+            "op": "setProperties",
+            "id": actor_id,
+            "properties": {"visibility": 0},
+        }
+    ]
+
+
+def test_push_sync_update_uses_object_manager_delta_for_polydata_array():
+    server = _FakeServer()
+    api, rw, _renderer, _actor, polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    polydata_id = str(api.vtk_object_manager.GetId(polydata))
+    initial_state = push_sync.client_resync("client-a")
+    initial_hash = _find_points_array(initial_state, polydata_id)["hash"]
+    server.protocol.messages.clear()
+
+    points.SetPoint(0, 2.0, 3.0, 4.0)
+    points.Modified()
+    polydata.Modified()
+    push_sync.update()
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert client_id == "client-a"
+    assert patch["ops"][0]["op"] == "updateObject"
+    assert patch["ops"][0]["id"] == polydata_id
+    points_descriptor = patch["ops"][0]["state"]["properties"]["points"]
+    assert points_descriptor["hash"] != initial_hash
+    assert points_descriptor["dataType"] == "Float32Array"
+    assert len(points_descriptor["content"]) == 6 * 4
+
+
 def test_push_sync_update_falls_back_to_full_state_for_structural_change():
     server = _FakeServer()
     actor_ids = ["actor-a"]
@@ -247,6 +573,86 @@ def test_push_sync_update_falls_back_to_full_state_for_structural_change():
     assert state["kind"] == "full"
     assert state["seq"] == 1
     assert [dep["id"] for dep in state["dependencies"]] == ["actor-a", "actor-b"]
+
+
+def test_push_sync_object_delta_falls_back_for_real_structural_change():
+    from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+
+    server = _FakeServer()
+    api, rw, renderer, _actor, polydata, _points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(polydata)
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    renderer.AddActor(actor)
+    push_sync.update()
+
+    assert calls["full_translate"] == 2
+    assert len(server.protocol.messages) == 1
+    topic, state, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.delta"
+    assert client_id == "client-a"
+    assert state["kind"] == "full"
+    assert state["seq"] == 1
+
+
+def test_push_sync_tsw_like_frame_updates_stay_on_patch_path():
+    server = _FakeServer()
+    scene = _make_tsw_like_vtk_scene()
+    api = scene["api"]
+    push_sync, calls = _make_real_push_sync(
+        server,
+        api,
+        scene["render_window"],
+        scene["render_window_id"],
+    )
+
+    push_sync.client_resync("client-a")
+    assert calls["full_translate"] == 1
+    server.protocol.messages.clear()
+
+    for frame_index in range(1, 5):
+        _mutate_tsw_like_frame(scene, frame_index)
+        push_sync.update(extra={"mapCamera": {"frame": frame_index}})
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 4
+
+    seen_inlined_hashes = set()
+    for index, (topic, patch, client_id) in enumerate(server.protocol.messages, start=1):
+        assert topic == "trame.vtk.patch"
+        assert client_id == "client-a"
+        assert patch["kind"] == "patch"
+        assert patch["extra"] == {"mapCamera": {"frame": index}}
+        assert patch["baseSeq"] == index - 1
+        assert patch["seq"] == index
+        assert patch["ops"]
+        assert {op["op"] for op in patch["ops"]} <= {"setProperties", "updateObject"}
+        assert any(op["op"] == "updateObject" for op in patch["ops"])
+
+        inlined_hashes = set(_inline_descriptor_hashes(patch))
+        assert inlined_hashes
+        assert not (inlined_hashes & seen_inlined_hashes)
+        seen_inlined_hashes.update(inlined_hashes)
+
+    server.protocol.messages.clear()
+    scene["actors"][0].SetVisibility(False)
+    push_sync.update(extra={"mapCamera": {"frame": "visibility-only"}})
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, _client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert len(patch["ops"]) == 1
+    assert patch["ops"][0]["op"] == "setProperties"
+    assert patch["ops"][0]["id"] == str(api.vtk_object_manager.GetId(scene["actors"][0]))
+    assert patch["ops"][0]["properties"]["visibility"] == 0
+    assert _inline_descriptor_hashes(patch) == []
 
 
 def test_push_sync_resync_is_hash_first():
@@ -288,7 +694,7 @@ def test_push_sync_inlines_nested_array_descriptors_in_full_state():
     assert push_sync._known_hashes["client-a"] == {"nested-array"}
 
 
-def test_push_sync_reinlines_known_arrays_on_full_update():
+def test_push_sync_omits_known_arrays_on_full_update():
     payload = np.asarray([1, 2, 3], dtype=np.float32).tobytes()
     server = _FakeServer()
     push_sync = PushSync(
@@ -306,7 +712,7 @@ def test_push_sync_reinlines_known_arrays_on_full_update():
     assert len(server.protocol.messages) == 1
     _, state, _ = server.protocol.messages[0]
     descriptor = state["properties"]["custom"]["arbitrary"]["payload"]
-    assert descriptor["content"] == payload
+    assert "content" not in descriptor
 
 
 def test_protocol_converts_nested_inline_bytes_to_attachments():
@@ -424,7 +830,7 @@ def test_push_sync_partial_flush_advances_synthetic_hash_ledger():
     assert client_id == "client-a"
     points = _find_points_array(delta_state, "62")
     assert points["hash"] == partial_update["newHash"]
-    assert "content" in points
+    assert "content" not in points
 
 
 def test_push_sync_extract_points_region_preserves_float64_dtype():

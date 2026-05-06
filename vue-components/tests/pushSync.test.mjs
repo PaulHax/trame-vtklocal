@@ -20,6 +20,12 @@ function createDocumentStub() {
         listeners.delete(type);
       }
     },
+    dispatchEvent(type) {
+      listeners.get(type)?.();
+    },
+    listenerCount(type) {
+      return listeners.has(type) ? 1 : 0;
+    },
   };
 }
 
@@ -409,6 +415,117 @@ test("createPushSync keeps accepting delta states after a failed resync", async 
   }
 });
 
+test("createPushSync buffers broadcasts while resync is pending", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resolveResync;
+    const resyncPromise = new Promise((resolve) => {
+      resolveResync = resolve;
+    });
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return resyncPromise;
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      pushCache,
+    );
+
+    const deltaState = createInlineState({
+      mtime: 1,
+      hash: "hash-a",
+      seq: 1,
+    });
+    emit("trame.vtk.delta", deltaState);
+    await flushAsyncWork();
+
+    assert.equal(sync.getQueueLength(), 0);
+    assert.equal(pushCache.has("hash-a"), false);
+
+    resolveResync(createEmptyState(0, { seq: 0 }));
+    await flushAsyncWork();
+
+    const states = sync.drainReadyStates();
+    assert.deepEqual(
+      states.map((state) => state.seq),
+      [0, 1],
+    );
+    assert.equal(pushCache.has("hash-a"), true);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync does not request resync on visibility changes", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 1);
+    assert.equal(globalThis.document.listenerCount("visibilitychange"), 0);
+
+    globalThis.document.dispatchEvent("visibilitychange");
+    await flushAsyncWork();
+
+    assert.equal(resyncCalls, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test("createPushSync buffers partial updates until queued states drain", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
@@ -570,6 +687,158 @@ test("createPushSync preserves full, partial, full stream order", async () => {
   }
 });
 
+test("createPushSync waits for missing full-state sequence before applying newer states", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      pushCache,
+      {
+        gapResyncDelayMs: null,
+      },
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const stateA = createEmptyState(1, { seq: 1 });
+    emit("trame.vtk.delta", stateA);
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const stateB = createInlineState({
+      mtime: 2,
+      hash: "hash-a",
+      seq: 2,
+    });
+    const stateC = createInlineState({
+      mtime: 3,
+      hash: "hash-a",
+      seq: 3,
+    });
+    delete stateC.properties.points.content;
+
+    emit("trame.vtk.delta", stateC);
+    assert.equal(sync.takeNextMessage(), null);
+    assert.equal(pushCache.has("hash-a"), false);
+
+    emit("trame.vtk.delta", stateB);
+    assert.equal(pushCache.has("hash-a"), true);
+
+    let message = sync.takeNextMessage();
+    assert.equal(message.payload.seq, 2);
+    sync.markMessageApplied(message);
+
+    message = sync.takeNextMessage();
+    assert.equal(message.payload.seq, 3);
+    sync.markMessageApplied(message);
+
+    assert.equal(sync.takeNextMessage(), null);
+    assert.equal(resyncCalls, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync avoids waking the queue for blocked future states", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    let queueReadyCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      new Map(),
+      {
+        gapResyncDelayMs: null,
+        onQueueReady() {
+          queueReadyCalls += 1;
+        },
+      },
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    emit("trame.vtk.delta", createEmptyState(1, { seq: 1 }));
+    sync.markMessageApplied(sync.takeNextMessage());
+    queueReadyCalls = 0;
+
+    emit("trame.vtk.delta", createEmptyState(3, { seq: 3 }));
+    assert.equal(queueReadyCalls, 1);
+    assert.equal(sync.takeNextMessage(), null);
+
+    emit("trame.vtk.delta", createEmptyState(4, { seq: 4 }));
+    assert.equal(queueReadyCalls, 1);
+
+    emit("trame.vtk.delta", createEmptyState(2, { seq: 2 }));
+    assert.equal(queueReadyCalls, 2);
+
+    for (const expectedSeq of [2, 3, 4]) {
+      const message = sync.takeNextMessage();
+      assert.equal(message.payload.seq, expectedSeq);
+      sync.markMessageApplied(message);
+    }
+
+    assert.equal(sync.takeNextMessage(), null);
+    assert.equal(resyncCalls, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test("createPushSync applies property patch messages through the ordered queue", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
@@ -642,6 +911,151 @@ test("createPushSync applies property patch messages through the ordered queue",
   }
 });
 
+test("applyPatchUpdate applies object-state patches and caches inline payloads", async () => {
+  const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
+
+  const payload = new Uint8Array(new Float32Array([1, 2, 3]).buffer);
+  const applied = [];
+  const instance = {
+    modifiedCount: 0,
+    set(properties) {
+      applied.push(properties);
+    },
+    modified() {
+      this.modifiedCount += 1;
+    },
+  };
+  const synchronizerContext = {
+    getInstance(id) {
+      return id === "actor" ? instance : null;
+    },
+  };
+  const pushCache = new Map();
+
+  const ok = applyPatchUpdate(
+    {
+      ops: [
+        {
+          op: "updateObject",
+          id: "actor",
+          state: {
+            id: "actor",
+            type: "vtkActor",
+            properties: {
+              visibility: false,
+              customPayload: {
+                hash: "payload-hash",
+                dataType: "Float32Array",
+                content: payload,
+              },
+            },
+          },
+        },
+      ],
+    },
+    synchronizerContext,
+    null,
+    pushCache,
+  );
+
+  assert.equal(ok, true);
+  assert.equal(instance.modifiedCount, 1);
+  assert.deepEqual(applied, [
+    {
+      visibility: false,
+      customPayload: {
+        hash: "payload-hash",
+        dataType: "Float32Array",
+      },
+    },
+  ]);
+  assert.deepEqual(Array.from(pushCache.get("payload-hash")), [1, 2, 3]);
+});
+
+test("applyPatchUpdate applies vtkPolyData object patches with arrays", async () => {
+  const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
+  const vtkPolyData = (
+    await loadModule("@kitware/vtk.js/Common/DataModel/PolyData")
+  ).default;
+
+  const polydata = vtkPolyData.newInstance();
+  const pushCache = new Map();
+  const synchronizerContext = {
+    getInstance(id) {
+      return id === "polydata" ? polydata : null;
+    },
+  };
+
+  const pointValues = new Float32Array([0, 0, 0, 1, 0, 0]);
+  const lineValues = new Uint32Array([2, 0, 1]);
+  const tcoordValues = new Float32Array([0, 0, 1, 0]);
+
+  const ok = applyPatchUpdate(
+    {
+      ops: [
+        {
+          op: "updateObject",
+          id: "polydata",
+          state: {
+            id: "polydata",
+            type: "vtkPolyData",
+            properties: {
+              points: {
+                hash: "points-hash",
+                dataType: "Float32Array",
+                numberOfComponents: 3,
+                size: pointValues.length,
+                name: "Points",
+                vtkClass: "vtkPoints",
+                content: new Uint8Array(pointValues.buffer),
+              },
+              lines: {
+                hash: "lines-hash",
+                dataType: "Uint32Array",
+                numberOfComponents: 1,
+                size: lineValues.length,
+                name: "lines",
+                vtkClass: "vtkCellArray",
+                content: new Uint8Array(lineValues.buffer),
+              },
+              fields: [
+                {
+                  hash: "tcoords-hash",
+                  dataType: "Float32Array",
+                  numberOfComponents: 2,
+                  size: tcoordValues.length,
+                  name: "TextureCoordinates",
+                  location: "pointData",
+                  registration: "setTCoords",
+                  content: new Uint8Array(tcoordValues.buffer),
+                },
+              ],
+            },
+            dependencies: [],
+            calls: [],
+          },
+        },
+      ],
+    },
+    synchronizerContext,
+    null,
+    pushCache,
+  );
+
+  assert.equal(ok, true);
+  assert.deepEqual(Array.from(polydata.getPoints().getData()), [0, 0, 0, 1, 0, 0]);
+  assert.deepEqual(Array.from(polydata.getLines().getData()), [2, 0, 1]);
+  assert.deepEqual(Array.from(polydata.getPointData().getTCoords().getData()), [
+    0,
+    0,
+    1,
+    0,
+  ]);
+  assert.deepEqual(Array.from(pushCache.get("points-hash")), Array.from(pointValues));
+  assert.deepEqual(Array.from(pushCache.get("lines-hash")), Array.from(lineValues));
+  assert.deepEqual(Array.from(pushCache.get("tcoords-hash")), Array.from(tcoordValues));
+});
+
 test("createPushSync requests resync on sequence gaps", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
@@ -673,6 +1087,9 @@ test("createPushSync requests resync on sequence gaps", async () => {
       },
       "rw",
       new Map(),
+      {
+        gapResyncDelayMs: 0,
+      },
     );
 
     await flushAsyncWork();

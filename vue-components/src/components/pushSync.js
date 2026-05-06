@@ -945,9 +945,11 @@ export function createPushSync(
 
   function cleanup() {
     try {
-      session.call("vtkjs.push.dispose", [rwId])?.catch?.(() => {});
-    } catch {
-      // Best-effort cleanup only; local unsubscribe/cache cleanup still matters.
+      session.call("vtkjs.push.dispose", [rwId])?.catch?.((err) => {
+        console.warn(`[pushSync] vtkjs.push.dispose failed for rwId ${rwId}:`, err);
+      });
+    } catch (err) {
+      console.warn(`[pushSync] vtkjs.push.dispose threw for rwId ${rwId}:`, err);
     }
     resyncVersion += 1;
     clearGapResyncTimer();

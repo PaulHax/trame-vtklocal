@@ -490,6 +490,61 @@ def test_push_sync_update_uses_object_manager_delta_for_actor_property():
     ]
 
 
+def test_push_sync_dirty_update_skips_render_window_refresh(monkeypatch):
+    server = _FakeServer()
+    api, rw, _renderer, actor, _polydata, _points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+    refresh_calls = {"full": 0, "dirty": 0}
+
+    def fail_full_refresh():
+        refresh_calls["full"] += 1
+        raise AssertionError("dirty patch update should not render/refresh the full root")
+
+    original_dirty_refresh = push_sync._refresh_dirty_object_states
+
+    def spy_dirty_refresh(object_ids):
+        refresh_calls["dirty"] += 1
+        return original_dirty_refresh(object_ids)
+
+    monkeypatch.setattr(push_sync, "_refresh_object_manager_state", fail_full_refresh)
+    monkeypatch.setattr(push_sync, "_refresh_dirty_object_states", spy_dirty_refresh)
+
+    actor.SetVisibility(False)
+    push_sync.update()
+
+    assert calls["full_translate"] == 1
+    assert refresh_calls == {"full": 0, "dirty": 1}
+    assert len(server.protocol.messages) == 1
+    assert server.protocol.messages[0][0] == "trame.vtk.patch"
+
+
+def test_push_sync_extra_only_update_skips_vtk_refresh(monkeypatch):
+    server = _FakeServer()
+    api, rw, _renderer, _actor, _polydata, _points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    def fail_refresh(*_args, **_kwargs):
+        raise AssertionError("extra-only patch should not refresh VTK state")
+
+    monkeypatch.setattr(push_sync, "_refresh_object_manager_state", fail_refresh)
+    monkeypatch.setattr(push_sync, "_refresh_dirty_object_states", fail_refresh)
+
+    push_sync.update(extra={"mapCamera": {"zoom": 12}})
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, _client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert patch["ops"] == []
+    assert patch["extra"] == {"mapCamera": {"zoom": 12}}
+
+
 def test_push_sync_update_uses_object_manager_delta_for_polydata_array():
     server = _FakeServer()
     api, rw, _renderer, _actor, polydata, points, rw_id = _make_real_vtk_scene()
@@ -565,6 +620,28 @@ def test_push_sync_normal_update_after_partial_inlines_current_polydata_array():
     assert len(points_descriptor["content"]) == points.GetNumberOfPoints() * 3 * 4
 
 
+def test_push_sync_partial_flush_consumes_matching_dirty_observer_state():
+    server = _FakeServer()
+    api, rw, _renderer, _actor, polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    points.SetPoint(0, 2.0, 3.0, 4.0)
+    points.GetData().Modified()
+    points.Modified()
+    polydata.Modified()
+    push_sync.mark_modified(polydata, "points", 0, points.GetNumberOfPoints())
+    assert push_sync.flush()
+    assert len(server.protocol.messages) == 1
+
+    server.protocol.messages.clear()
+    push_sync.update()
+
+    assert server.protocol.messages == []
+
+
 def test_push_sync_object_delta_falls_back_for_real_structural_change():
     from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
@@ -591,6 +668,55 @@ def test_push_sync_object_delta_falls_back_for_real_structural_change():
     assert state["kind"] == "full"
     assert state["seq"] == 1
     assert _inline_descriptor_hashes(state)
+
+
+def test_push_sync_pipeline_source_change_updates_mapper_input_dataset(monkeypatch):
+    from vtkmodules.vtkFiltersSources import vtkConeSource
+    from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper, vtkRenderer
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    server = _FakeServer()
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    renderer = vtkRenderer()
+    rw.AddRenderer(renderer)
+
+    source = vtkConeSource()
+    source.SetResolution(6)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    renderer.AddActor(actor)
+
+    rw_id = api.vtk_object_manager.RegisterObject(rw)
+    rw.Render()
+    api.vtk_object_manager.UpdateStatesFromObjects()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    assert calls["full_translate"] == 1
+    assert any(key.startswith("pipeline:") for key in push_sync._observed_objects)
+    server.protocol.messages.clear()
+
+    def fail_full_refresh():
+        raise AssertionError("pipeline source delta should not refresh the full root")
+
+    monkeypatch.setattr(push_sync, "_refresh_object_manager_state", fail_full_refresh)
+
+    source.SetResolution(12)
+    push_sync.update()
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert client_id == "client-a"
+    assert patch["version"] == 1
+    assert len(patch["ops"]) == 1
+    assert patch["ops"][0]["op"] == "updateObject"
+    assert patch["ops"][0]["state"]["type"] == "vtkPolyData"
+    assert _inline_descriptor_hashes(patch)
 
 
 def test_push_sync_tsw_like_frame_updates_stay_on_patch_path():
@@ -742,6 +868,33 @@ def test_push_sync_uses_independent_collection_trackers_per_client():
 
     second_client_state = push_sync.client_resync("client-b")
     assert second_client_state["calls"] == [["addViewProp", ["instance:${actor-a}"]]]
+
+
+def test_push_sync_full_fallback_resets_collection_tracker():
+    def get_state(_version_registry=None, collection_tracker=None):
+        prev_ids = collection_tracker.get("items", set())
+        collection_tracker["items"] = {"actor-a"}
+        calls = []
+        if "actor-a" not in prev_ids:
+            calls.append(["addViewProp", ["instance:${actor-a}"]])
+        return {"id": "rw", "calls": calls}
+
+    server = _FakeServer()
+    push_sync = PushSync(
+        server,
+        get_state,
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+    )
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+    push_sync._publish_full_fallback("client-a", seq=1, reason="test")
+
+    assert len(server.protocol.messages) == 1
+    _topic, state, _client_id = server.protocol.messages[0]
+    assert state["kind"] == "full"
+    assert state["calls"] == [["addViewProp", ["instance:${actor-a}"]]]
 
 
 def test_push_sync_flush_preserves_extra_metadata():

@@ -55,6 +55,17 @@ IGNORED_DELTA_CLASS_NAMES = {
     "vtkUnsignedShortArray",
 }
 DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
+STRUCTURAL_DIRTY_CLASS_NAMES = {
+    "vtkActorCollection",
+    "vtkGenericOpenGLRenderWindow",
+    "vtkLightCollection",
+    "vtkOpenGLRenderer",
+    "vtkPropCollection",
+    "vtkRenderer",
+    "vtkRendererCollection",
+    "vtkRenderWindow",
+    "vtkXOpenGLRenderWindow",
+}
 JS_ARRAY_DTYPE_MAP = {
     "Int8Array": np.int8,
     "Uint8Array": np.uint8,
@@ -243,6 +254,72 @@ def _object_patch_signature(obj):
         "arrays": obj.get("arrays") or {},
         "dependencies": _dependency_signature(obj),
     }
+
+
+def _iter_field_data_arrays(field_data):
+    if field_data is None:
+        return
+
+    yield field_data
+
+    try:
+        count = field_data.GetNumberOfArrays()
+    except AttributeError:
+        count = 0
+    for index in range(count):
+        array = field_data.GetArray(index)
+        if array is not None:
+            yield array
+
+    for getter in ("GetScalars", "GetTCoords", "GetNormals", "GetVectors"):
+        get_array = getattr(field_data, getter, None)
+        if get_array is None:
+            continue
+        array = get_array()
+        if array is not None:
+            yield array
+
+
+def _iter_cell_array_children(cell_array):
+    if cell_array is None:
+        return
+
+    yield cell_array
+    for getter in ("GetData", "GetConnectivityArray", "GetOffsetsArray"):
+        get_child = getattr(cell_array, getter, None)
+        if get_child is None:
+            continue
+        child = get_child()
+        if child is not None:
+            yield child
+
+
+def _iter_dataset_dirty_children(dataset):
+    if dataset is None:
+        return
+
+    get_points = getattr(dataset, "GetPoints", None)
+    if get_points is not None:
+        points = get_points()
+        if points is not None:
+            yield points
+            get_data = getattr(points, "GetData", None)
+            if get_data is not None:
+                data = get_data()
+                if data is not None:
+                    yield data
+
+    for getter in ("GetVerts", "GetLines", "GetPolys", "GetStrips"):
+        get_cells = getattr(dataset, getter, None)
+        if get_cells is None:
+            continue
+        yield from _iter_cell_array_children(get_cells())
+
+    for getter in ("GetPointData", "GetCellData", "GetFieldData"):
+        get_field_data = getattr(dataset, getter, None)
+        if get_field_data is None:
+            continue
+        yield from _iter_field_data_arrays(get_field_data())
 
 
 def _numpy_array_from_vtk_data(data):
@@ -451,11 +528,18 @@ class PushSync:
         self._client_states = {}
         self._client_statuses = {}
         self._object_class_names = {}
+        self._dirty_object_ids = set()
+        self._dirty_owner_ids = {}
+        self._dirty_pipeline_updates = {}
+        self._dirty_structural_ids = set()
+        self._dirty_structure_pending = False
+        self._observed_objects = {}
 
         if api is not None:
             api.register_push_view(self._rw_id_int, self)
 
     def cleanup(self):
+        self._clear_dirty_observers()
         if self._api is not None:
             self._api.unregister_push_view(self._rw_id_int)
         self._api = None
@@ -468,6 +552,11 @@ class PushSync:
         self._client_states.clear()
         self._client_statuses.clear()
         self._object_class_names.clear()
+        self._dirty_object_ids.clear()
+        self._dirty_owner_ids.clear()
+        self._dirty_pipeline_updates.clear()
+        self._dirty_structural_ids.clear()
+        self._dirty_structure_pending = False
 
     def drop_client(self, client_id):
         self._view_clients.discard(client_id)
@@ -477,6 +566,275 @@ class PushSync:
         self._client_sequences.pop(client_id, None)
         self._client_states.pop(client_id, None)
         self._client_statuses.pop(client_id, None)
+
+    # ------------------------------------------------------------------
+    # Dirty VTK object tracking
+    # ------------------------------------------------------------------
+
+    def _clear_dirty_observers(self):
+        for vtk_obj, observer_tag in self._observed_objects.values():
+            try:
+                vtk_obj.RemoveObserver(observer_tag)
+            except (AttributeError, RuntimeError, ValueError):
+                pass
+        self._observed_objects.clear()
+
+    def _mark_dirty(self, object_id):
+        dirty_object_ids = getattr(self, "_dirty_object_ids", None)
+        if dirty_object_ids is None:
+            return
+        object_id = str(object_id)
+        dirty_object_ids.add(object_id)
+        if object_id in getattr(self, "_dirty_structural_ids", set()):
+            self._dirty_structure_pending = True
+
+    def _make_dirty_callback(self, object_id):
+        def on_modified(_vtk_obj, _event, object_id=object_id):
+            self._mark_dirty(object_id)
+
+        return on_modified
+
+    def _observe_dirty_object(self, object_id, vtk_obj):
+        if vtk_obj is None or not hasattr(vtk_obj, "AddObserver"):
+            return
+
+        object_id = str(object_id)
+        observed = self._observed_objects.get(object_id)
+        if observed is not None and observed[0] is vtk_obj:
+            return
+        if observed is not None:
+            try:
+                observed[0].RemoveObserver(observed[1])
+            except (AttributeError, RuntimeError, ValueError):
+                pass
+
+        tag = vtk_obj.AddObserver("ModifiedEvent", self._make_dirty_callback(object_id))
+        self._observed_objects[object_id] = (vtk_obj, tag)
+
+    def _sync_dirty_observers(self, status):
+        object_manager = self._object_manager()
+        if object_manager is None or status is None:
+            self._clear_dirty_observers()
+            self._dirty_owner_ids.clear()
+            self._dirty_pipeline_updates.clear()
+            self._dirty_structural_ids.clear()
+            return
+
+        self._clear_dirty_observers()
+        live_ids = {str(object_id) for object_id in (status.get("ids") or set())}
+        owner_ids = {}
+        pipeline_updates = {}
+        classes = status.get("classes") or {}
+        for object_id in live_ids:
+            vtk_obj = object_manager.GetObjectAtId(int(object_id))
+            self._observe_dirty_object(object_id, vtk_obj)
+            class_name = classes.get(object_id) or self._object_class_names.get(object_id, "")
+            if class_name in DATASET_PATCH_TYPES:
+                self._sync_dataset_dirty_children(object_id, vtk_obj, live_ids, owner_ids)
+            if "Mapper" in class_name:
+                self._sync_mapper_pipeline_dirty_sources(
+                    object_id,
+                    vtk_obj,
+                    live_ids,
+                    owner_ids,
+                    pipeline_updates,
+                )
+
+        self._dirty_owner_ids = owner_ids
+        self._dirty_pipeline_updates = pipeline_updates
+        self._dirty_structural_ids = {
+            object_id
+            for object_id, class_name in classes.items()
+            if class_name in STRUCTURAL_DIRTY_CLASS_NAMES
+        }
+        self._dirty_object_ids.clear()
+        self._dirty_structure_pending = False
+
+    def _sync_dataset_dirty_children(
+        self,
+        dataset_id,
+        dataset,
+        live_ids=None,
+        owner_ids=None,
+    ):
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return
+
+        if owner_ids is None:
+            owner_ids = self._dirty_owner_ids
+        live_ids = set(live_ids or ())
+        for child in _iter_dataset_dirty_children(dataset):
+            try:
+                child_id = str(object_manager.GetId(child))
+            except (TypeError, ValueError, RuntimeError):
+                continue
+            if live_ids and child_id not in live_ids:
+                continue
+            owner_ids.setdefault(child_id, set()).add(str(dataset_id))
+            self._observe_dirty_object(child_id, child)
+
+    def _sync_mapper_pipeline_dirty_sources(
+        self,
+        mapper_id,
+        mapper,
+        live_ids,
+        owner_ids,
+        pipeline_updates,
+    ):
+        if mapper is None or not hasattr(mapper, "GetInputConnection"):
+            return
+
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return
+
+        try:
+            port_count = mapper.GetNumberOfInputPorts()
+        except (AttributeError, RuntimeError):
+            port_count = 1
+
+        for port_index in range(port_count):
+            try:
+                connection_count = mapper.GetNumberOfInputConnections(port_index)
+            except (AttributeError, RuntimeError):
+                connection_count = 1
+
+            for connection_index in range(connection_count):
+                owner_id = self._mapper_input_dataset_id(
+                    mapper,
+                    port_index,
+                    connection_index,
+                    live_ids,
+                )
+                if owner_id is None:
+                    continue
+
+                try:
+                    connection = mapper.GetInputConnection(port_index, connection_index)
+                except (AttributeError, RuntimeError):
+                    connection = None
+                if connection is None or not hasattr(connection, "GetProducer"):
+                    continue
+
+                producer = connection.GetProducer()
+                if producer is None:
+                    continue
+
+                self._observe_pipeline_producer(
+                    mapper_id,
+                    producer,
+                    owner_id,
+                    producer,
+                    owner_ids,
+                    pipeline_updates,
+                    set(),
+                )
+
+    def _mapper_input_dataset_id(self, mapper, port_index, connection_index, live_ids):
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return None
+
+        data_object = None
+        get_input_data = getattr(mapper, "GetInputDataObject", None)
+        if get_input_data is not None:
+            try:
+                data_object = get_input_data(port_index, connection_index)
+            except (TypeError, RuntimeError):
+                data_object = None
+
+        if data_object is None and port_index == 0 and connection_index == 0:
+            get_input = getattr(mapper, "GetInput", None)
+            if get_input is not None:
+                try:
+                    data_object = get_input()
+                except RuntimeError:
+                    data_object = None
+
+        if data_object is None:
+            return None
+
+        try:
+            owner_id = str(object_manager.GetId(data_object))
+        except (TypeError, ValueError, RuntimeError):
+            return None
+
+        if owner_id not in live_ids:
+            return None
+
+        class_name = self._object_class_names.get(owner_id, "")
+        if class_name not in DATASET_PATCH_TYPES:
+            return None
+        return owner_id
+
+    def _observe_pipeline_producer(
+        self,
+        mapper_id,
+        producer,
+        owner_id,
+        terminal_producer,
+        owner_ids,
+        pipeline_updates,
+        seen,
+    ):
+        producer_key = id(producer)
+        if producer_key in seen:
+            return
+        seen.add(producer_key)
+
+        dirty_id = f"pipeline:{mapper_id}:{owner_id}:{producer_key}"
+        owner_ids.setdefault(dirty_id, set()).add(str(owner_id))
+        pipeline_updates.setdefault(dirty_id, {})[id(terminal_producer)] = (
+            terminal_producer
+        )
+        self._observe_dirty_object(dirty_id, producer)
+
+        get_input_connection = getattr(producer, "GetInputConnection", None)
+        if get_input_connection is None:
+            return
+
+        try:
+            port_count = producer.GetNumberOfInputPorts()
+        except (AttributeError, RuntimeError):
+            port_count = 0
+
+        for port_index in range(port_count):
+            try:
+                connection_count = producer.GetNumberOfInputConnections(port_index)
+            except (AttributeError, RuntimeError):
+                connection_count = 0
+
+            for connection_index in range(connection_count):
+                try:
+                    connection = get_input_connection(port_index, connection_index)
+                except RuntimeError:
+                    continue
+                if connection is None or not hasattr(connection, "GetProducer"):
+                    continue
+
+                upstream = connection.GetProducer()
+                if upstream is None:
+                    continue
+                self._observe_pipeline_producer(
+                    mapper_id,
+                    upstream,
+                    owner_id,
+                    terminal_producer,
+                    owner_ids,
+                    pipeline_updates,
+                    seen,
+                )
+
+    def _dirty_tracking_ready(self):
+        return bool(self._observed_objects)
+
+    def _consume_dirty_tracking(self):
+        dirty_ids = set(self._dirty_object_ids)
+        structural = self._dirty_structure_pending
+        self._dirty_object_ids.clear()
+        self._dirty_structure_pending = False
+        return dirty_ids, structural
 
     # ------------------------------------------------------------------
     # Payload resolution
@@ -568,6 +926,7 @@ class PushSync:
         object_manager = self._object_manager()
         return (
             object_manager is not None
+            and hasattr(object_manager, "UpdateStateFromObject")
             and hasattr(object_manager, "UpdateStatesFromObjects")
             and hasattr(object_manager, "GetAllDependencies")
             and hasattr(object_manager, "GetBlobHashes")
@@ -595,6 +954,33 @@ class PushSync:
             raise RuntimeError(
                 "Push sync requires vtkObjectManager.UpdateStatesFromObjects(ids)"
             ) from exc
+
+    def _refresh_dirty_object_states(self, object_ids):
+        object_manager = self._require_object_delta()
+        manager_ids = {
+            object_id
+            for object_id in (self._object_manager_id(value) for value in object_ids)
+            if object_id is not None
+        }
+        for object_id in sorted(manager_ids, key=int):
+            object_manager.UpdateStateFromObject(int(object_id))
+
+    @staticmethod
+    def _object_manager_id(value):
+        try:
+            return str(int(str(value)))
+        except (TypeError, ValueError):
+            return None
+
+    def _refresh_dirty_pipeline_sources(self, dirty_ids):
+        producers = {}
+        for dirty_id in dirty_ids:
+            producers.update(self._dirty_pipeline_updates.get(str(dirty_id), {}))
+
+        for producer in producers.values():
+            update = getattr(producer, "Update", None)
+            if update is not None:
+                update()
 
     def _snapshot_status(self):
         object_manager = self._object_manager()
@@ -663,6 +1049,137 @@ class PushSync:
             rw_id=self._rw_id_int,
         )
 
+    def _candidate_ids_from_dirty(self, dirty_ids, previous_objects):
+        candidate_ids = set()
+        unsupported_dirty = []
+        for object_id in dirty_ids:
+            object_id = str(object_id)
+            owner_ids = self._dirty_owner_ids.get(object_id, set())
+            candidate_ids.update(owner_ids)
+
+            if object_id in previous_objects:
+                candidate_ids.add(object_id)
+                continue
+
+            if owner_ids:
+                continue
+
+            class_name = self._object_class_names.get(object_id, "")
+            if self._is_ignored_delta_class(class_name):
+                continue
+            unsupported_dirty.append(f"{object_id}:{class_name or 'unknown'}")
+
+        return candidate_ids, unsupported_dirty
+
+    def _build_delta_patch_from_candidates(
+        self,
+        client_id,
+        candidate_ids,
+        base_seq,
+        seq,
+        extra=None,
+    ):
+        previous_state = self._client_states.get(client_id)
+        if previous_state is None:
+            return None, None, "missing-client-ledger", None
+
+        previous_objects = _flatten_state_objects(previous_state)
+        ops = []
+        replacements = {}
+        translate_start = time.perf_counter()
+
+        for object_id in sorted(candidate_ids, key=lambda value: int(value)):
+            previous_obj = previous_objects.get(object_id)
+            if previous_obj is None:
+                continue
+
+            if previous_obj.get("type") in DATASET_PATCH_TYPES:
+                self._partial_arrays.retire_object(object_id)
+
+            current_obj = self._translate_object_state(object_id)
+            if current_obj is None:
+                return None, None, f"unsupported-object:{object_id}", None
+
+            current_obj = _state_for_ledger(current_obj)
+            if current_obj == previous_obj:
+                continue
+
+            if _object_patch_signature(previous_obj) != _object_patch_signature(
+                current_obj
+            ):
+                ops.append(
+                    {
+                        "op": "updateObject",
+                        "id": object_id,
+                        "state": copy.deepcopy(current_obj),
+                    }
+                )
+                replacements[object_id] = current_obj
+                continue
+
+            previous_props = previous_obj.get("properties") or {}
+            current_props = current_obj.get("properties") or {}
+            if not isinstance(previous_props, Mapping) or not isinstance(
+                current_props, Mapping
+            ):
+                return None, None, f"unsupported-properties:{object_id}", None
+
+            removed_keys = set(previous_props) - set(current_props)
+            if removed_keys:
+                return None, None, f"removed-properties:{object_id}", None
+
+            changed_props = {
+                key: copy.deepcopy(value)
+                for key, value in current_props.items()
+                if previous_props.get(key) != value
+            }
+
+            if not changed_props:
+                replacements[object_id] = current_obj
+                continue
+
+            if any(
+                _contains_array_descriptor(previous_props.get(key))
+                or _contains_array_descriptor(value)
+                for key, value in changed_props.items()
+            ):
+                ops.append(
+                    {
+                        "op": "updateObject",
+                        "id": object_id,
+                        "state": copy.deepcopy(current_obj),
+                    }
+                )
+            else:
+                ops.append(
+                    {
+                        "op": "setProperties",
+                        "id": object_id,
+                        "properties": changed_props,
+                    }
+                )
+
+            replacements[object_id] = current_obj
+
+        translate_ms = f"{(time.perf_counter() - translate_start) * 1000:.3f}"
+        ledger_state = _replace_objects_in_state(previous_state, replacements)
+
+        if not ops and extra is None:
+            return None, None, "no-op", translate_ms
+
+        payload = {
+            "version": PUSH_PROTOCOL_VERSION,
+            "rwId": self._render_window_id,
+            "kind": "patch",
+            "epoch": self._get_client_epoch(client_id),
+            "baseSeq": base_seq,
+            "seq": seq,
+            "ops": ops,
+        }
+        if extra is not None:
+            payload["extra"] = extra
+        return payload, ledger_state, None, translate_ms
+
     def _publish_client_state(
         self,
         client_id,
@@ -703,12 +1220,15 @@ class PushSync:
         self._known_hashes[client_id] = set(inlined)
         self._client_sequences[client_id] = seq
         self._client_states[client_id] = _state_for_ledger(client_state)
+        snapshot = status
         if status is not None:
             self._client_statuses[client_id] = copy.deepcopy(status)
         elif self._can_build_object_delta():
             snapshot = self._snapshot_status()
             if snapshot is not None:
                 self._client_statuses[client_id] = snapshot
+        if snapshot is not None:
+            self._sync_dirty_observers(snapshot)
         if debug:
             _debug_push_event(
                 "full_publish",
@@ -790,93 +1310,13 @@ class PushSync:
                 None,
             )
 
-        ops = []
-        replacements = {}
-        translate_start = time.perf_counter()
-
-        for object_id in sorted(candidate_ids, key=lambda value: int(value)):
-            previous_obj = previous_objects.get(object_id)
-            if previous_obj is None:
-                continue
-
-            if previous_obj.get("type") in DATASET_PATCH_TYPES:
-                self._partial_arrays.retire_object(object_id)
-
-            current_obj = self._translate_object_state(object_id)
-            if current_obj is None:
-                return None, None, f"unsupported-object:{object_id}", None
-
-            current_obj = _state_for_ledger(current_obj)
-            if current_obj == previous_obj:
-                continue
-
-            if _object_patch_signature(previous_obj) != _object_patch_signature(
-                current_obj
-            ):
-                return None, None, f"structural-object-change:{object_id}", None
-
-            previous_props = previous_obj.get("properties") or {}
-            current_props = current_obj.get("properties") or {}
-            if not isinstance(previous_props, Mapping) or not isinstance(
-                current_props, Mapping
-            ):
-                return None, None, f"unsupported-properties:{object_id}", None
-
-            removed_keys = set(previous_props) - set(current_props)
-            if removed_keys:
-                return None, None, f"removed-properties:{object_id}", None
-
-            changed_props = {
-                key: copy.deepcopy(value)
-                for key, value in current_props.items()
-                if previous_props.get(key) != value
-            }
-
-            if not changed_props:
-                replacements[object_id] = current_obj
-                continue
-
-            if any(
-                _contains_array_descriptor(previous_props.get(key))
-                or _contains_array_descriptor(value)
-                for key, value in changed_props.items()
-            ):
-                ops.append(
-                    {
-                        "op": "updateObject",
-                        "id": object_id,
-                        "state": copy.deepcopy(current_obj),
-                    }
-                )
-            else:
-                ops.append(
-                    {
-                        "op": "setProperties",
-                        "id": object_id,
-                        "properties": changed_props,
-                    }
-                )
-
-            replacements[object_id] = current_obj
-
-        translate_ms = f"{(time.perf_counter() - translate_start) * 1000:.3f}"
-        ledger_state = _replace_objects_in_state(previous_state, replacements)
-
-        if not ops and extra is None:
-            return None, None, "no-op", translate_ms
-
-        payload = {
-            "version": PUSH_PROTOCOL_VERSION,
-            "rwId": self._render_window_id,
-            "kind": "patch",
-            "epoch": self._get_client_epoch(client_id),
-            "baseSeq": base_seq,
-            "seq": seq,
-            "ops": ops,
-        }
-        if extra is not None:
-            payload["extra"] = extra
-        return payload, ledger_state, None, translate_ms
+        return self._build_delta_patch_from_candidates(
+            client_id,
+            candidate_ids,
+            base_seq,
+            seq,
+            extra=extra,
+        )
 
     def _publish_patch(
         self,
@@ -950,6 +1390,240 @@ class PushSync:
                 descriptor["hash"] = new_hash
                 descriptor.pop("content", None)
 
+    def _publish_full_fallback(
+        self,
+        client_id,
+        seq,
+        extra=None,
+        reason=None,
+        translate_ms=None,
+        status=None,
+        debug_source="update_fallback",
+    ):
+        debug = _debug_push_enabled()
+        translate_start = time.perf_counter() if debug else None
+        self._partial_arrays.retire_all()
+        state = self._get_client_state(client_id, reset_tracker=True)
+        full_translate_ms = _debug_ms(translate_start) if debug else None
+        if extra:
+            state.setdefault("extra", {}).update(extra)
+
+        self._partial_arrays.reconcile_state(state)
+        full_status = self._snapshot_status() or status
+        self._publish_client_state(
+            client_id,
+            state,
+            seq=seq,
+            debug_source=debug_source,
+            translate_ms=full_translate_ms or translate_ms,
+            status=full_status,
+            fallback_reason=reason,
+        )
+
+    def _refresh_dataset_dirty_children_for_candidates(self, candidate_ids):
+        object_manager = self._object_manager()
+        if object_manager is None:
+            return
+
+        for object_id in candidate_ids:
+            class_name = self._object_class_names.get(str(object_id), "")
+            if class_name not in DATASET_PATCH_TYPES:
+                continue
+            dataset = object_manager.GetObjectAtId(int(object_id))
+            self._sync_dataset_dirty_children(str(object_id), dataset)
+
+    def _clear_dirty_ids_for_partial_owners(self, owner_ids):
+        owner_ids = {str(object_id) for object_id in owner_ids}
+        if not owner_ids:
+            return
+
+        self._dirty_object_ids.difference_update(owner_ids)
+        for object_id, mapped_owner_ids in self._dirty_owner_ids.items():
+            if owner_ids & mapped_owner_ids:
+                self._dirty_object_ids.discard(object_id)
+
+    def _update_with_full_fallback(self, extra, reason):
+        if not self._view_clients:
+            return
+
+        seq = self._next_sequence()
+        for sid in list(self._view_clients):
+            self._publish_full_fallback(sid, seq, extra=extra, reason=reason)
+
+    def _update_from_status_snapshot(self, extra=None):
+        self._refresh_object_manager_state()
+        status = self._snapshot_status()
+        if status is None:
+            raise RuntimeError("Push sync could not snapshot vtkObjectManager status")
+        self._sync_dirty_observers(status)
+
+        base_seq = self._sequence
+        seq = base_seq + 1
+        results = []
+        any_publish = False
+
+        for sid in list(self._view_clients):
+            if self._client_sequences.get(sid, 0) != base_seq:
+                results.append(("full", sid, "sequence-mismatch", None, None))
+                any_publish = True
+                continue
+
+            patch, ledger_state, fallback_reason, translate_ms = (
+                self._build_object_delta_patch(sid, status, base_seq, seq, extra=extra)
+            )
+            if fallback_reason == "no-op":
+                results.append(("noop", sid, fallback_reason, None, translate_ms))
+                continue
+            if fallback_reason is not None:
+                results.append(("full", sid, fallback_reason, None, translate_ms))
+                any_publish = True
+                continue
+            results.append(("patch", sid, None, (patch, ledger_state), translate_ms))
+            any_publish = True
+
+        if not any_publish:
+            return
+
+        self._sequence = seq
+        for result_type, sid, reason, payload_data, translate_ms in results:
+            if result_type == "noop":
+                continue
+            if result_type == "patch":
+                patch, ledger_state = payload_data
+                self._publish_patch(
+                    sid,
+                    patch,
+                    ledger_state,
+                    translate_ms=translate_ms,
+                    status=status,
+                )
+                continue
+
+            self._publish_full_fallback(
+                sid,
+                seq,
+                extra=extra,
+                reason=reason,
+                translate_ms=translate_ms,
+                status=status,
+            )
+
+    def _update_from_dirty_tracking(self, dirty_ids, extra=None):
+        base_seq = self._sequence
+        seq = base_seq + 1
+
+        update_ids = set()
+        self._refresh_dirty_pipeline_sources(dirty_ids)
+        for object_id in dirty_ids:
+            object_id = str(object_id)
+            manager_id = self._object_manager_id(object_id)
+            if manager_id is not None:
+                update_ids.add(manager_id)
+            update_ids.update(self._dirty_owner_ids.get(object_id, set()))
+        if update_ids:
+            self._refresh_dirty_object_states(update_ids)
+
+        results = []
+        any_publish = False
+        all_candidate_ids = set()
+        published_candidate_ids = set()
+
+        for sid in list(self._view_clients):
+            if self._client_sequences.get(sid, 0) != base_seq:
+                results.append(("full", sid, "sequence-mismatch", None, None, set()))
+                any_publish = True
+                continue
+
+            previous_state = self._client_states.get(sid)
+            if previous_state is None:
+                results.append(
+                    ("full", sid, "missing-client-ledger", None, None, set())
+                )
+                any_publish = True
+                continue
+
+            previous_objects = _flatten_state_objects(previous_state)
+            candidate_ids, unsupported_dirty = self._candidate_ids_from_dirty(
+                dirty_ids,
+                previous_objects,
+            )
+            if unsupported_dirty:
+                results.append(
+                    (
+                        "full",
+                        sid,
+                        f"unsupported-dirty-ids:{','.join(unsupported_dirty[:5])}",
+                        None,
+                        None,
+                        set(),
+                    )
+                )
+                any_publish = True
+                continue
+            all_candidate_ids.update(candidate_ids)
+
+            patch, ledger_state, fallback_reason, translate_ms = (
+                self._build_delta_patch_from_candidates(
+                    sid,
+                    candidate_ids,
+                    base_seq,
+                    seq,
+                    extra=extra,
+                )
+            )
+            if fallback_reason == "no-op":
+                results.append(
+                    ("noop", sid, fallback_reason, None, translate_ms, candidate_ids)
+                )
+                continue
+            if fallback_reason is not None:
+                results.append(
+                    ("full", sid, fallback_reason, None, translate_ms, set())
+                )
+                any_publish = True
+                continue
+            results.append(
+                (
+                    "patch",
+                    sid,
+                    None,
+                    (patch, ledger_state),
+                    translate_ms,
+                    candidate_ids,
+                )
+            )
+            any_publish = True
+
+        if not any_publish:
+            self._clear_dirty_ids_for_partial_owners(all_candidate_ids)
+            return
+
+        self._sequence = seq
+        for result_type, sid, reason, payload_data, translate_ms, candidate_ids in results:
+            if result_type == "noop":
+                continue
+            if result_type == "patch":
+                patch, ledger_state = payload_data
+                self._publish_patch(
+                    sid,
+                    patch,
+                    ledger_state,
+                    translate_ms=translate_ms,
+                )
+                published_candidate_ids.update(candidate_ids)
+                continue
+
+            self._publish_full_fallback(
+                sid,
+                seq,
+                extra=extra,
+                reason=reason,
+                translate_ms=translate_ms,
+            )
+
+        self._refresh_dataset_dirty_children_for_candidates(published_candidate_ids)
+        self._clear_dirty_ids_for_partial_owners(published_candidate_ids)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -985,6 +1659,7 @@ class PushSync:
                 snapshot = self._snapshot_status()
                 if snapshot is not None:
                     self._client_statuses[client_id] = snapshot
+                    self._sync_dirty_observers(snapshot)
         if debug:
             _debug_push_event(
                 "client_resync",
@@ -1043,73 +1718,14 @@ class PushSync:
             return
 
         self._require_object_delta()
-
-        self._refresh_object_manager_state()
-        status = self._snapshot_status()
-        if status is None:
-            raise RuntimeError("Push sync could not snapshot vtkObjectManager status")
-
-        base_seq = self._sequence
-        seq = base_seq + 1
-        results = []
-        any_publish = False
-
-        for sid in list(self._view_clients):
-            if self._client_sequences.get(sid, 0) != base_seq:
-                results.append(("full", sid, "sequence-mismatch", None, None))
-                any_publish = True
-                continue
-
-            patch, ledger_state, fallback_reason, translate_ms = (
-                self._build_object_delta_patch(sid, status, base_seq, seq, extra=extra)
-            )
-            if fallback_reason == "no-op":
-                results.append(("noop", sid, fallback_reason, None, translate_ms))
-                continue
-            if fallback_reason is not None:
-                results.append(("full", sid, fallback_reason, None, translate_ms))
-                any_publish = True
-                continue
-            results.append(("patch", sid, None, (patch, ledger_state), translate_ms))
-            any_publish = True
-
-        if not any_publish:
+        dirty_ids, structural_dirty = self._consume_dirty_tracking()
+        if structural_dirty:
+            self._update_with_full_fallback(extra, "structural-dirty-observer")
             return
-
-        self._sequence = seq
-        for result_type, sid, reason, payload_data, translate_ms in results:
-            if result_type == "noop":
-                continue
-            if result_type == "patch":
-                patch, ledger_state = payload_data
-                self._publish_patch(
-                    sid,
-                    patch,
-                    ledger_state,
-                    translate_ms=translate_ms,
-                    status=status,
-                )
-                continue
-
-            debug = _debug_push_enabled()
-            translate_start = time.perf_counter() if debug else None
-            self._partial_arrays.retire_all()
-            state = self._get_client_state(sid)
-            full_translate_ms = _debug_ms(translate_start) if debug else None
-            if extra:
-                state.setdefault("extra", {}).update(extra)
-
-            self._partial_arrays.reconcile_state(state)
-            full_status = self._snapshot_status() or status
-            self._publish_client_state(
-                sid,
-                state,
-                seq=seq,
-                debug_source="update_fallback",
-                translate_ms=full_translate_ms or translate_ms,
-                status=full_status,
-                fallback_reason=reason,
-            )
+        if self._dirty_tracking_ready():
+            self._update_from_dirty_tracking(dirty_ids, extra=extra)
+            return
+        self._update_from_status_snapshot(extra=extra)
 
     def mark_modified(
         self,
@@ -1251,6 +1867,9 @@ class PushSync:
                     total_ms=_debug_ms(total_start),
                 )
 
+        self._clear_dirty_ids_for_partial_owners(
+            update.get("instanceId") for update in updates
+        )
         self._pending_changes.clear()
         return True
 

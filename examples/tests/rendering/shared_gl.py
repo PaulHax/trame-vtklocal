@@ -84,6 +84,10 @@ JS_CODE = r"""
         return vtkView.getQueueLength();
     };
 
+    window.testApplyQueuedStateSync = function() {
+        return vtkView.applyQueuedStateSync();
+    };
+
     window.testCommonSceneApi = function() {
         const methods = [
             "update",

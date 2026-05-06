@@ -56,12 +56,6 @@ function collectStateHashes(state, into = new Set()) {
   return into;
 }
 
-function collectStatesHashes(states) {
-  const hashes = new Set();
-  states.forEach((state) => collectStateHashes(state, hashes));
-  return hashes;
-}
-
 function pruneCacheToHashes(pushCache, live) {
   pushCache.forEach((_value, hash) => {
     if (!live.has(hash)) {
@@ -93,6 +87,51 @@ function getPartialArrayTarget(update, synchronizerContext) {
 
   const values = target?.getData?.() || null;
   return { instance, target, values };
+}
+
+function arrayPathKey(instanceId, arrayPath) {
+  return `${instanceId}:${arrayPath}`;
+}
+
+function getMessageKind(message, fallbackKind = null) {
+  return message?.kind || fallbackKind;
+}
+
+function getMessageRwId(message) {
+  return message?.rwId ?? message?.id;
+}
+
+export function getPartialUpdates(message) {
+  if (Array.isArray(message?.updates)) {
+    return message.updates;
+  }
+  return message ? [message] : [];
+}
+
+function collectStateArrayPathHashes(state, into = new Map()) {
+  function visit(value) {
+    if (!value || typeof value !== "object") {
+      return;
+    }
+
+    const instanceId = value.id;
+    const properties = value.properties;
+    if (instanceId !== undefined && properties) {
+      ["points"].forEach((arrayPath) => {
+        const descriptor = properties[arrayPath];
+        if (isArrayDescriptor(descriptor)) {
+          into.set(arrayPathKey(instanceId, arrayPath), descriptor.hash);
+        }
+      });
+    }
+
+    if (Array.isArray(value.dependencies)) {
+      value.dependencies.forEach((dependency) => visit(dependency));
+    }
+  }
+
+  visit(state);
+  return into;
 }
 
 export function applyPartialArrayUpdate(update, synchronizerContext) {
@@ -144,7 +183,11 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
 
   const TargetCtor = values.constructor;
   if (TypedArrayCtor !== TargetCtor) {
-    newData = new TargetCtor(newData);
+    console.warn(
+      `[pushSync] Partial update type mismatch at ${arrayPath}: ` +
+        `payload=${dataType}, target=${TargetCtor.name}`,
+    );
+    return false;
   }
 
   if (!newData.length) return true;
@@ -170,7 +213,11 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   return true;
 }
 
-export function bindPartialResultToCache(update, synchronizerContext, pushCache) {
+export function bindPartialResultToCache(
+  update,
+  synchronizerContext,
+  pushCache,
+) {
   if (!pushCache || !update?.newHash) {
     return;
   }
@@ -184,6 +231,39 @@ export function bindPartialResultToCache(update, synchronizerContext, pushCache)
   }
 }
 
+export function applyPatchUpdate(patch, synchronizerContext) {
+  const ops = Array.isArray(patch?.ops) ? patch.ops : [];
+  const targets = [];
+
+  for (const op of ops) {
+    if (op?.op !== "setProperties") {
+      console.warn(`[pushSync] Unsupported patch op ${op?.op}`);
+      return false;
+    }
+
+    const instance = synchronizerContext?.getInstance?.(op.id);
+    if (!instance) {
+      console.warn(`[pushSync] Instance ${op?.id} not found for patch update`);
+      return false;
+    }
+    if (typeof instance.set !== "function") {
+      console.warn(
+        `[pushSync] Instance ${op?.id} cannot apply patch properties`,
+      );
+      return false;
+    }
+
+    targets.push({ instance, properties: op.properties || {} });
+  }
+
+  targets.forEach(({ instance, properties }) => {
+    instance.set(properties);
+    instance.modified?.();
+  });
+
+  return true;
+}
+
 export function createPushSync(
   client,
   syncRenderWindow,
@@ -194,24 +274,46 @@ export function createPushSync(
 ) {
   const { onStateReceived, onQueueReady, onPartialUpdate } = callbacks;
 
-  let stateQueue = [];
-  let pendingPartialUpdates = [];
+  let messageQueue = [];
   let visibilityHandler = null;
   let acceptBroadcasts = false;
-  let resyncPending = false;
   let resyncVersion = 0;
+  let clientEpoch = null;
+  let clientLastSeq = 0;
+  const arrayPathHashes = new Map();
 
   const session = client.getConnection().getSession();
 
-  function retainCacheForStates(states) {
-    pruneCacheToHashes(pushCache, collectStatesHashes(states));
+  function collectQueuedFullStateHashes(into = new Set()) {
+    messageQueue.forEach(({ payload, kind }) => {
+      if (kind === "full") {
+        collectStateHashes(payload, into);
+      }
+    });
+    return into;
+  }
+
+  function retainCacheForAppliedStateAndQueue(state) {
+    const live = collectStateHashes(state);
+    collectQueuedFullStateHashes(live);
+    pruneCacheToHashes(pushCache, live);
   }
 
   function markStatesApplied(states) {
     if (!states?.length) {
       return;
     }
-    pruneCacheToHashes(pushCache, collectStateHashes(states[states.length - 1]));
+    states.forEach((state) => {
+      if (state?.epoch !== undefined) {
+        clientEpoch = state.epoch;
+      }
+      if (state?.seq !== undefined) {
+        clientLastSeq = state.seq;
+      }
+      arrayPathHashes.clear();
+      collectStateArrayPathHashes(state, arrayPathHashes);
+    });
+    retainCacheForAppliedStateAndQueue(states[states.length - 1]);
   }
 
   async function dispatchPartialUpdate(update) {
@@ -226,52 +328,68 @@ export function createPushSync(
     return applied;
   }
 
-  function enqueueState(state) {
+  function enqueueMessage(payload, fallbackKind) {
+    const kind = getMessageKind(payload, fallbackKind);
+
     // The server is authoritative: every hash referenced by `state` is either
     // already in the push cache or inlined in this payload. Capture inline
     // payloads now so consumers see a fully-populated cache.
-    extractInlineArrays(state, pushCache, { stripInlineData: true });
+    if (kind === "full") {
+      extractInlineArrays(payload, pushCache, { stripInlineData: true });
+    }
 
-    stateQueue.push(state);
+    const wasEmpty = messageQueue.length === 0;
+    messageQueue.push({ kind, payload });
 
-    if (stateQueue[0] === state) {
+    if (wasEmpty) {
       onQueueReady?.();
     }
 
-    onStateReceived?.(state);
+    if (kind === "full") {
+      onStateReceived?.(payload);
+    }
   }
 
   const wsSubscription = session.subscribe(
     "trame.vtk.delta",
     ([deltaState]) => {
       if (!acceptBroadcasts) return;
-      if (!rwId || deltaState.id === rwId) {
-        enqueueState(deltaState);
+      const messageRwId = getMessageRwId(deltaState);
+      if (!rwId || String(messageRwId) === rwId) {
+        enqueueMessage(deltaState, "full");
       }
     },
   );
 
   const wsPartialUpdateSubscription = session.subscribe(
     "trame.vtk.array.partial",
-    async ([update]) => {
-      if (!acceptBroadcasts || resyncPending || !synchronizerContext) return;
-      if (update?.rwId && String(update.rwId) !== rwId) return;
+    ([update]) => {
+      if (!acceptBroadcasts || !synchronizerContext) return;
+      const messageRwId = getMessageRwId(update);
+      if (messageRwId && String(messageRwId) !== rwId) return;
 
-      if (stateQueue.length) {
-        pendingPartialUpdates.push(update);
-        return;
-      }
+      enqueueMessage(update, "arrayPartial");
+    },
+  );
 
-      await dispatchPartialUpdate(update);
+  const wsPatchSubscription = session.subscribe(
+    "trame.vtk.patch",
+    ([patch]) => {
+      if (!acceptBroadcasts || !synchronizerContext) return;
+      const messageRwId = getMessageRwId(patch);
+      if (messageRwId && String(messageRwId) !== rwId) return;
+
+      enqueueMessage(patch, "patch");
     },
   );
 
   async function requestResync() {
     acceptBroadcasts = false;
-    resyncPending = true;
-    stateQueue.length = 0;
-    pendingPartialUpdates.length = 0;
+    messageQueue.length = 0;
     pushCache.clear();
+    arrayPathHashes.clear();
+    clientEpoch = null;
+    clientLastSeq = 0;
     const version = ++resyncVersion;
 
     try {
@@ -279,7 +397,7 @@ export function createPushSync(
       if (version !== resyncVersion) {
         return false;
       }
-      enqueueState(state);
+      enqueueMessage(state, "full");
       acceptBroadcasts = true;
       return true;
     } catch (error) {
@@ -301,54 +419,192 @@ export function createPushSync(
 
   requestResync();
 
-  function drainReadyStates() {
-    if (!stateQueue.length) {
-      return [];
+  function validateMessageEnvelope(message) {
+    const { kind, payload } = message;
+    const { epoch, seq, baseSeq } = payload || {};
+
+    if (epoch !== undefined && clientEpoch !== null && epoch < clientEpoch) {
+      return "drop";
     }
 
-    const readyStates = stateQueue.splice(0);
-    resyncPending = false;
-    retainCacheForStates(readyStates);
+    if (
+      epoch !== undefined &&
+      clientEpoch !== null &&
+      epoch === clientEpoch &&
+      seq !== undefined &&
+      seq <= clientLastSeq
+    ) {
+      return "drop";
+    }
+
+    if (kind === "full") {
+      return "ready";
+    }
+
+    if (clientEpoch === null) {
+      return "resync";
+    }
+
+    if (epoch !== undefined && epoch !== clientEpoch) {
+      return "resync";
+    }
+
+    if (baseSeq === undefined || baseSeq !== clientLastSeq) {
+      return "resync";
+    }
+
+    return "ready";
+  }
+
+  function takeNextMessage() {
+    while (messageQueue.length) {
+      const message = messageQueue[0];
+      const status = validateMessageEnvelope(message);
+      if (status === "drop") {
+        messageQueue.shift();
+        continue;
+      }
+      if (status === "resync") {
+        requestResync();
+        return null;
+      }
+      return messageQueue.shift();
+    }
+    return null;
+  }
+
+  function validatePartialUpdate(update) {
+    if (!update?.oldHash) {
+      return true;
+    }
+
+    const key = arrayPathKey(update.instanceId, update.arrayPath);
+    const currentHash = arrayPathHashes.get(key);
+    if (currentHash !== update.oldHash) {
+      console.warn(
+        `[pushSync] Partial update hash mismatch at ${key}: ` +
+          `expected=${currentHash}, oldHash=${update.oldHash}`,
+      );
+      requestResync();
+      return false;
+    }
+    return true;
+  }
+
+  function markMessageApplied(message) {
+    if (!message) {
+      return;
+    }
+
+    const { kind, payload } = message;
+    if (payload?.epoch !== undefined) {
+      clientEpoch = payload.epoch;
+    }
+    if (payload?.seq !== undefined) {
+      clientLastSeq = payload.seq;
+    }
+
+    if (kind === "full") {
+      arrayPathHashes.clear();
+      collectStateArrayPathHashes(payload, arrayPathHashes);
+      retainCacheForAppliedStateAndQueue(payload);
+      return;
+    }
+
+    getPartialUpdates(payload).forEach((update) => {
+      if (update?.newHash) {
+        arrayPathHashes.set(
+          arrayPathKey(update.instanceId, update.arrayPath),
+          update.newHash,
+        );
+      }
+    });
+  }
+
+  function markMessageFailed() {
+    requestResync();
+  }
+
+  function drainReadyStates() {
+    const readyStates = [];
+    while (messageQueue.length && messageQueue[0].kind === "full") {
+      const status = validateMessageEnvelope(messageQueue[0]);
+      if (status === "drop") {
+        messageQueue.shift();
+        continue;
+      }
+      if (status === "resync") {
+        requestResync();
+        break;
+      }
+      readyStates.push(messageQueue.shift().payload);
+    }
     return readyStates;
   }
 
   function drainReadyPartialUpdates() {
-    if (stateQueue.length || !pendingPartialUpdates.length) {
-      return [];
+    const readyUpdates = [];
+    while (messageQueue.length && messageQueue[0].kind !== "full") {
+      const status = validateMessageEnvelope(messageQueue[0]);
+      if (status === "drop") {
+        messageQueue.shift();
+        continue;
+      }
+      if (status === "resync") {
+        requestResync();
+        break;
+      }
+      const message = messageQueue.shift();
+      readyUpdates.push(...getPartialUpdates(message.payload));
     }
-
-    return pendingPartialUpdates.splice(0);
+    return readyUpdates;
   }
 
   async function applyQueuedState() {
-    const states = drainReadyStates();
-    const partialUpdates = drainReadyPartialUpdates();
-    if (!states.length && !partialUpdates.length) return false;
+    let didApply = false;
+    let message = takeNextMessage();
+    while (message) {
+      if (message.kind === "full") {
+        if (syncRenderWindow) {
+          await syncRenderWindow.synchronize(message.payload);
+        }
+      } else if (message.kind === "arrayPartial") {
+        for (const update of getPartialUpdates(message.payload)) {
+          if (!validatePartialUpdate(update)) {
+            return didApply;
+          }
+          const applied = await dispatchPartialUpdate(update);
+          if (!applied) {
+            markMessageFailed();
+            return didApply;
+          }
+        }
+      } else if (!applyPatchUpdate(message.payload, synchronizerContext)) {
+        markMessageFailed();
+        return didApply;
+      }
 
-    for (const state of states) {
-      if (!syncRenderWindow) continue;
-      await syncRenderWindow.synchronize(state);
+      markMessageApplied(message);
+      didApply = true;
+      message = takeNextMessage();
     }
-    markStatesApplied(states);
-
-    for (const partialUpdate of partialUpdates) {
-      await dispatchPartialUpdate(partialUpdate);
-    }
-
-    return states.length > 0 || partialUpdates.length > 0;
+    return didApply;
   }
 
   function cleanup() {
     resyncVersion += 1;
-    stateQueue.length = 0;
-    pendingPartialUpdates.length = 0;
+    messageQueue.length = 0;
     pushCache.clear();
+    arrayPathHashes.clear();
 
     if (wsSubscription) {
       session.unsubscribe(wsSubscription);
     }
     if (wsPartialUpdateSubscription) {
       session.unsubscribe(wsPartialUpdateSubscription);
+    }
+    if (wsPatchSubscription) {
+      session.unsubscribe(wsPatchSubscription);
     }
     if (visibilityHandler) {
       document.removeEventListener("visibilitychange", visibilityHandler);
@@ -357,7 +613,7 @@ export function createPushSync(
   }
 
   function getQueueLength() {
-    return stateQueue.length;
+    return messageQueue.length;
   }
 
   return {
@@ -366,7 +622,11 @@ export function createPushSync(
     drainReadyPartialUpdates,
     drainReadyStates,
     getQueueLength,
+    markMessageApplied,
+    markMessageFailed,
     markStatesApplied,
     requestResync,
+    takeNextMessage,
+    validatePartialUpdate,
   };
 }

@@ -1,4 +1,5 @@
 import copy
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -6,10 +7,8 @@ import numpy as np
 SYNTHETIC_VERSION_PREFIX = "v:"
 SYNTHETIC_CELL_PREFIX = "cell:"
 RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
-
-
-def _is_synthetic_version_hash(hash_val):
-    return isinstance(hash_val, str) and hash_val.startswith(SYNTHETIC_VERSION_PREFIX)
+PARTIAL_ARRAY_PATHS = {"points"}
+MESSAGE_ENVELOPE_KEYS = {"rwId", "kind", "epoch", "seq", "baseSeq", "extra"}
 
 
 def _walk_descriptors(state):
@@ -43,6 +42,86 @@ def _walk_descriptors(state):
 
 def _collect_hashes(state):
     return {descriptor["hash"] for descriptor in _walk_descriptors(state)}
+
+
+def _contains_array_descriptor(value):
+    if isinstance(value, list):
+        return any(_contains_array_descriptor(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    if "hash" in value and "dataType" in value:
+        return True
+    return any(_contains_array_descriptor(item) for item in value.values())
+
+
+def _collect_partial_array_hashes(state):
+    """Return {(instance_id, array_path): hash} for patchable array descriptors."""
+    result = {}
+
+    def visit_object(value):
+        if not isinstance(value, dict):
+            return
+
+        instance_id = value.get("id")
+        properties = value.get("properties")
+        if instance_id is not None and isinstance(properties, dict):
+            for array_path in PARTIAL_ARRAY_PATHS:
+                descriptor = properties.get(array_path)
+                if not isinstance(descriptor, dict):
+                    continue
+                if "hash" not in descriptor or "dataType" not in descriptor:
+                    continue
+                try:
+                    iid = int(instance_id)
+                except (TypeError, ValueError):
+                    continue
+                result[(iid, array_path)] = descriptor["hash"]
+
+        deps = value.get("dependencies")
+        if isinstance(deps, list):
+            for dep in deps:
+                visit_object(dep)
+
+    visit_object(state)
+    return result
+
+
+def _state_for_ledger(value):
+    """Deep-copy state with transport-only fields and inline bytes removed."""
+    if isinstance(value, list):
+        return [_state_for_ledger(item) for item in value]
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+
+    result = {}
+    for key, child in value.items():
+        if key in MESSAGE_ENVELOPE_KEYS or key == "content":
+            continue
+        result[key] = _state_for_ledger(child)
+    return result
+
+
+def _flatten_state_objects(state):
+    objects = {}
+
+    def visit(value):
+        if not isinstance(value, dict):
+            return
+
+        object_id = value.get("id")
+        if object_id is not None:
+            objects[str(object_id)] = value
+
+        for dep in value.get("dependencies") or []:
+            visit(dep)
+
+    visit(state)
+    return objects
+
+
+def _dependency_signature(obj):
+    deps = obj.get("dependencies") or []
+    return [(str(dep.get("id")), dep.get("type")) for dep in deps]
 
 
 def _pack_cell_array_payload(vtk_object_manager, cell_hash):
@@ -103,6 +182,11 @@ class PushSync:
         self._array_versions = {}
         # (rw_id, instance_id, array_path) -> current synthetic hash
         self._current_array_hashes = {}
+        # Authoritative render-window sequence and per-client stream cursors.
+        self._sequence = 0
+        self._client_epochs = {}
+        self._client_sequences = {}
+        self._client_states = {}
 
         if api is not None:
             api.register_push_view(self._rw_id_int, self)
@@ -116,11 +200,17 @@ class PushSync:
         self._collection_trackers.clear()
         self._array_versions.clear()
         self._current_array_hashes.clear()
+        self._client_epochs.clear()
+        self._client_sequences.clear()
+        self._client_states.clear()
 
     def drop_client(self, client_id):
         self._view_clients.discard(client_id)
         self._known_hashes.pop(client_id, None)
         self._collection_trackers.pop(client_id, None)
+        self._client_epochs.pop(client_id, None)
+        self._client_sequences.pop(client_id, None)
+        self._client_states.pop(client_id, None)
 
     # ------------------------------------------------------------------
     # Payload resolution
@@ -204,9 +294,27 @@ class PushSync:
             self._array_versions.pop(key, None)
             self._current_array_hashes.pop(key, None)
 
+    def _refresh_partial_array_hashes(self, state):
+        for (iid, array_path), hash_val in _collect_partial_array_hashes(state).items():
+            self._current_array_hashes[(self._rw_id_int, iid, array_path)] = hash_val
+
     # ------------------------------------------------------------------
     # Publish helpers
     # ------------------------------------------------------------------
+
+    def _next_sequence(self):
+        self._sequence += 1
+        return self._sequence
+
+    def _get_client_epoch(self, client_id):
+        return self._client_epochs.get(client_id, 0)
+
+    def _annotate_full_state(self, state, client_id, seq):
+        state["rwId"] = self._render_window_id
+        state["kind"] = "full"
+        state["epoch"] = self._get_client_epoch(client_id)
+        state["seq"] = seq
+        return state
 
     def _get_client_tracker(self, client_id, reset=False):
         if client_id is None:
@@ -219,21 +327,24 @@ class PushSync:
         tracker = self._get_client_tracker(client_id, reset=reset_tracker)
         return self._get_vtkjs_state(self._array_versions, tracker)
 
-    def _publish_client_state(self, client_id, state, force_full_inline=False):
+    def _publish_client_state(
+        self, client_id, state, force_full_inline=False, seq=None
+    ):
         if not self._server.protocol:
             return
+
+        if seq is None:
+            seq = self._sequence
 
         live = _collect_hashes(state)
         known = self._known_hashes.get(client_id, set())
         if force_full_inline:
             missing = set(live)
         else:
-            synthetic_live = {
-                hash_val for hash_val in live if _is_synthetic_version_hash(hash_val)
-            }
-            missing = (live - known) | synthetic_live
+            missing = live - known
 
         client_state = copy.deepcopy(state)
+        self._annotate_full_state(client_state, client_id, seq)
         inlined = self._inline_payloads(client_state, missing)
         self._convert_attachments(client_state)
 
@@ -241,6 +352,108 @@ class PushSync:
             "trame.vtk.delta", client_state, client_id=client_id
         )
         self._known_hashes[client_id] = (known & live) | inlined
+        self._client_sequences[client_id] = seq
+        self._client_states[client_id] = _state_for_ledger(client_state)
+
+    def _build_property_patch(self, client_id, state, base_seq, seq):
+        previous_state = self._client_states.get(client_id)
+        if previous_state is None:
+            return None
+
+        current_state = _state_for_ledger(state)
+        previous_objects = _flatten_state_objects(previous_state)
+        current_objects = _flatten_state_objects(current_state)
+
+        if previous_objects.keys() != current_objects.keys():
+            return None
+
+        ops = []
+        for object_id, current_obj in current_objects.items():
+            previous_obj = previous_objects[object_id]
+
+            if previous_obj.get("type") != current_obj.get("type"):
+                return None
+            if previous_obj.get("calls") != current_obj.get("calls"):
+                return None
+            if previous_obj.get("arrays") != current_obj.get("arrays"):
+                return None
+            if _dependency_signature(previous_obj) != _dependency_signature(
+                current_obj
+            ):
+                return None
+
+            previous_props = previous_obj.get("properties") or {}
+            current_props = current_obj.get("properties") or {}
+            if not isinstance(previous_props, Mapping) or not isinstance(
+                current_props, Mapping
+            ):
+                return None
+
+            removed_keys = set(previous_props) - set(current_props)
+            if removed_keys:
+                return None
+
+            changed_props = {}
+            for key, value in current_props.items():
+                previous_value = previous_props.get(key)
+                if previous_value == value:
+                    continue
+                if _contains_array_descriptor(
+                    previous_value
+                ) or _contains_array_descriptor(value):
+                    return None
+                changed_props[key] = copy.deepcopy(value)
+
+            if changed_props:
+                ops.append(
+                    {
+                        "op": "setProperties",
+                        "id": object_id,
+                        "properties": changed_props,
+                    }
+                )
+
+        if not ops and state.get("extra") is None:
+            return None
+
+        payload = {
+            "rwId": self._render_window_id,
+            "kind": "patch",
+            "epoch": self._get_client_epoch(client_id),
+            "baseSeq": base_seq,
+            "seq": seq,
+            "ops": ops,
+        }
+        if state.get("extra") is not None:
+            payload["extra"] = state["extra"]
+        return payload, current_state
+
+    def _publish_patch(self, client_id, payload, ledger_state):
+        self._convert_attachments(payload)
+        self._server.protocol.publish("trame.vtk.patch", payload, client_id=client_id)
+        self._client_sequences[client_id] = payload["seq"]
+        self._client_states[client_id] = ledger_state
+
+    def _advance_client_ledger_for_partials(self, client_id, updates):
+        state = self._client_states.get(client_id)
+        if not state:
+            return
+
+        objects = _flatten_state_objects(state)
+        for update in updates:
+            instance_id = str(update.get("instanceId"))
+            array_path = update.get("arrayPath")
+            new_hash = update.get("newHash")
+            if not instance_id or not array_path or not new_hash:
+                continue
+
+            properties = objects.get(instance_id, {}).get("properties")
+            descriptor = (
+                properties.get(array_path) if isinstance(properties, dict) else None
+            )
+            if isinstance(descriptor, dict):
+                descriptor["hash"] = new_hash
+                descriptor.pop("content", None)
 
     # ------------------------------------------------------------------
     # Public API
@@ -248,9 +461,14 @@ class PushSync:
 
     def client_resync(self, client_id):
         """Return a fully-inlined state for one client; refresh tracking."""
+        if client_id is not None:
+            self._client_epochs[client_id] = self._client_epochs.get(client_id, 0) + 1
+
         state = self._get_client_state(client_id, reset_tracker=True)
         live = _collect_hashes(state)
         self._prune_dead_array_versions(live)
+        self._refresh_partial_array_hashes(state)
+        self._annotate_full_state(state, client_id, self._sequence)
 
         inlined = self._inline_payloads(state, live)
         self._convert_attachments(state)
@@ -258,6 +476,8 @@ class PushSync:
         if client_id is not None:
             self._known_hashes[client_id] = set(inlined)
             self._view_clients.add(client_id)
+            self._client_sequences[client_id] = self._sequence
+            self._client_states[client_id] = _state_for_ledger(state)
         return state
 
     def request_resync(self, extra=None):
@@ -266,6 +486,8 @@ class PushSync:
 
         if not self._server.protocol or not self._view_clients:
             return
+
+        seq = self._next_sequence()
 
         # Translation is per-client because collection membership tracking is
         # per-client. Revisit if many subscribers make that cost material.
@@ -276,14 +498,17 @@ class PushSync:
 
             live = _collect_hashes(state)
             self._prune_dead_array_versions(live)
+            self._refresh_partial_array_hashes(state)
             self._known_hashes[sid] = set()
-            self._publish_client_state(sid, state, force_full_inline=True)
+            self._publish_client_state(sid, state, force_full_inline=True, seq=seq)
 
     def update(self, extra=None):
         if not self._server.protocol or not self._view_clients:
             return
 
         self._pending_changes.clear()
+        base_seq = self._sequence
+        seq = self._next_sequence()
         # Translation is per-client because collection membership tracking is
         # per-client. Revisit if many subscribers make that cost material.
         for sid in list(self._view_clients):
@@ -293,7 +518,15 @@ class PushSync:
 
             live = _collect_hashes(state)
             self._prune_dead_array_versions(live)
-            self._publish_client_state(sid, state)
+            self._refresh_partial_array_hashes(state)
+            if self._client_sequences.get(sid, 0) == base_seq:
+                patch_result = self._build_property_patch(sid, state, base_seq, seq)
+                if patch_result is not None:
+                    patch, ledger_state = patch_result
+                    self._known_hashes[sid] = self._known_hashes.get(sid, set()) & live
+                    self._publish_patch(sid, patch, ledger_state)
+                    continue
+            self._publish_client_state(sid, state, seq=seq)
 
     def mark_modified(
         self,
@@ -325,6 +558,8 @@ class PushSync:
                 self.update(extra=extra)
                 return True
 
+        base_seq = self._sequence
+        seq = self._next_sequence()
         bumped = {}
         for _vtk, iid, array_path, *_ in self._pending_changes:
             key = (self._rw_id_int, int(iid), array_path)
@@ -338,7 +573,16 @@ class PushSync:
                 self._current_array_hashes[key] = new_hash
                 bumped[key] = (old_hash, new_hash)
 
-        for vtk_obj, iid, array_path, start, count, raw_data, raw_type in self._pending_changes:
+        updates = []
+        for (
+            vtk_obj,
+            iid,
+            array_path,
+            start,
+            count,
+            raw_data,
+            raw_type,
+        ) in self._pending_changes:
             if raw_data is not None:
                 data = raw_data
                 data_type = raw_type
@@ -353,26 +597,58 @@ class PushSync:
             element_offset = start * 3
 
             old_hash, new_hash = bumped[(self._rw_id_int, int(iid), array_path)]
-            payload = {
-                "rwId": self._render_window_id,
+            update = {
                 "instanceId": iid,
                 "arrayPath": array_path,
                 "offset": element_offset,
                 "data": data,
                 "dataType": data_type,
-                "extra": extra,
                 "newHash": new_hash,
             }
             if old_hash is not None:
-                payload["oldHash"] = old_hash
+                update["oldHash"] = old_hash
+            updates.append(update)
 
-            for sid in list(self._view_clients):
-                self._server.protocol.publish(
-                    "trame.vtk.array.partial", payload, client_id=sid
-                )
-                client_known = self._known_hashes.setdefault(sid, set())
+        if not updates:
+            self._pending_changes.clear()
+            return False
+
+        for sid in list(self._view_clients):
+            if self._client_sequences.get(sid, 0) != base_seq:
+                state = self._get_client_state(sid, reset_tracker=True)
+                if extra:
+                    state.setdefault("extra", {}).update(extra)
+                live = _collect_hashes(state)
+                self._prune_dead_array_versions(live)
+                self._refresh_partial_array_hashes(state)
+                self._known_hashes[sid] = set()
+                self._publish_client_state(sid, state, force_full_inline=True, seq=seq)
+                continue
+
+            payload = {
+                "rwId": self._render_window_id,
+                "kind": "arrayPartial",
+                "epoch": self._get_client_epoch(sid),
+                "baseSeq": base_seq,
+                "seq": seq,
+                "updates": copy.deepcopy(updates),
+            }
+            if extra is not None:
+                payload["extra"] = extra
+
+            self._convert_attachments(payload)
+            self._server.protocol.publish(
+                "trame.vtk.array.partial", payload, client_id=sid
+            )
+
+            client_known = self._known_hashes.setdefault(sid, set())
+            for update in updates:
+                old_hash = update.get("oldHash")
                 if old_hash is not None:
                     client_known.discard(old_hash)
+                client_known.add(update["newHash"])
+            self._client_sequences[sid] = seq
+            self._advance_client_ledger_for_partials(sid, updates)
 
         self._pending_changes.clear()
         return True

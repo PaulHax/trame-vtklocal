@@ -34,8 +34,12 @@ def test_shared_common_scene_api(server, server_path, page: Page):
     assert result["ready"], "Shared view should be initialized before API inspection"
     assert result["missing"] == [], f"Missing common scene methods: {result['missing']}"
     assert result["hasRenderer"], "Shared view should expose getRenderer()"
-    assert result["cameraChanged"], "setCamera() should update the shared renderer camera"
-    assert result["cameraReset"], "resetCamera() should restore the shared renderer camera"
+    assert result["cameraChanged"], (
+        "setCamera() should update the shared renderer camera"
+    )
+    assert result["cameraReset"], (
+        "resetCamera() should restore the shared renderer camera"
+    )
     assert result["idleQueueDrained"], (
         "applyQueuedStateSync() should return false when the queue is empty"
     )
@@ -109,8 +113,17 @@ def test_partial_flush_sends_no_delta(server, server_path, page: Page):
     time.sleep(1)
 
     queue_after = page.evaluate("window.testGetDeltaQueueLength()")
-    assert queue_after == queue_before, (
-        f"flush() should not enqueue a delta (before={queue_before}, after={queue_after})"
+    did_full_sync = page.evaluate("window.testApplyQueuedStateSync()")
+    queue_drained = page.evaluate("window.testGetDeltaQueueLength()")
+    errors = page.evaluate("window.__consoleErrors || []")
+
+    assert not did_full_sync, (
+        "flush() should enqueue/apply only partial updates, not a full delta "
+        f"(before={queue_before}, after={queue_after}, errors={errors})"
+    )
+    assert queue_drained == queue_before, (
+        "partial flush queue should drain after applyQueuedStateSync() "
+        f"(before={queue_before}, after={queue_after}, drained={queue_drained})"
     )
 
 
@@ -130,7 +143,9 @@ def test_update_after_mark_modified_prefetches_missing_arrays(
             m => m.includes('synchronizeSync') || m.includes('inline') || m.includes('prefetch')
         );
     }""")
-    assert len(errors) == 0, f"Expected no synchronizeSync/prefetch errors, got: {errors}"
+    assert len(errors) == 0, (
+        f"Expected no synchronizeSync/prefetch errors, got: {errors}"
+    )
 
     queue_len = page.evaluate("window.testGetDeltaQueueLength()")
     assert queue_len == 0, (

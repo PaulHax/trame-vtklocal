@@ -9,24 +9,32 @@ import { withSyncCapability } from "./sync/syncCapability";
 import {
   createPushSync,
   applyPartialArrayUpdate,
+  applyPatchUpdate,
   bindPartialResultToCache as bindPartialResultToCacheDefault,
+  getPartialUpdates,
 } from "./pushSync";
 import { createSyncController } from "./syncController";
 
-export function useSceneSync({
-  client,
-  emit,
-  getRenderWindow,
-  renderScene,
-  beforeSync,
-  finalizeSync,
-  syncErrorLabel = "SceneSync",
-}, dependencies = {}) {
+export function useSceneSync(
+  {
+    client,
+    emit,
+    getRenderWindow,
+    renderScene,
+    beforeSync,
+    finalizeSync,
+    syncErrorLabel = "SceneSync",
+  },
+  dependencies = {},
+) {
   const {
-    applyPartialArrayUpdate: applyPartialArrayUpdateImpl = applyPartialArrayUpdate,
-    bindPartialResultToCache: bindPartialResultToCacheImpl =
-      bindPartialResultToCacheDefault,
-    createManagedSyncContext: createManagedSyncContextImpl = createManagedSyncContext,
+    applyPartialArrayUpdate:
+      applyPartialArrayUpdateImpl = applyPartialArrayUpdate,
+    applyPatchUpdate: applyPatchUpdateImpl = applyPatchUpdate,
+    bindPartialResultToCache:
+      bindPartialResultToCacheImpl = bindPartialResultToCacheDefault,
+    createManagedSyncContext:
+      createManagedSyncContextImpl = createManagedSyncContext,
     createPushSync: createPushSyncImpl = createPushSync,
     createSyncController: createSyncControllerImpl = createSyncController,
     vtkObjectManager: vtkObjectManagerImpl = vtkObjectManager,
@@ -85,8 +93,61 @@ export function useSceneSync({
     return applied;
   }
 
+  function applyArrayPartialMessage(message, syncCtx) {
+    const payload = message?.payload || message;
+    const updates = getPartialUpdates(payload);
+    const appliedUpdates = [];
+
+    for (const update of updates) {
+      if (sync?.validatePartialUpdate && !sync.validatePartialUpdate(update)) {
+        return { didApply: appliedUpdates.length > 0, failed: true };
+      }
+
+      const applied = applyPartialArrayUpdateImpl(update, syncCtx);
+      if (!applied) {
+        requestResync();
+        partialAppliedCallback?.(update, syncCtx, false);
+        return { didApply: appliedUpdates.length > 0, failed: true };
+      }
+
+      bindPartialResultToCache(update, syncCtx);
+      appliedUpdates.push(update);
+    }
+
+    const extra =
+      payload?.extra ?? (updates.length === 1 ? updates[0]?.extra : undefined);
+    if (extra) {
+      emit?.("viewStateExtra", extra);
+    }
+
+    appliedUpdates.forEach((update) => {
+      partialAppliedCallback?.(update, syncCtx, true);
+    });
+
+    return { didApply: appliedUpdates.length > 0, failed: false };
+  }
+
+  function applyPatchMessage(message, syncCtx) {
+    const payload = message?.payload || message;
+    const applied = applyPatchUpdateImpl(payload, syncCtx);
+    if (!applied) {
+      requestResync();
+      return { didApply: false, failed: true };
+    }
+
+    if (payload?.extra) {
+      emit?.("viewStateExtra", payload.extra);
+    }
+
+    return {
+      didApply: true,
+      failed: false,
+    };
+  }
+
   function applyReadyPartialUpdates(syncCtx = null) {
-    const resolvedSyncContext = syncCtx || managedSyncContext?.synchronizerContext;
+    const resolvedSyncContext =
+      syncCtx || managedSyncContext?.synchronizerContext;
     if (!resolvedSyncContext) {
       return { didApply: false, failed: false };
     }
@@ -111,6 +172,10 @@ export function useSceneSync({
   } = {}) {
     if (!syncCapability) {
       return { status: "idle", didSync: false };
+    }
+
+    if (sync?.takeNextMessage) {
+      return applyQueuedOrderedMessages({ emitLifecycle, emitUpdated });
     }
 
     const states = sync?.drainReadyStates?.() ?? [];
@@ -177,6 +242,104 @@ export function useSceneSync({
 
     return {
       status: getQueueLength() > 0 ? "blocked" : "applied",
+      didSync: synced,
+    };
+  }
+
+  function applyQueuedOrderedMessages({
+    emitLifecycle = true,
+    emitUpdated = true,
+  } = {}) {
+    let synced = false;
+    let didApply = false;
+    let emittedLifecycleStart = false;
+    let message = sync?.takeNextMessage?.();
+
+    if (!message) {
+      return {
+        status: getQueueLength() > 0 ? "blocked" : "idle",
+        didSync: false,
+      };
+    }
+
+    while (message) {
+      if (message.kind === "full") {
+        if (emitLifecycle && !emittedLifecycleStart) {
+          emit?.("beforeSceneLoaded");
+          emittedLifecycleStart = true;
+        }
+
+        try {
+          if (
+            syncCapability.synchronizePreparedStateSync(message.payload, true)
+          ) {
+            synced = true;
+          }
+        } catch (error) {
+          console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
+          requestResync();
+          if (emitLifecycle && emittedLifecycleStart) {
+            emit?.("afterSceneLoaded");
+          }
+          return { status: "failed", didSync: false };
+        }
+
+        if (message.payload?.extra) {
+          emit?.("viewStateExtra", message.payload.extra);
+        }
+        sync?.markMessageApplied?.(message);
+        didApply = true;
+      } else if (message.kind === "arrayPartial") {
+        const resolvedSyncContext = managedSyncContext?.synchronizerContext;
+        if (!resolvedSyncContext) {
+          requestResync();
+          return { status: "failed", didSync: false };
+        }
+
+        const partialResult = applyArrayPartialMessage(
+          message,
+          resolvedSyncContext,
+        );
+        if (partialResult.failed) {
+          return { status: "failed", didSync: synced };
+        }
+        sync?.markMessageApplied?.(message);
+        didApply = didApply || partialResult.didApply;
+      } else if (message.kind === "patch") {
+        const resolvedSyncContext = managedSyncContext?.synchronizerContext;
+        if (!resolvedSyncContext) {
+          requestResync();
+          return { status: "failed", didSync: false };
+        }
+
+        const patchResult = applyPatchMessage(message, resolvedSyncContext);
+        if (patchResult.failed) {
+          return { status: "failed", didSync: synced };
+        }
+        sync?.markMessageApplied?.(message);
+        didApply = didApply || patchResult.didApply;
+      } else {
+        console.warn(
+          `[${syncErrorLabel}] Unknown push message kind`,
+          message.kind,
+        );
+        requestResync();
+        return { status: "failed", didSync: synced };
+      }
+
+      message = sync?.takeNextMessage?.();
+    }
+
+    if (synced && emitUpdated) {
+      emit?.("updated");
+    }
+
+    if (emitLifecycle && emittedLifecycleStart) {
+      emit?.("afterSceneLoaded");
+    }
+
+    return {
+      status: getQueueLength() > 0 ? "blocked" : didApply ? "applied" : "idle",
       didSync: synced,
     };
   }

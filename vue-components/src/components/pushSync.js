@@ -635,6 +635,11 @@ export function createPushSync(
       return;
     }
 
+    if (kind === "patch") {
+      collectStateArrayPathHashes(payload, arrayPathHashes);
+      return;
+    }
+
     getPartialUpdates(payload).forEach((update) => {
       if (update?.newHash) {
         arrayPathHashes.set(

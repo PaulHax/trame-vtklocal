@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 import numpy as np
+import pytest
 
 from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.module.vtkjs_translator import translate_scene
@@ -426,7 +427,7 @@ def _inline_descriptor_hashes(value):
     return hashes
 
 
-def test_push_sync_incremental_updates_are_hash_first():
+def test_push_sync_update_requires_object_manager_delta_support():
     server = _FakeServer()
     push_sync = PushSync(
         server,
@@ -436,54 +437,8 @@ def test_push_sync_incremental_updates_are_hash_first():
     )
 
     push_sync.client_resync("client-a")
-    push_sync.update()
-
-    assert len(server.protocol.messages) == 1
-    _, delta_state, client_id = server.protocol.messages[0]
-    assert client_id == "client-a"
-    assert delta_state["rwId"] == "1"
-    assert delta_state["kind"] == "full"
-    assert delta_state["epoch"] == 1
-    assert delta_state["seq"] == 1
-    assert "baseSeq" not in delta_state
-    assert "content" not in _find_points_array(delta_state, "62")
-
-
-def test_push_sync_update_uses_property_patch_for_stable_object_graph():
-    server = _FakeServer()
-    visible = False
-
-    def get_state(_version_registry=None, _collection_tracker=None):
-        return deepcopy(_state_with_actor_visibility(visible))
-
-    push_sync = PushSync(
-        server,
-        get_state,
-        lambda vtk_object: str(vtk_object),
-        render_window_id=1,
-    )
-
-    push_sync.client_resync("client-a")
-    visible = True
-    push_sync.update(extra={"mapCamera": {"zoom": 10}})
-
-    assert len(server.protocol.messages) == 1
-    topic, patch, client_id = server.protocol.messages[0]
-    assert topic == "trame.vtk.patch"
-    assert client_id == "client-a"
-    assert patch["rwId"] == "1"
-    assert patch["kind"] == "patch"
-    assert patch["epoch"] == 1
-    assert patch["baseSeq"] == 0
-    assert patch["seq"] == 1
-    assert patch["extra"] == {"mapCamera": {"zoom": 10}}
-    assert patch["ops"] == [
-        {
-            "op": "setProperties",
-            "id": "actor",
-            "properties": {"visibility": True},
-        }
-    ]
+    with pytest.raises(RuntimeError, match="object-id delta support"):
+        push_sync.update()
 
 
 def test_push_sync_update_uses_object_manager_delta_for_actor_property():
@@ -542,37 +497,48 @@ def test_push_sync_update_uses_object_manager_delta_for_polydata_array():
     assert len(points_descriptor["content"]) == 6 * 4
 
 
-def test_push_sync_update_falls_back_to_full_state_for_structural_change():
+def test_push_sync_normal_update_after_partial_inlines_current_polydata_array():
     server = _FakeServer()
-    actor_ids = ["actor-a"]
+    api, rw, _renderer, _actor, polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, calls = _make_real_push_sync(server, api, rw, rw_id)
 
-    def get_state(_version_registry=None, _collection_tracker=None):
-        return {
-            "id": "rw",
-            "type": "vtkRenderWindow",
-            "dependencies": [
-                {"id": actor_id, "type": "vtkActor"} for actor_id in actor_ids
-            ],
-        }
-
-    push_sync = PushSync(
-        server,
-        get_state,
-        lambda vtk_object: str(vtk_object),
-        render_window_id=1,
-    )
-
+    polydata_id = str(api.vtk_object_manager.GetId(polydata))
     push_sync.client_resync("client-a")
-    actor_ids.append("actor-b")
-    push_sync.update()
+    assert calls["full_translate"] == 1
+    server.protocol.messages.clear()
+
+    points.SetPoint(0, 2.0, 3.0, 4.0)
+    points.GetData().Modified()
+    points.Modified()
+    polydata.Modified()
+    push_sync.mark_modified(polydata, "points", 0, points.GetNumberOfPoints())
+    assert push_sync.flush()
 
     assert len(server.protocol.messages) == 1
-    topic, state, client_id = server.protocol.messages[0]
-    assert topic == "trame.vtk.delta"
+    topic, partial, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.array.partial"
     assert client_id == "client-a"
-    assert state["kind"] == "full"
-    assert state["seq"] == 1
-    assert [dep["id"] for dep in state["dependencies"]] == ["actor-a", "actor-b"]
+    synthetic_hash = partial["updates"][0]["newHash"]
+    assert synthetic_hash.startswith("v:")
+    server.protocol.messages.clear()
+
+    points.SetPoint(0, 8.0, 9.0, 10.0)
+    points.GetData().Modified()
+    points.Modified()
+    polydata.Modified()
+    push_sync.update()
+
+    assert calls["full_translate"] == 1
+    assert len(server.protocol.messages) == 1
+    topic, patch, client_id = server.protocol.messages[0]
+    assert topic == "trame.vtk.patch"
+    assert client_id == "client-a"
+    op = next(op for op in patch["ops"] if op["id"] == polydata_id)
+    points_descriptor = op["state"]["properties"]["points"]
+    assert points_descriptor["hash"] != synthetic_hash
+    assert not points_descriptor["hash"].startswith("v:")
+    assert points_descriptor["dataType"] == "Float32Array"
+    assert len(points_descriptor["content"]) == points.GetNumberOfPoints() * 3 * 4
 
 
 def test_push_sync_object_delta_falls_back_for_real_structural_change():
@@ -694,27 +660,6 @@ def test_push_sync_inlines_nested_array_descriptors_in_full_state():
     assert push_sync._known_hashes["client-a"] == {"nested-array"}
 
 
-def test_push_sync_omits_known_arrays_on_full_update():
-    payload = np.asarray([1, 2, 3], dtype=np.float32).tobytes()
-    server = _FakeServer()
-    push_sync = PushSync(
-        server,
-        _make_nested_array_state_getter("small-array"),
-        lambda vtk_object: str(vtk_object),
-        render_window_id=1,
-        api=_FakeApi(blobs={"small-array": payload}),
-    )
-
-    push_sync.client_resync("client-a")
-    server.protocol.messages.clear()
-    push_sync.update()
-
-    assert len(server.protocol.messages) == 1
-    _, state, _ = server.protocol.messages[0]
-    descriptor = state["properties"]["custom"]["arbitrary"]["payload"]
-    assert "content" not in descriptor
-
-
 def test_protocol_converts_nested_inline_bytes_to_attachments():
     protocol = _FakeAttachmentProtocol()
     state = {
@@ -763,9 +708,6 @@ def test_push_sync_uses_independent_collection_trackers_per_client():
 
     first_client_state = push_sync.client_resync("client-a")
     assert first_client_state["calls"] == [["addViewProp", ["instance:${actor-a}"]]]
-
-    push_sync.update()
-    assert server.protocol.messages[-1][1]["calls"] == []
 
     second_client_state = push_sync.client_resync("client-b")
     assert second_client_state["calls"] == [["addViewProp", ["instance:${actor-a}"]]]
@@ -821,16 +763,13 @@ def test_push_sync_partial_flush_advances_synthetic_hash_ledger():
 
     _, payload, _ = server.protocol.messages[0]
     partial_update = payload["updates"][0]
-    server.protocol.messages.clear()
 
-    push_sync.update()
-
-    assert len(server.protocol.messages) == 1
-    _, delta_state, client_id = server.protocol.messages[0]
-    assert client_id == "client-a"
-    points = _find_points_array(delta_state, "62")
+    points = _find_points_array(push_sync._client_states["client-a"], "62")
     assert points["hash"] == partial_update["newHash"]
-    assert "content" not in points
+
+    full_state = push_sync.client_resync("client-b")
+    points = _find_points_array(full_state, "62")
+    assert points["hash"] == "initial-points"
 
 
 def test_push_sync_extract_points_region_preserves_float64_dtype():

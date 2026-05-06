@@ -194,24 +194,27 @@ def _flatten_state_objects(state):
     return objects
 
 
-def _replace_object_in_state(state, object_id, replacement):
-    """Return a copy of state with object_id's node replaced by replacement."""
+def _replace_objects_in_state(state, replacements):
+    """Return one ledger copy with all matching object nodes replaced."""
+    if not replacements:
+        return state
+
     if isinstance(state, list):
-        return [
-            _replace_object_in_state(item, object_id, replacement)
-            for item in state
-        ]
+        return [_replace_objects_in_state(item, replacements) for item in state]
     if not isinstance(state, dict):
         return copy.deepcopy(state)
 
-    if str(state.get("id")) == str(object_id):
-        return _state_for_ledger(replacement)
+    object_id = state.get("id")
+    if object_id is not None:
+        replacement = replacements.get(str(object_id))
+        if replacement is not None:
+            return _state_for_ledger(replacement)
 
     result = {}
     for key, value in state.items():
         if key == "dependencies" and isinstance(value, list):
             result[key] = [
-                _replace_object_in_state(item, object_id, replacement)
+                _replace_objects_in_state(item, replacements)
                 for item in value
             ]
         else:
@@ -438,6 +441,7 @@ class PushSync:
         self._client_sequences = {}
         self._client_states = {}
         self._client_statuses = {}
+        self._object_class_names = {}
 
         if api is not None:
             api.register_push_view(self._rw_id_int, self)
@@ -454,6 +458,7 @@ class PushSync:
         self._client_sequences.clear()
         self._client_states.clear()
         self._client_statuses.clear()
+        self._object_class_names.clear()
 
     def drop_client(self, client_id):
         self._view_clients.discard(client_id)
@@ -587,18 +592,29 @@ class PushSync:
             return None
 
         ids = list(object_manager.GetAllDependencies(self._rw_id_int))
+        live_ids = {str(vtk_id) for vtk_id in ids}
+        self._object_class_names = {
+            object_id: class_name
+            for object_id, class_name in self._object_class_names.items()
+            if object_id in live_ids
+        }
         mtimes = {}
         classes = {}
         for vtk_id in ids:
+            object_id = str(vtk_id)
             vtk_obj = object_manager.GetObjectAtId(vtk_id)
             if vtk_obj is not None and hasattr(vtk_obj, "GetMTime"):
-                mtimes[str(vtk_id)] = vtk_obj.GetMTime()
-            class_name = self._get_state_class_name(vtk_id)
+                mtimes[object_id] = vtk_obj.GetMTime()
+            class_name = self._object_class_names.get(object_id)
+            if class_name is None:
+                class_name = self._get_state_class_name(vtk_id)
+                if class_name:
+                    self._object_class_names[object_id] = class_name
             if class_name:
-                classes[str(vtk_id)] = class_name
+                classes[object_id] = class_name
 
         return {
-            "ids": {str(vtk_id) for vtk_id in ids},
+            "ids": live_ids,
             "mtimes": mtimes,
             "classes": classes,
             "hashes": set(object_manager.GetBlobHashes(ids)),
@@ -769,7 +785,7 @@ class PushSync:
             )
 
         ops = []
-        ledger_state = copy.deepcopy(previous_state)
+        replacements = {}
         translate_start = time.perf_counter()
 
         for object_id in sorted(candidate_ids, key=lambda value: int(value)):
@@ -811,9 +827,7 @@ class PushSync:
             }
 
             if not changed_props:
-                ledger_state = _replace_object_in_state(
-                    ledger_state, object_id, current_obj
-                )
+                replacements[object_id] = current_obj
                 continue
 
             if any(
@@ -837,9 +851,10 @@ class PushSync:
                     }
                 )
 
-            ledger_state = _replace_object_in_state(ledger_state, object_id, current_obj)
+            replacements[object_id] = current_obj
 
         translate_ms = f"{(time.perf_counter() - translate_start) * 1000:.3f}"
+        ledger_state = _replace_objects_in_state(previous_state, replacements)
 
         if not ops and extra is None:
             return None, None, "no-op", translate_ms

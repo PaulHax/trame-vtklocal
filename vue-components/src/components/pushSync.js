@@ -99,6 +99,102 @@ function getMessageRwId(message) {
   return message?.rwId ?? message?.id;
 }
 
+function isPlainObject(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    !isBinaryLike(value)
+  );
+}
+
+function mergePatchExtra(previousExtra, nextExtra) {
+  if (nextExtra === undefined) {
+    return previousExtra;
+  }
+  if (previousExtra === undefined) {
+    return nextExtra;
+  }
+  if (isPlainObject(previousExtra) && isPlainObject(nextExtra)) {
+    return { ...previousExtra, ...nextExtra };
+  }
+  return nextExtra;
+}
+
+function removeOpsForId(ops, id) {
+  for (let i = ops.length - 1; i >= 0; i -= 1) {
+    if (ops[i]?.id === id) {
+      ops.splice(i, 1);
+    }
+  }
+}
+
+function findLastOpForId(ops, id) {
+  for (let i = ops.length - 1; i >= 0; i -= 1) {
+    if (ops[i]?.id === id) {
+      return ops[i];
+    }
+  }
+  return null;
+}
+
+function appendMergedPatchOp(ops, op) {
+  if (op?.op === "updateObject") {
+    removeOpsForId(ops, op.id);
+    ops.push(op);
+    return;
+  }
+
+  if (op?.op !== "setProperties") {
+    ops.push(op);
+    return;
+  }
+
+  const properties = isPlainObject(op.properties) ? op.properties : {};
+  const previous = findLastOpForId(ops, op.id);
+  if (previous?.op === "setProperties") {
+    previous.properties = {
+      ...(isPlainObject(previous.properties) ? previous.properties : {}),
+      ...properties,
+    };
+    return;
+  }
+
+  if (
+    previous?.op === "updateObject" &&
+    isPlainObject(previous.state?.properties)
+  ) {
+    previous.state.properties = {
+      ...previous.state.properties,
+      ...properties,
+    };
+    return;
+  }
+
+  ops.push({ ...op, properties: { ...properties } });
+}
+
+function mergePatchOps(firstOps = [], secondOps = []) {
+  const merged = [];
+  [...firstOps, ...secondOps].forEach((op) => {
+    appendMergedPatchOp(merged, op);
+  });
+  return merged;
+}
+
+function canMergePatchMessages(previous, next) {
+  if (previous?.kind !== "patch" || next?.kind !== "patch") {
+    return false;
+  }
+  if (previous.epoch !== next.epoch) {
+    return false;
+  }
+  if (previous.seq === undefined || next.baseSeq === undefined) {
+    return false;
+  }
+  return previous.seq === next.baseSeq;
+}
+
 export function getPartialUpdates(message) {
   if (Array.isArray(message?.updates)) {
     return message.updates;
@@ -236,7 +332,12 @@ export function bindPartialResultToCache(
   }
 }
 
-function applyObjectStatePatch(op, synchronizerContext, objectManager, pushCache) {
+function applyObjectStatePatch(
+  op,
+  synchronizerContext,
+  objectManager,
+  pushCache,
+) {
   const state = op?.state;
   if (!state?.id || !state?.type) {
     console.warn("[pushSync] Missing object state for patch update");
@@ -302,12 +403,7 @@ export function applyPatchUpdate(
 
   for (const op of objectPatches) {
     if (
-      !applyObjectStatePatch(
-        op,
-        synchronizerContext,
-        objectManager,
-        pushCache,
-      )
+      !applyObjectStatePatch(op, synchronizerContext, objectManager, pushCache)
     ) {
       return false;
     }
@@ -421,6 +517,23 @@ export function createPushSync(
     if (kind === "full") {
       extractInlineArrays(payload, pushCache, { stripInlineData: true });
     }
+
+    if (kind === "patch" && messageQueue.length) {
+      const previous = messageQueue[messageQueue.length - 1];
+      if (canMergePatchMessages(previous.payload, payload)) {
+        previous.payload = {
+          ...previous.payload,
+          seq: payload.seq,
+          ops: mergePatchOps(previous.payload.ops, payload.ops),
+          extra: mergePatchExtra(previous.payload.extra, payload.extra),
+        };
+        if (previous.payload.extra === undefined) {
+          delete previous.payload.extra;
+        }
+        return;
+      }
+    }
+
     const message = { kind, payload };
     messageQueue.push(message);
 

@@ -911,6 +911,205 @@ test("createPushSync applies property patch messages through the ordered queue",
   }
 });
 
+test("createPushSync coalesces consecutive property patches before apply", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const instance = {
+      applied: [],
+      modifiedCount: 0,
+      set(properties) {
+        this.applied.push(properties);
+      },
+      modified() {
+        this.modifiedCount += 1;
+      },
+    };
+    const synchronizerContext = {
+      getInstance(id) {
+        return id === "actor" ? instance : null;
+      },
+    };
+
+    let partialCount = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      synchronizerContext,
+      "rw",
+      new Map(),
+      {
+        onPartialUpdate() {
+          partialCount += 1;
+          return true;
+        },
+      },
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 0,
+        seq: 1,
+        ops: [
+          {
+            op: "setProperties",
+            id: "actor",
+            properties: { opacity: 0.1 },
+          },
+        ],
+      }),
+    );
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 1,
+        seq: 2,
+        ops: [
+          {
+            op: "setProperties",
+            id: "actor",
+            properties: { opacity: 0.2 },
+          },
+        ],
+      }),
+    );
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 2,
+        seq: 3,
+        ops: [
+          {
+            op: "setProperties",
+            id: "actor",
+            properties: { visibility: false },
+          },
+        ],
+      }),
+    );
+
+    assert.equal(sync.getQueueLength(), 1);
+    assert.equal(await sync.applyQueuedState(), true);
+    assert.deepEqual(instance.applied, [{ opacity: 0.2, visibility: false }]);
+    assert.equal(instance.modifiedCount, 1);
+    assert.equal(sync.getQueueLength(), 0);
+
+    emit("trame.vtk.array.partial", {
+      rwId: "rw",
+      kind: "arrayPartial",
+      epoch: 1,
+      baseSeq: 3,
+      seq: 4,
+      updates: [
+        {
+          instanceId: "polydata",
+          arrayPath: "points",
+          offset: 0,
+          data: new Float32Array([1, 2, 3]),
+          dataType: "Float32Array",
+          newHash: "hash-b",
+        },
+      ],
+    });
+
+    assert.equal(await sync.applyQueuedState(), true);
+    assert.equal(partialCount, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("createPushSync coalesces patch extras with latest values", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        getInstance() {
+          return null;
+        },
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 0,
+        seq: 1,
+        extra: { mapCamera: { zoom: 10 }, keep: true },
+      }),
+    );
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 1,
+        seq: 2,
+        extra: { mapCamera: { zoom: 11 } },
+      }),
+    );
+
+    assert.equal(sync.getQueueLength(), 1);
+    const message = sync.takeNextMessage();
+    assert.equal(message.payload.baseSeq, 0);
+    assert.equal(message.payload.seq, 2);
+    assert.deepEqual(message.payload.extra, {
+      mapCamera: { zoom: 11 },
+      keep: true,
+    });
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test("applyPatchUpdate applies object-state patches and caches inline payloads", async () => {
   const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
 
@@ -1043,17 +1242,27 @@ test("applyPatchUpdate applies vtkPolyData object patches with arrays", async ()
   );
 
   assert.equal(ok, true);
-  assert.deepEqual(Array.from(polydata.getPoints().getData()), [0, 0, 0, 1, 0, 0]);
+  assert.deepEqual(
+    Array.from(polydata.getPoints().getData()),
+    [0, 0, 0, 1, 0, 0],
+  );
   assert.deepEqual(Array.from(polydata.getLines().getData()), [2, 0, 1]);
-  assert.deepEqual(Array.from(polydata.getPointData().getTCoords().getData()), [
-    0,
-    0,
-    1,
-    0,
-  ]);
-  assert.deepEqual(Array.from(pushCache.get("points-hash")), Array.from(pointValues));
-  assert.deepEqual(Array.from(pushCache.get("lines-hash")), Array.from(lineValues));
-  assert.deepEqual(Array.from(pushCache.get("tcoords-hash")), Array.from(tcoordValues));
+  assert.deepEqual(
+    Array.from(polydata.getPointData().getTCoords().getData()),
+    [0, 0, 1, 0],
+  );
+  assert.deepEqual(
+    Array.from(pushCache.get("points-hash")),
+    Array.from(pointValues),
+  );
+  assert.deepEqual(
+    Array.from(pushCache.get("lines-hash")),
+    Array.from(lineValues),
+  );
+  assert.deepEqual(
+    Array.from(pushCache.get("tcoords-hash")),
+    Array.from(tcoordValues),
+  );
 });
 
 test("createPushSync requests resync on sequence gaps", async () => {

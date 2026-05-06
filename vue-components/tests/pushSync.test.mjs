@@ -1169,3 +1169,87 @@ test("createPushSync requests resync on partial oldHash mismatch", async () => {
     globalThis.document = previousDocument;
   }
 });
+
+test("createPushSync updates partial hash baseline after object patches", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    let resyncCalls = 0;
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          resyncCalls += 1;
+          assert.equal(arg, "rw");
+          return Promise.resolve(createDatasetState({ hash: "hash-a" }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        /* synchronizerContext stub */
+      },
+      "rw",
+      new Map(),
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 0,
+        seq: 1,
+        ops: [
+          {
+            op: "updateObject",
+            id: "1",
+            state: {
+              id: "1",
+              type: "vtkPolyData",
+              properties: {
+                points: {
+                  hash: "hash-b",
+                  dataType: "Float32Array",
+                  numberOfComponents: 3,
+                  size: 3,
+                  name: "Points",
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const update = {
+      instanceId: "1",
+      arrayPath: "points",
+      offset: 0,
+      data: new Uint8Array(0),
+      dataType: "Float32Array",
+      oldHash: "hash-b",
+      newHash: "hash-c",
+    };
+
+    assert.equal(sync.validatePartialUpdate(update), true);
+    await flushAsyncWork();
+    assert.equal(resyncCalls, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});

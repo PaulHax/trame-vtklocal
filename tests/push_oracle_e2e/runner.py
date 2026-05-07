@@ -135,10 +135,16 @@ class JsOracle:
         return result
 
     def run_step(
-        self, step_name: str, *, publish: str = "update", extra: Any = None
+        self,
+        step_name: str,
+        *,
+        publish: str = "update",
+        extra: Any = None,
+        wait: bool = True,
     ) -> dict:
         result = self.trigger("oracle.run_step", step_name, publish, extra)
-        self.wait_for_seq(result["seq"])
+        if wait:
+            self.wait_for_seq(result["seq"])
         return result
 
     def dump(self) -> dict:
@@ -204,3 +210,6 @@ class JsOracle:
         return self.trigger(
             "oracle.suppress_next_publish", client_id or self.client_id, int(count)
         )
+
+    def corrupt_next_patch(self, field: str, value):
+        return self.trigger("oracle.corrupt_next_patch", field, value)

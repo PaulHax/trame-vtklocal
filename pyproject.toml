@@ -77,6 +77,9 @@ target-version = "py39"
 testpaths = [
     "tests",
 ]
+markers = [
+    "js_oracle: end-to-end Playwright push-sync oracle (slow; opt-in)",
+]
 
 [tool.ruff.lint]
 select = ["E", "W", "F"]

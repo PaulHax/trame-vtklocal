@@ -110,6 +110,11 @@ def _flatten_objects(state: dict, resolve_bytes: ResolveBytes):
     patch path doesn't refresh. The vtk.js client doesn't render off MTime; what
     matters is property / array / dependency / calls equivalence. Real
     divergences still surface through those fields.
+
+    Per-object ``calls`` are collapsed into a multiset (same as top-level)
+    because the server emits calls in vtkObjectManager state iteration order
+    while the JS dump emits in ``PROPERTY_RELATIONS`` declaration order; the
+    semantic content (which method was called with which args) is the same.
     """
     objects = {}
 
@@ -134,6 +139,11 @@ def _flatten_objects(state: dict, resolve_bytes: ResolveBytes):
                     for prop_key, prop_val in child.items()
                     if prop_key not in RENDER_TIMING_PROPERTIES
                 }
+                continue
+            if key == "calls" and isinstance(child, list):
+                body[key] = Counter(
+                    tuple(_freeze(call)) for call in child
+                )
                 continue
             body[key] = _normalize_value(child, resolve_bytes)
         if object_id is not None:

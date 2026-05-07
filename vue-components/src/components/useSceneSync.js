@@ -502,7 +502,13 @@ export function useSceneSync(
     // emits server-side. Read-only.
     const id = rwId !== undefined ? String(rwId) : syncedRootId;
     if (!id || !managedSyncContext?.synchronizerContext) return null;
-    return dumpAppliedScene(id, managedSyncContext.synchronizerContext);
+    const rootInstance = getRenderWindow?.();
+    if (!rootInstance) return null;
+    return dumpAppliedScene(
+      id,
+      rootInstance,
+      managedSyncContext.synchronizerContext,
+    );
   }
 
   return {

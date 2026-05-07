@@ -8,8 +8,8 @@
 // production bundle.
 
 (function () {
-  function getView() {
-    const ref = window.trame?.refs?.vtkView;
+  function getView(refName) {
+    const ref = window.trame?.refs?.[refName || "vtkView"];
     if (!ref) return null;
     if (typeof ref.getSyncDiagnostics === "function") return ref;
     if (ref.$ && ref.$.exposed && typeof ref.$.exposed.getSyncDiagnostics === "function") {
@@ -18,27 +18,27 @@
     return ref;
   }
 
-  function diagnostics() {
-    const view = getView();
+  function diagnostics(refName) {
+    const view = getView(refName);
     if (!view || typeof view.getSyncDiagnostics !== "function") {
       return null;
     }
     return view.getSyncDiagnostics();
   }
 
-  function dump(rwId) {
-    const view = getView();
+  function dump(rwId, refName) {
+    const view = getView(refName);
     if (!view || typeof view.getAppliedSceneState !== "function") {
       return null;
     }
     return view.getAppliedSceneState(rwId);
   }
 
-  function waitForSeq(target, timeoutMs) {
+  function waitForSeq(target, timeoutMs, refName) {
     const deadline = Date.now() + (timeoutMs || 5000);
     return new Promise(function (resolve, reject) {
       function tick() {
-        const diag = diagnostics();
+        const diag = diagnostics(refName);
         if (diag && diag.lastSeq >= target) {
           resolve(diag);
           return;
@@ -64,8 +64,8 @@
     diagnostics: diagnostics,
     dump: dump,
     waitForSeq: waitForSeq,
-    isReady: function () {
-      return !!getView() && diagnostics() !== null;
+    isReady: function (refName) {
+      return !!getView(refName) && diagnostics(refName) !== null;
     },
   };
 

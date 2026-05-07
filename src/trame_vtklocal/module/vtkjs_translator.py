@@ -294,6 +294,10 @@ RENDERER_SKIP_PROPERTIES = {
 LOOKUPTABLE_SKIP_PROPERTIES = {
     "scale",
     "tableValue",
+    # Property name mismatch between Python VTK and vtk.js
+    # (vtk.js uses ``annotatedValueMap`` / ``mappingRange`` / ``table`` instead).
+    "annotations",
+    "range",
 }
 
 MAPPER_SKIP_PROPERTIES = {
@@ -307,10 +311,22 @@ MAPPER_SKIP_PROPERTIES = {
     "sourceIndexing",
     "useSelectionIds",
     "useSourceTableTree",
+    # Server-side coincident-topology offsets — vtk.js doesn't expose these
+    # via instance.get(), so emitting them only creates dump/shadow drift.
+    "relativeCoincidentTopologyLineOffsetParameters",
+    "relativeCoincidentTopologyPolygonOffsetParameters",
+    "resolveCoincidentTopologyLineOffsetParameters",
+    "resolveCoincidentTopologyPolygonOffsetFaces",
+    "resolveCoincidentTopologyPolygonOffsetParameters",
 }
 
 PROPERTY_SKIP_PROPERTIES = {
     "lineJoin",
+    # vtk.js's vtkProperty model exposes ``roughness`` but ``instance.set()``
+    # does not appear to apply it; emitting only creates dump/shadow drift.
+    "roughness",
+    "metallic",
+    "baseIOR",
 }
 
 # Properties vtk.js Camera expects
@@ -570,6 +586,12 @@ class VtkJsTranslator:
                 props[to_camel_case(key)] = value
 
         if fields:
+            # Stable order keyed by (location, name) so the JS-side oracle
+            # dump can match without depending on vtkObjectManager state
+            # iteration order or DataSetAttributes traversal.
+            fields.sort(
+                key=lambda d: (d.get("location") or "", d.get("name") or "")
+            )
             props["fields"] = fields
 
         return {

@@ -339,6 +339,8 @@ export const RENDERER_SKIP_PROPERTIES = new Set([
   "useSphericalHarmonics"
 ]);
 export const LOOKUPTABLE_SKIP_PROPERTIES = new Set([
+  "annotations",
+  "range",
   "scale",
   "tableValue"
 ]);
@@ -349,13 +351,21 @@ export const MAPPER_SKIP_PROPERTIES = new Set([
   "masking",
   "numberOfPieces",
   "range",
+  "relativeCoincidentTopologyLineOffsetParameters",
+  "relativeCoincidentTopologyPolygonOffsetParameters",
+  "resolveCoincidentTopologyLineOffsetParameters",
+  "resolveCoincidentTopologyPolygonOffsetFaces",
+  "resolveCoincidentTopologyPolygonOffsetParameters",
   "selectionColorId",
   "sourceIndexing",
   "useSelectionIds",
   "useSourceTableTree"
 ]);
 export const PROPERTY_SKIP_PROPERTIES = new Set([
-  "lineJoin"
+  "baseIOR",
+  "lineJoin",
+  "metallic",
+  "roughness"
 ]);
 export const CAMERA_PROPERTIES = new Set([
   "clippingRange",

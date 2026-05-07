@@ -35,6 +35,117 @@ import {
   VTK_LIGHT_TYPE_MAP,
 } from "./generated/translationSchema";
 
+// vtk.js synchronizer / model bookkeeping that the server never emits.
+// Keep these out of the dump so flat-comparison only diffs on real state.
+const JS_MODEL_INTERNAL_PROPERTIES = new Set([
+  "classHierarchy",
+  "managedInstanceId",
+  "mtime",
+  "remoteId",
+]);
+
+// Per-class JS-only model defaults (vtk.js exposes these via instance.get()
+// but the Python translator doesn't include them). Built up by smoke-running
+// the e2e oracle and recording divergences.
+const JS_ONLY_PROPERTIES_BY_TYPE = {
+  vtkRenderWindow: new Set([
+    "childRenderWindows",
+    "defaultViewAPI",
+    "neverRendered",
+    "synchronizedViewId",
+    "views",
+    // vtk.js wires up an interactor on the render window model; the server
+    // doesn't include this field in its translation.
+    "interactor",
+  ]),
+  vtkRenderer: new Set([
+    "actors",
+    "actors2D",
+    "allBounds",
+    "backgroundTexture",
+    "computeVisiblePropBounds",
+    "delegate",
+    "environmentTexture",
+    "environmentTextureDiffuseStrength",
+    "environmentTextureSpecularStrength",
+    "lastRenderTimeInSeconds",
+    "numberOfPropsRendered",
+    "pass",
+    "pathArray",
+    "pickedProp",
+    "propArray",
+    "selector",
+    "volumes",
+    "lights",
+    "timeFactor",
+    "useEnvironmentTextureAsBackground",
+  ]),
+  vtkActor: new Set([
+    "backfaceProperty",
+    "bounds",
+    "cachedProp3D",
+    "coordinateSystem",
+    "isIdentity",
+    "matrix",
+    "paths",
+    "rotation",
+    "savedEstimatedRenderTime",
+    "textures",
+    "transform",
+    "userMatrix",
+    "userMatrixMTime",
+  ]),
+  vtkProperty: new Set([
+    "ORMTexture",
+    "RMTexture",
+    "emission",
+    "materialName",
+    "normalStrength",
+    // PBR fields the server skips because vtk.js's set() doesn't actually
+    // apply them; mirrored here so the JS dump doesn't surface them either.
+    "baseIOR",
+    "metallic",
+    "roughness",
+  ]),
+  vtkMapper: new Set([
+    "areScalarsMappedFromCells",
+    "bounds",
+    "center",
+    "clippingPlanes",
+    "colorByArrayName",
+    "colorCoordinates",
+    "colorMapColors",
+    "colorTextureMap",
+    "customShaderAttributes",
+    "forceCompileOnly",
+    "inputArrayToProcess",
+    "inputConnection",
+    "invertibleScalars",
+    "numberOfColorsInRange",
+    "numberOfInputs",
+    "output",
+    "populateSelectionSettings",
+    "selectionWebGLIdsToVTKIds",
+    "topologyOffset",
+    "useInvertibleColors",
+    "viewSpecificProperties",
+    "colorBuildString",
+  ]),
+  vtkLookupTable: new Set([
+    "annotatedValueMap",
+    "annotationArray",
+    "mappingRange",
+    "table",
+  ]),
+  vtkLight: new Set([
+    "color",
+    "coneFalloff",
+    "direction",
+    "directionMTime",
+    "transformMatrix",
+  ]),
+};
+
 const TYPED_ARRAY_NAMES = new Set([
   "Int8Array",
   "Uint8Array",
@@ -93,6 +204,10 @@ function descriptorForTypedArray(values, opts = {}) {
   const dataType = values.constructor.name;
   const numberOfComponents = opts.numberOfComponents ?? 1;
   return {
+    // ``hash`` is mandatory for ``_is_array_descriptor`` on the comparator
+    // side; we emit a placeholder rather than computing one. Comparison is
+    // by bytes via ``inline_resolver``.
+    hash: "inline",
     dataType,
     numberOfComponents,
     size: values.length,
@@ -119,7 +234,10 @@ function readProperties(instance, type) {
   }
   const model = instance.get();
   const out = {};
+  const jsOnlyForType = JS_ONLY_PROPERTIES_BY_TYPE[type];
   for (const [key, value] of Object.entries(model)) {
+    if (JS_MODEL_INTERNAL_PROPERTIES.has(key)) continue;
+    if (jsOnlyForType && jsOnlyForType.has(key)) continue;
     if (SKIP_PROPERTIES.has(key)) continue;
     if (type === "vtkRenderWindow" && RENDERWINDOW_SKIP_PROPERTIES.has(key))
       continue;
@@ -285,9 +403,15 @@ function getInstanceIdsFromCollection(collection, synchronizerContext) {
   return [];
 }
 
-function dumpInstance(instance, synchronizerContext, visited) {
+function dumpInstance(instance, synchronizerContext, visited, idOverride) {
   if (!isLiveInstance(instance)) return null;
-  const id = synchronizerContext.getInstanceId?.(instance);
+  // The root render window is owned by the widget and never gets registered
+  // with the synchronizer context under the server's id; callers pass that
+  // id explicitly via ``idOverride``. Children are looked up the normal way.
+  const id =
+    idOverride !== undefined && idOverride !== null
+      ? String(idOverride)
+      : synchronizerContext.getInstanceId?.(instance);
   if (id === undefined || id === null) return null;
   if (visited.has(id)) return null;
   visited.add(id);
@@ -439,6 +563,18 @@ function dumpPolydata(instance, synchronizerContext, visited, id, type) {
 
   const fields = dumpPolydataFields(instance);
   if (fields.length > 0) {
+    // Stable order matching the server-side sort below; ``fields`` ordering
+    // depends on traversal of pointData / cellData / fieldData containers
+    // which differs between vtk.js and vtkObjectManager.
+    fields.sort((a, b) => {
+      const al = a.location || "";
+      const bl = b.location || "";
+      if (al !== bl) return al < bl ? -1 : 1;
+      const an = a.name || "";
+      const bn = b.name || "";
+      if (an !== bn) return an < bn ? -1 : 1;
+      return 0;
+    });
     props.fields = fields;
   }
 
@@ -454,17 +590,14 @@ function dumpPolydata(instance, synchronizerContext, visited, id, type) {
 
 /**
  * Produce a nested-tree dump rooted at ``rwId`` that mirrors the shape of
- * ``vtkjs_translator.translate_scene``. Returns ``null`` if no live instance
- * is registered for that id in the synchronizer context.
+ * ``vtkjs_translator.translate_scene``. Callers pass the live root render
+ * window instance directly (the synchronizer context does not register the
+ * root under the server's id; only child instances appear there).
  */
-export function dumpAppliedScene(rwId, synchronizerContext) {
-  if (!synchronizerContext) return null;
-  const root = synchronizerContext.getInstance?.(rwId);
-  if (!root) return null;
-
+export function dumpAppliedScene(rwId, rootInstance, synchronizerContext) {
+  if (!synchronizerContext || !rootInstance) return null;
   const visited = new Set();
-  const dump = dumpInstance(root, synchronizerContext, visited);
-  return dump;
+  return dumpInstance(rootInstance, synchronizerContext, visited, rwId);
 }
 
 export const __test = {

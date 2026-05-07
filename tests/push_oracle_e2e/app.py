@@ -98,19 +98,25 @@ def _inline_array_bytes(node, resolver):
 
 
 class ProtocolPublishWrapper:
-    """Wrap a wslink protocol's ``publish`` to drop messages on demand.
+    """Wrap a wslink protocol's ``publish`` to drop or corrupt messages.
 
     ``oracle.suppress_next_publish(client_id, count)`` increments the
     suppression counter for that client; the next ``count`` outgoing publish
     calls destined for that client are skipped, producing a clean seq gap
-    visible to ``createPushSync`` while the websocket stays alive. The
-    websocket *is* still up — the messages just never get pushed onto it.
+    visible to ``createPushSync`` while the websocket stays alive.
+
+    ``oracle.corrupt_next_patch(field, value)`` arms a one-shot mutation of
+    the next outgoing ``trame.vtk.patch`` payload's ``ops[0].properties``
+    block. The server publishes the corrupted payload as a normal wire
+    message, which lets the JS-oracle self-test prove the comparator
+    catches a deliberate client-side divergence.
     """
 
     def __init__(self, protocol):
         self._protocol = protocol
         self._original_publish = protocol.publish
         self._suppress_remaining: dict[str, int] = {}
+        self._corrupt_next_patch: tuple[str, object] | None = None
         # monkey-patch in place so push_sync.publish calls go through us
         protocol.publish = self._publish
 
@@ -118,12 +124,27 @@ class ProtocolPublishWrapper:
         if client_id is not None and self._suppress_remaining.get(client_id, 0) > 0:
             self._suppress_remaining[client_id] -= 1
             return None
+        if (
+            self._corrupt_next_patch is not None
+            and topic == "trame.vtk.patch"
+            and isinstance(payload, dict)
+            and isinstance(payload.get("ops"), list)
+            and payload["ops"]
+        ):
+            field, value = self._corrupt_next_patch
+            self._corrupt_next_patch = None
+            op = payload["ops"][0]
+            properties = op.setdefault("properties", {})
+            properties[field] = value
         return self._original_publish(topic, payload, client_id=client_id, **kwargs)
 
     def suppress_next(self, client_id: str, count: int):
         self._suppress_remaining[client_id] = (
             self._suppress_remaining.get(client_id, 0) + int(count)
         )
+
+    def corrupt_next_patch(self, field: str, value):
+        self._corrupt_next_patch = (field, value)
 
     def restore(self):
         self._protocol.publish = self._original_publish
@@ -311,6 +332,13 @@ class OracleApp:
             if self._publish_wrapper is not None:
                 self._publish_wrapper.suppress_next(client_id, count)
             return {"client_id": client_id, "count": int(count)}
+
+        @server.trigger("oracle.corrupt_next_patch")
+        def corrupt_next_patch(field, value):
+            self._ensure_publish_wrapper()
+            if self._publish_wrapper is not None:
+                self._publish_wrapper.corrupt_next_patch(field, value)
+            return {"field": field}
 
     # ------------------------------------------------------------------
     # RPC implementations

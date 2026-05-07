@@ -322,11 +322,11 @@ MAPPER_SKIP_PROPERTIES = {
 
 PROPERTY_SKIP_PROPERTIES = {
     "lineJoin",
-    # vtk.js's vtkProperty model exposes ``roughness`` but ``instance.set()``
-    # does not appear to apply it; emitting only creates dump/shadow drift.
-    "roughness",
-    "metallic",
-    "baseIOR",
+    # vtk.js's ``setSpecularPower`` recomputes ``roughness = 1/max(1,p)`` and
+    # overwrites whatever value ``setRoughness`` just applied — see
+    # vtk-js/Sources/Rendering/Core/Property/index.js setSpecularPower.
+    # Skipping specularPower lets the explicit roughness/metallic round-trip.
+    "specularPower",
 }
 
 # Properties vtk.js Camera expects

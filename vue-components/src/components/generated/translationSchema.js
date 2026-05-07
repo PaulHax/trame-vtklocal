@@ -362,10 +362,8 @@ export const MAPPER_SKIP_PROPERTIES = new Set([
   "useSourceTableTree"
 ]);
 export const PROPERTY_SKIP_PROPERTIES = new Set([
-  "baseIOR",
   "lineJoin",
-  "metallic",
-  "roughness"
+  "specularPower"
 ]);
 export const CAMERA_PROPERTIES = new Set([
   "clippingRange",

@@ -8,8 +8,8 @@ sequence of ``(scene, step)`` mutations. After each step the test:
 3. compares against a fresh server shadow snapshot using the existing
    ``tests/push_oracle/normalize.py`` flatten + first-difference reporter.
 
-Mark ``@pytest.mark.js_oracle`` so dev runs default to the fast Python oracle
-and explicitly opt into e2e via ``-m js_oracle``.
+Marked ``@pytest.mark.js_oracle`` so dev runs include these browser-backed
+checks by default and can skip them explicitly via ``-m 'not js_oracle'``.
 """
 
 from __future__ import annotations

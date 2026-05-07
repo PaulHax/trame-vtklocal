@@ -60,5 +60,27 @@ def oracle_shared(e2e_app_shared, page: Page) -> JsOracle:
 
 
 @pytest.fixture
+def oracle_local_pair(e2e_app_local, browser):
+    """Two independent ``JsOracle`` instances against one trame app.
+
+    Each oracle has its own browser context — the trame app sees them as two
+    distinct wslink ``client_id`` values, exercises per-client ledgers, and
+    publishes patches to both. Used for two-client convergence coverage.
+    """
+    base_url = f"http://127.0.0.1:{e2e_app_local.port}/"
+    contexts = []
+    pages = []
+    for _ in range(2):
+        ctx = browser.new_context()
+        contexts.append(ctx)
+        pages.append(ctx.new_page())
+    try:
+        yield base_url, pages
+    finally:
+        for ctx in contexts:
+            ctx.close()
+
+
+@pytest.fixture
 def oracle_local(e2e_app_local, page: Page) -> JsOracle:
     return _build_oracle(e2e_app_local, "local", page)

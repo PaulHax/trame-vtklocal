@@ -103,10 +103,10 @@ class JsOracle:
     def diagnostics(self) -> dict:
         return self.page.evaluate("() => window.__pushOracle__.diagnostics()")
 
-    def wait_for_seq(self, target: int):
+    def wait_for_seq(self, target: int, *, timeout_ms: int | None = None):
         self.page.evaluate(
             "([target, timeout]) => window.__pushOracle__.waitForSeq(target, timeout)",
-            [int(target), WAIT_FOR_SEQ_TIMEOUT_MS],
+            [int(target), int(timeout_ms or WAIT_FOR_SEQ_TIMEOUT_MS)],
         )
 
     # ------------------------------------------------------------------
@@ -203,8 +203,13 @@ class JsOracle:
     def drop_client(self, client_id: str | None = None):
         return self.trigger("oracle.drop_client", client_id or self.client_id)
 
-    def request_resync(self):
-        return self.trigger("oracle.request_resync")
+    def request_resync(self, *, wait: bool = True):
+        result = self.trigger("oracle.request_resync")
+        if wait:
+            baseline = result.get("baseline_seq", 0)
+            if baseline:
+                self.wait_for_seq(baseline)
+        return result
 
     def suppress_next_publish(self, count: int = 1, client_id: str | None = None):
         return self.trigger(

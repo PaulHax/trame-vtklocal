@@ -14,6 +14,7 @@ import {
   getPartialUpdates,
 } from "./pushSync";
 import { createSyncController } from "./syncController";
+import { dumpAppliedScene } from "./dumpAppliedScene";
 
 export function useSceneSync(
   {
@@ -47,9 +48,42 @@ export function useSceneSync(
   let pushCache = null;
   let disposed = false;
   let partialAppliedCallback = null;
+  let messageAppliedCallback = null;
+  let lastAppliedSeq = 0;
+  let lastAppliedEpoch = null;
+  let lastAppliedOp = null;
+  let syncedRootId = null;
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
+  }
+
+  function recordLastAppliedOp(message) {
+    if (!message) return;
+    const { kind, payload } = message;
+    if (kind === "patch" && Array.isArray(payload?.ops) && payload.ops.length) {
+      const lastOp = payload.ops[payload.ops.length - 1];
+      lastAppliedOp = { kind: lastOp?.op || "patch" };
+      if (lastOp?.id !== undefined) {
+        lastAppliedOp.id = String(lastOp.id);
+      }
+      return;
+    }
+    lastAppliedOp = { kind: kind || "unknown" };
+  }
+
+  function noteMessageApplied(message) {
+    if (!message) return;
+    const payload = message.payload;
+    if (payload?.epoch !== undefined) {
+      lastAppliedEpoch = payload.epoch;
+    }
+    if (payload?.seq !== undefined) {
+      lastAppliedSeq = payload.seq;
+    }
+    recordLastAppliedOp(message);
+    sync?.markMessageApplied?.(message);
+    messageAppliedCallback?.(message);
   }
 
   function requestResync(reason = "scene-sync") {
@@ -292,7 +326,7 @@ export function useSceneSync(
         if (message.payload?.extra) {
           emit?.("viewStateExtra", message.payload.extra);
         }
-        sync?.markMessageApplied?.(message);
+        noteMessageApplied(message);
         didApply = true;
       } else if (message.kind === "arrayPartial") {
         const resolvedSyncContext = managedSyncContext?.synchronizerContext;
@@ -308,7 +342,7 @@ export function useSceneSync(
         if (partialResult.failed) {
           return { status: "failed", didSync: synced };
         }
-        sync?.markMessageApplied?.(message);
+        noteMessageApplied(message);
         didApply = didApply || partialResult.didApply;
       } else if (message.kind === "patch") {
         const resolvedSyncContext = managedSyncContext?.synchronizerContext;
@@ -321,7 +355,7 @@ export function useSceneSync(
         if (patchResult.failed) {
           return { status: "failed", didSync: synced };
         }
-        sync?.markMessageApplied?.(message);
+        noteMessageApplied(message);
         didApply = didApply || patchResult.didApply;
       } else {
         console.warn(
@@ -387,6 +421,11 @@ export function useSceneSync(
     syncCapability = null;
     pushCache = null;
     partialAppliedCallback = null;
+    messageAppliedCallback = null;
+    lastAppliedSeq = 0;
+    lastAppliedEpoch = null;
+    lastAppliedOp = null;
+    syncedRootId = null;
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -397,10 +436,13 @@ export function useSceneSync(
     onStateReceived,
     onQueueReady,
     onPartialApplied,
+    onMessageApplied,
   }) {
     disposed = false;
     cleanupSyncContext();
     partialAppliedCallback = onPartialApplied || null;
+    messageAppliedCallback = onMessageApplied || null;
+    syncedRootId = renderWindowId !== undefined ? String(renderWindowId) : null;
 
     managedSyncContext = createManagedSyncContextImpl(
       contextName,
@@ -442,6 +484,27 @@ export function useSceneSync(
     cleanupSyncContext();
   }
 
+  function getSyncDiagnostics() {
+    // Diagnostics / oracle support (not general app integration). Read-only;
+    // safe to call from production code (debug panels, dev tools).
+    return {
+      lastSeq: lastAppliedSeq,
+      lastEpoch: lastAppliedEpoch,
+      queueLength: getQueueLength(),
+      lastAppliedOp,
+      syncedRootId,
+    };
+  }
+
+  function getAppliedSceneState(rwId) {
+    // Diagnostics / oracle support: walks live ``synchronizerContext`` and
+    // returns a nested-tree dump in the same shape the Python translator
+    // emits server-side. Read-only.
+    const id = rwId !== undefined ? String(rwId) : syncedRootId;
+    if (!id || !managedSyncContext?.synchronizerContext) return null;
+    return dumpAppliedScene(id, managedSyncContext.synchronizerContext);
+  }
+
   return {
     initialize,
     cleanup,
@@ -453,5 +516,7 @@ export function useSceneSync(
     getRenderer,
     setCamera,
     resetCamera,
+    getSyncDiagnostics,
+    getAppliedSceneState,
   };
 }

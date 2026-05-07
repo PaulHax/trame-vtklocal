@@ -13,6 +13,7 @@ synthetic hashes, ``cell:conn:off`` cell-array hashes, and normal content
 hashes are compared by the bytes the resolver returns, not by hash string.
 """
 
+import base64
 from collections import Counter
 from copy import deepcopy
 from typing import Callable
@@ -254,6 +255,24 @@ def _first_diff_path(left, right, prefix):
         if left_bytes != right_bytes:
             return f"{prefix}: array bytes differ (len={left_size})"
     return f"{prefix} differs ({left!r} vs {right!r})" if not isinstance(left, (dict, list)) else f"{prefix} differs"
+
+
+def inline_resolver(descriptor: dict) -> "bytes | None":
+    """Return ``descriptor['content']`` as bytes, decoding base64 if needed.
+
+    The JS-oracle dump emits arrays with raw bytes inlined under ``content``;
+    nothing else needs to consult a hash registry. This pairs with
+    :func:`make_resolver` for the server side, where ``v:`` / ``cell:`` hashes
+    point into the live :class:`PartialArrayLedger` and blob registry.
+    """
+    content = descriptor.get("content")
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return base64.b64decode(content)
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    return bytes(memoryview(content))
 
 
 def make_resolver(push_sync, vtk_object_manager) -> ResolveBytes:

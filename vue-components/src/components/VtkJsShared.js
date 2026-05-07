@@ -16,6 +16,7 @@ export default {
     "onReady",
     "beforeSceneLoaded",
     "afterSceneLoaded",
+    "messageApplied",
   ],
   props: {
     renderWindow: {
@@ -100,6 +101,9 @@ export default {
             renderRequestedCallback?.();
           }
         },
+        onMessageApplied(message) {
+          emit("messageApplied", message);
+        },
       });
     }
 
@@ -145,6 +149,9 @@ export default {
       getRenderer: scene.getRenderer,
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
+      // Diagnostics / oracle support (read-only, not general app integration).
+      getSyncDiagnostics: scene.getSyncDiagnostics,
+      getAppliedSceneState: scene.getAppliedSceneState,
       renderShared,
       onRenderRequested,
       setRepaintCallback,

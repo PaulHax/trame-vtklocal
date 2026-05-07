@@ -210,6 +210,3 @@ class JsOracle:
         return self.trigger(
             "oracle.suppress_next_publish", client_id or self.client_id, int(count)
         )
-
-    def corrupt_next_patch(self, field: str, value):
-        return self.trigger("oracle.corrupt_next_patch", field, value)

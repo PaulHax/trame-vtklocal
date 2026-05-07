@@ -101,11 +101,9 @@ const JS_ONLY_PROPERTIES_BY_TYPE = {
     "emission",
     "materialName",
     "normalStrength",
-    // PBR fields the server skips because vtk.js's set() doesn't actually
-    // apply them; mirrored here so the JS dump doesn't surface them either.
-    "baseIOR",
-    "metallic",
-    "roughness",
+    // ``specularPower`` is server-skipped (its setter clobbers
+    // ``roughness``); mirror it here so the JS dump matches the shadow.
+    "specularPower",
   ]),
   vtkMapper: new Set([
     "areScalarsMappedFromCells",

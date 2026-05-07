@@ -144,21 +144,24 @@ def _register_and_warmup(api, render_window):
     return render_window_id
 
 
-def make_basic_scene(name="basic"):
-    """Real VTK scene: one polydata with two points, one actor, one renderer."""
+def populate_basic(api, render_window):
+    """Populate ``render_window`` with the ``basic`` scene contents.
+
+    The e2e oracle uses this to add scene objects to a widget-owned render
+    window without rebuilding it. The Python oracle keeps using
+    :func:`make_basic_scene` which wraps populate with rw creation +
+    register-and-warmup.
+    """
     from vtkmodules.vtkCommonCore import vtkPoints
     from vtkmodules.vtkCommonDataModel import vtkPolyData
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
         vtkPolyDataMapper,
         vtkRenderer,
-        vtkRenderWindow,
     )
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     points = vtkPoints()
     points.InsertNextPoint(0.0, 0.0, 0.0)
@@ -172,60 +175,74 @@ def make_basic_scene(name="basic"):
     actor.SetMapper(mapper)
     renderer.AddActor(actor)
 
+    return {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "points": points,
+    }
+
+
+def make_basic_scene(name="basic"):
+    """Real VTK scene: one polydata with two points, one actor, one renderer."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_basic(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "actor": actor,
-            "mapper": mapper,
-            "polydata": polydata,
-            "points": points,
-        },
+        handles=handles,
     )
 
 
-def make_quad_scene(name="quad"):
-    """Polydata with point/cell topology, tcoords, and a field-data array."""
-    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+def populate_quad(api, render_window):
+    from vtkmodules.vtkRenderingCore import vtkRenderer
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     polydata, points, tcoords, homography = make_quad_polydata()
     actor, mapper = add_actor(renderer, polydata)
 
+    return {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "points": points,
+        "tcoords": tcoords,
+        "homography": homography,
+    }
+
+
+def make_quad_scene(name="quad"):
+    """Polydata with point/cell topology, tcoords, and a field-data array."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_quad(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "actor": actor,
-            "mapper": mapper,
-            "polydata": polydata,
-            "points": points,
-            "tcoords": tcoords,
-            "homography": homography,
-        },
+        handles=handles,
     )
 
 
-def make_tsw_like_scene(name="tsw_like"):
-    """A four-actor scene close to what telesculptor-web pushes per frame."""
-    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+def populate_tsw_like(api, render_window):
+    from vtkmodules.vtkRenderingCore import vtkRenderer
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     footprint, footprint_points, footprint_tcoords, homography = make_quad_polydata()
     frustum, frustum_points = make_line_polydata()
@@ -237,42 +254,49 @@ def make_tsw_like_scene(name="tsw_like"):
     connection_actor, _ = add_actor(renderer, connection, visible=True)
     trail_actor, _ = add_actor(renderer, trail, visible=True)
 
+    return {
+        "renderer": renderer,
+        "actors": [
+            footprint_actor,
+            frustum_actor,
+            connection_actor,
+            trail_actor,
+        ],
+        "footprint": footprint,
+        "footprint_points": footprint_points,
+        "footprint_tcoords": footprint_tcoords,
+        "homography": homography,
+        "frustum": frustum,
+        "frustum_points": frustum_points,
+        "connection": connection,
+        "connection_points": connection_points,
+        "trail": trail,
+        "trail_points": trail_points,
+    }
+
+
+def make_tsw_like_scene(name="tsw_like"):
+    """A four-actor scene close to what telesculptor-web pushes per frame."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_tsw_like(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "actors": [
-                footprint_actor,
-                frustum_actor,
-                connection_actor,
-                trail_actor,
-            ],
-            "footprint": footprint,
-            "footprint_points": footprint_points,
-            "footprint_tcoords": footprint_tcoords,
-            "homography": homography,
-            "frustum": frustum,
-            "frustum_points": frustum_points,
-            "connection": connection,
-            "connection_points": connection_points,
-            "trail": trail,
-            "trail_points": trail_points,
-        },
+        handles=handles,
     )
 
 
-def make_scalars_scene(name="scalars"):
-    """Quad polydata with point-data and cell-data scalar arrays."""
-    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+def populate_scalars(api, render_window):
+    from vtkmodules.vtkRenderingCore import vtkRenderer
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     polydata, points, _tcoords, _homography = make_quad_polydata()
     point_scalars = make_float_array("PointScalars", 1, [(0.0,), (0.5,), (1.0,), (0.5,)])
@@ -282,66 +306,79 @@ def make_scalars_scene(name="scalars"):
 
     actor, mapper = add_actor(renderer, polydata)
 
+    return {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "points": points,
+        "point_scalars": point_scalars,
+        "cell_scalars": cell_scalars,
+    }
+
+
+def make_scalars_scene(name="scalars"):
+    """Quad polydata with point-data and cell-data scalar arrays."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_scalars(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "actor": actor,
-            "mapper": mapper,
-            "polydata": polydata,
-            "points": points,
-            "point_scalars": point_scalars,
-            "cell_scalars": cell_scalars,
-        },
+        handles=handles,
     )
 
 
-def make_polyline_scene(name="polyline"):
-    """Lines polydata, easy to swap the cell array for verts/lines/polys/strips."""
-    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+def populate_polyline(api, render_window):
+    from vtkmodules.vtkRenderingCore import vtkRenderer
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     polydata, points = make_line_polydata()
     actor, mapper = add_actor(renderer, polydata)
 
+    return {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "points": points,
+    }
+
+
+def make_polyline_scene(name="polyline"):
+    """Lines polydata, easy to swap the cell array for verts/lines/polys/strips."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_polyline(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "actor": actor,
-            "mapper": mapper,
-            "polydata": polydata,
-            "points": points,
-        },
+        handles=handles,
     )
 
 
-def make_pipeline_cone_scene(name="pipeline_cone"):
-    """Mapper fed by a vtkConeSource via SetInputConnection (single-stage pipeline)."""
+def populate_pipeline_cone(api, render_window):
     from vtkmodules.vtkFiltersSources import vtkConeSource
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
         vtkPolyDataMapper,
         vtkRenderer,
-        vtkRenderWindow,
     )
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     source = vtkConeSource()
     source.SetResolution(6)
@@ -351,36 +388,42 @@ def make_pipeline_cone_scene(name="pipeline_cone"):
     actor.SetMapper(mapper)
     renderer.AddActor(actor)
 
+    return {
+        "renderer": renderer,
+        "source": source,
+        "mapper": mapper,
+        "actor": actor,
+    }
+
+
+def make_pipeline_cone_scene(name="pipeline_cone"):
+    """Mapper fed by a vtkConeSource via SetInputConnection (single-stage pipeline)."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_pipeline_cone(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "source": source,
-            "mapper": mapper,
-            "actor": actor,
-        },
+        handles=handles,
     )
 
 
-def make_two_stage_pipeline_scene(name="two_stage_pipeline"):
-    """Source -> filter -> mapper. Mutating either stage must patch the dataset."""
+def populate_two_stage_pipeline(api, render_window):
     from vtkmodules.vtkFiltersCore import vtkTriangleFilter
     from vtkmodules.vtkFiltersSources import vtkSphereSource
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
         vtkPolyDataMapper,
         vtkRenderer,
-        vtkRenderWindow,
     )
 
-    api = _ObjectManagerApiNoAttachments()
-    rw = vtkRenderWindow()
     renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
+    render_window.AddRenderer(renderer)
 
     source = vtkSphereSource()
     source.SetThetaResolution(6)
@@ -393,20 +436,44 @@ def make_two_stage_pipeline_scene(name="two_stage_pipeline"):
     actor.SetMapper(mapper)
     renderer.AddActor(actor)
 
+    return {
+        "renderer": renderer,
+        "source": source,
+        "filter": triangle,
+        "mapper": mapper,
+        "actor": actor,
+    }
+
+
+def make_two_stage_pipeline_scene(name="two_stage_pipeline"):
+    """Source -> filter -> mapper. Mutating either stage must patch the dataset."""
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    handles = populate_two_stage_pipeline(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
         api=api,
         render_window=rw,
         render_window_id=rw_id,
-        handles={
-            "renderer": renderer,
-            "source": source,
-            "filter": triangle,
-            "mapper": mapper,
-            "actor": actor,
-        },
+        handles=handles,
     )
+
+
+# Registry mapping scene name -> (populate_callable, mutator_for_step) so the
+# e2e test app and Python oracle can dispatch by name without duplicating
+# factory mappings.
+SCENE_POPULATORS = {
+    "basic": populate_basic,
+    "quad": populate_quad,
+    "tsw_like": populate_tsw_like,
+    "scalars": populate_scalars,
+    "polyline": populate_polyline,
+    "pipeline_cone": populate_pipeline_cone,
+    "two_stage_pipeline": populate_two_stage_pipeline,
+}
 
 
 def mutate_tsw_like_frame(scene: OracleScene, frame_index: int):

@@ -20,6 +20,7 @@ export default {
     "onReady",
     "beforeSceneLoaded",
     "afterSceneLoaded",
+    "messageApplied",
   ],
   props: {
     renderWindow: {
@@ -100,6 +101,9 @@ export default {
             renderScene();
           }
         },
+        onMessageApplied(message) {
+          emit("messageApplied", message);
+        },
       });
 
       interactor = vtkRenderWindowInteractor.newInstance();
@@ -162,6 +166,9 @@ export default {
       getRenderer: scene.getRenderer,
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
+      // Diagnostics / oracle support (read-only, not general app integration).
+      getSyncDiagnostics: scene.getSyncDiagnostics,
+      getAppliedSceneState: scene.getAppliedSceneState,
       render: renderScene,
       resize,
     };

@@ -81,12 +81,8 @@ testpaths = [
 # requires the repo root on sys.path. ``pythonpath = ["."]`` makes that
 # explicit instead of depending on pytest's incidental rootdir discovery.
 pythonpath = ["."]
-# The Playwright e2e oracle is slow and needs a browser install. Default to
-# excluding it so ``pytest`` runs the fast Python suite; opt in via
-# ``pytest -m js_oracle`` or override with ``pytest -m ''``.
-addopts = "-m 'not js_oracle'"
 markers = [
-    "js_oracle: end-to-end Playwright push-sync oracle (slow; opt-in)",
+    "js_oracle: end-to-end Playwright push-sync oracle (~30s; needs Playwright + Chromium). Skip with -m 'not js_oracle' if Playwright isn't installed.",
 ]
 
 [tool.ruff.lint]

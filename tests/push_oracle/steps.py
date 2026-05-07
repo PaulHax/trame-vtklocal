@@ -10,7 +10,7 @@ based on each step's ``publish`` field.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Literal
 
 from .scenes import (
@@ -23,12 +23,27 @@ from .scenes import (
 
 @dataclass(frozen=True)
 class E2EStep:
-    """One e2e step: mutator + how the server should publish it."""
+    """One e2e step: mutator + how the server should publish it.
+
+    ``expected_fallback`` lets the test matrix assert the dispatch path stayed
+    on patch / arrayPartial. A regression that silently falls back to full
+    sync every step would still produce a converged final state and pass the
+    comparator, but would also emit a fallback record per step. Steps that
+    legitimately need a full fallback (e.g., structural changes adding or
+    removing actors) set ``expected_fallback=True``.
+
+    ``mark_modified`` is a list of ``(handle_name, array_path, start, count)``
+    tuples the test app calls ``push_sync.mark_modified`` for after the
+    mutator runs and before ``flush()``. Pair with ``publish="flush"`` to
+    exercise the ``trame.vtk.array.partial`` wire path.
+    """
 
     name: str
     mutate: Callable[[OracleScene], None]
     publish: Literal["update", "flush"] = "update"
     extra: dict | None = None
+    expected_fallback: bool = False
+    mark_modified: tuple[tuple[str, str, int, int], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +146,18 @@ def _polyline_move_points(scene: OracleScene):
     scene.handles["polydata"].Modified()
 
 
+def _polyline_partial_move_points(scene: OracleScene):
+    # Same point movements as ``_polyline_move_points`` but published via
+    # ``mark_modified`` + ``flush`` to exercise the ``trame.vtk.array.partial``
+    # wire path. The test app dispatches the ``mark_modified`` calls itself
+    # using the step's ``mark_modified`` field.
+    pts = scene.handles["points"]
+    for i in range(pts.GetNumberOfPoints()):
+        pts.SetPoint(i, 0.25 + float(i) * 0.3, 0.1 + float(i) * 0.2, 0.0)
+    pts.Modified()
+    scene.handles["polydata"].Modified()
+
+
 REGISTRY: dict[str, dict[str, E2EStep]] = {
     "basic": {
         "hide-actor": E2EStep("hide-actor", _basic_hide_actor),
@@ -160,6 +187,12 @@ REGISTRY: dict[str, dict[str, E2EStep]] = {
     },
     "polyline": {
         "move-points": E2EStep("move-points", _polyline_move_points),
+        "partial-move-points": E2EStep(
+            "partial-move-points",
+            _polyline_partial_move_points,
+            publish="flush",
+            mark_modified=(("polydata", "points", 0, 3),),
+        ),
     },
 }
 

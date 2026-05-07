@@ -5,7 +5,11 @@ server-side scene shape. The push-sync JS-oracle dump runs in the browser and
 walks live ``synchronizerContext`` instances; it must mirror translator skip
 lists, class-name mapping, dependency relations, and array-extraction config.
 
-Static lookup tables live in ``vtkjs_translator`` as module-level dicts/sets.
+Static lookup tables live in ``vtkjs_translator`` as module-level
+dicts/sets/literals. This generator parses the source as an AST and pulls
+those constants out via ``ast.literal_eval`` — it does *not* import the
+translator, so the npm build job runs without VTK / numpy on the path.
+
 Imperative special cases (polydata field-array extraction, mapper input list
 handling, camera property allowlist, renderer background-alpha merge,
 light-type integer-to-string) are *not* in the schema; the JS dump handles
@@ -15,7 +19,7 @@ those inline with comments referencing the corresponding Python source.
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import ast
 import json
 import sys
 from pathlib import Path
@@ -23,14 +27,57 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_SOURCE = REPO_ROOT / "src" / "trame_vtklocal" / "module" / "vtkjs_translator.py"
 
+WANTED_NAMES = {
+    "CLASS_NAME_MAP",
+    "COLLECTION_TYPES",
+    "SKIP_TYPES",
+    "PROPERTY_RELATIONS",
+    "ATTRIBUTE_REGISTRATIONS",
+    "FIELD_DATA_GETTERS",
+    "POLYDATA_ARRAYS",
+    "SKIP_PROPERTIES",
+    "RENDERWINDOW_SKIP_PROPERTIES",
+    "RENDERER_SKIP_PROPERTIES",
+    "LOOKUPTABLE_SKIP_PROPERTIES",
+    "MAPPER_SKIP_PROPERTIES",
+    "PROPERTY_SKIP_PROPERTIES",
+    "CAMERA_PROPERTIES",
+    "VTK_DATATYPE_MAP",
+    "VTK_LIGHT_TYPE_MAP",
+    "CLASS_TO_DATATYPE",
+}
 
-def load_translator():
-    spec = importlib.util.spec_from_file_location(
-        "vtkjs_translator_for_schema", PYTHON_SOURCE
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+
+def extract_constants():
+    source = PYTHON_SOURCE.read_text(encoding="utf-8")
+    module = ast.parse(source, filename=str(PYTHON_SOURCE))
+
+    found: dict[str, object] = {}
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id not in WANTED_NAMES:
+            continue
+        try:
+            found[target.id] = ast.literal_eval(node.value)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{target.id} in {PYTHON_SOURCE.name} is not a literal "
+                f"({exc}); generator can only extract literal constants."
+            ) from exc
+
+    missing = WANTED_NAMES - found.keys()
+    if missing:
+        raise RuntimeError(
+            f"vtkjs_translator.py is missing expected constants: "
+            f"{sorted(missing)}"
+        )
+    return found
 
 
 def _normalize_relations(raw):
@@ -65,25 +112,25 @@ def _polydata_arrays(raw):
 
 
 def build_schema():
-    t = load_translator()
+    c = extract_constants()
     return {
-        "classNameMap": dict(t.CLASS_NAME_MAP),
-        "collectionTypes": sorted(t.COLLECTION_TYPES),
-        "skipTypes": sorted(t.SKIP_TYPES),
-        "propertyRelations": _normalize_relations(t.PROPERTY_RELATIONS),
-        "attributeRegistrations": dict(t.ATTRIBUTE_REGISTRATIONS),
-        "fieldDataGetters": dict(t.FIELD_DATA_GETTERS),
-        "polydataArrays": _polydata_arrays(t.POLYDATA_ARRAYS),
-        "skipProperties": sorted(t.SKIP_PROPERTIES),
-        "renderWindowSkipProperties": sorted(t.RENDERWINDOW_SKIP_PROPERTIES),
-        "rendererSkipProperties": sorted(t.RENDERER_SKIP_PROPERTIES),
-        "lookupTableSkipProperties": sorted(t.LOOKUPTABLE_SKIP_PROPERTIES),
-        "mapperSkipProperties": sorted(t.MAPPER_SKIP_PROPERTIES),
-        "propertySkipProperties": sorted(t.PROPERTY_SKIP_PROPERTIES),
-        "cameraProperties": sorted(t.CAMERA_PROPERTIES),
-        "vtkDataTypeMap": {str(k): v for k, v in t.VTK_DATATYPE_MAP.items()},
-        "vtkLightTypeMap": {str(k): v for k, v in t.VTK_LIGHT_TYPE_MAP.items()},
-        "classToDataType": dict(t.CLASS_TO_DATATYPE),
+        "classNameMap": dict(c["CLASS_NAME_MAP"]),
+        "collectionTypes": sorted(c["COLLECTION_TYPES"]),
+        "skipTypes": sorted(c["SKIP_TYPES"]),
+        "propertyRelations": _normalize_relations(c["PROPERTY_RELATIONS"]),
+        "attributeRegistrations": dict(c["ATTRIBUTE_REGISTRATIONS"]),
+        "fieldDataGetters": dict(c["FIELD_DATA_GETTERS"]),
+        "polydataArrays": _polydata_arrays(c["POLYDATA_ARRAYS"]),
+        "skipProperties": sorted(c["SKIP_PROPERTIES"]),
+        "renderWindowSkipProperties": sorted(c["RENDERWINDOW_SKIP_PROPERTIES"]),
+        "rendererSkipProperties": sorted(c["RENDERER_SKIP_PROPERTIES"]),
+        "lookupTableSkipProperties": sorted(c["LOOKUPTABLE_SKIP_PROPERTIES"]),
+        "mapperSkipProperties": sorted(c["MAPPER_SKIP_PROPERTIES"]),
+        "propertySkipProperties": sorted(c["PROPERTY_SKIP_PROPERTIES"]),
+        "cameraProperties": sorted(c["CAMERA_PROPERTIES"]),
+        "vtkDataTypeMap": {str(k): v for k, v in c["VTK_DATATYPE_MAP"].items()},
+        "vtkLightTypeMap": {str(k): v for k, v in c["VTK_LIGHT_TYPE_MAP"].items()},
+        "classToDataType": dict(c["CLASS_TO_DATATYPE"]),
     }
 
 

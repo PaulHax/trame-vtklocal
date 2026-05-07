@@ -29,7 +29,6 @@ from tests.push_oracle.harness import take_shadow_snapshot  # noqa: E402
 from tests.push_oracle.scenes import OracleScene, SCENE_POPULATORS  # noqa: E402
 from tests.push_oracle.steps import known_scenes, lookup_step  # noqa: E402
 from tests.push_oracle_e2e.app import (  # noqa: E402
-    PAGE_SETUP_PATH,
     SHARED_INIT_JS,
     ProtocolPublishWrapper,
     _clear_render_window,
@@ -184,6 +183,11 @@ class TwoViewOracleApp:
         for client_id in list(push_sync._view_clients):
             push_sync.drop_client(client_id)
         push_sync._sequence += 1
+        # See ``app.OracleApp.reset`` — clear dirty-tracking residue from the
+        # clear+populate so the next client's first ``update()`` doesn't
+        # spuriously fall back.
+        push_sync._dirty_object_ids.clear()
+        push_sync._dirty_structure_pending = False
 
         return {
             "rw_id": int(widget._window_id),
@@ -204,6 +208,9 @@ class TwoViewOracleApp:
 
         self._fallback_records[view].clear()
         step.mutate(self._current_oracle_scene[view])
+        for handle_name, array_path, start, count in step.mark_modified:
+            handle = self._current_handles[view][handle_name]
+            push_sync.mark_modified(handle, array_path, start, count)
         action = publish or step.publish
         if action == "update":
             push_sync.update(extra=extra or step.extra)

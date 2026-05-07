@@ -361,6 +361,12 @@ class OracleApp:
         # higher seq than anything an existing client could have observed.
         # request_resync would do this AND publish; we skip the publish.
         push_sync._sequence += 1
+        # Clear dirty-tracking state queued by the clear+populate VTK
+        # mutations above. Without this, the next client's first ``update()``
+        # consumes a pending structural-dirty flag and falls back to a full
+        # publish — masking real on-patch-path regressions in the matrix.
+        push_sync._dirty_object_ids.clear()
+        push_sync._dirty_structure_pending = False
 
         return {
             "rw_id": int(self.view_widget._window_id),
@@ -377,6 +383,13 @@ class OracleApp:
 
         self._fallback_records.clear()
         step.mutate(self.current_oracle_scene)
+
+        # Steps that exercise the partial-array path declare their
+        # ``mark_modified`` calls on the step; the test app dispatches them
+        # before flush() so the mutator stays a pure VTK-object mutation.
+        for handle_name, array_path, start, count in step.mark_modified:
+            handle = self.current_handles[handle_name]
+            push_sync.mark_modified(handle, array_path, start, count)
 
         action = publish or step.publish
         if action == "update":

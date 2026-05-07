@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.push_oracle.steps import lookup_step
 from tests.push_oracle_e2e.runner import JsOracle
 
 
@@ -25,7 +26,21 @@ pytestmark = pytest.mark.js_oracle
 def _walk(oracle: JsOracle, scene: str, steps: list[tuple[str, str]]):
     oracle.reset(scene)
     for step_name, publish in steps:
-        oracle.run_step(step_name, publish=publish)
+        step = lookup_step(scene, step_name)
+        result = oracle.run_step(step_name, publish=publish)
+        # Asserting the publish path stays on patch / arrayPartial catches
+        # regressions that silently fall back to full sync every step —
+        # those would still pass the comparator (final state converges) but
+        # would tank wire performance.
+        records = result.get("fallback_records") or []
+        if step.expected_fallback:
+            assert records, (
+                f"expected full fallback for {scene}/{step_name}, got none"
+            )
+        else:
+            assert not records, (
+                f"unexpected full fallback for {scene}/{step_name}: {records}"
+            )
         oracle.compare(step_name=step_name)
 
 
@@ -48,6 +63,14 @@ STRUCTURAL_FIXTURES = [
 
 POLYLINE_FIXTURES = [
     ("polyline", [("move-points", "update")]),
+]
+
+# Exercises the ``trame.vtk.array.partial`` wire path via mark_modified +
+# flush. The Python oracle covers this in
+# ``test_oracle_partial_points_flush_is_self_consistent``; we reprise it
+# end-to-end so the e2e oracle catches partial-array regressions.
+PARTIAL_FLUSH_FIXTURES = [
+    ("polyline", [("partial-move-points", "flush")]),
 ]
 
 
@@ -84,3 +107,13 @@ def test_structural_matrix_shared(oracle_shared: JsOracle, scene, steps):
 @pytest.mark.parametrize("scene,steps", POLYLINE_FIXTURES)
 def test_polyline_matrix_local(oracle_local: JsOracle, scene, steps):
     _walk(oracle_local, scene, steps)
+
+
+@pytest.mark.parametrize("scene,steps", PARTIAL_FLUSH_FIXTURES)
+def test_partial_flush_matrix_local(oracle_local: JsOracle, scene, steps):
+    _walk(oracle_local, scene, steps)
+
+
+@pytest.mark.parametrize("scene,steps", PARTIAL_FLUSH_FIXTURES)
+def test_partial_flush_matrix_shared(oracle_shared: JsOracle, scene, steps):
+    _walk(oracle_shared, scene, steps)

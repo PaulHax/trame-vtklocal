@@ -14,6 +14,7 @@ import vtkPoints from "@kitware/vtk.js/Common/Core/Points";
 import vtkCellArray from "@kitware/vtk.js/Common/Core/CellArray";
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 import { base64ToArrayBuffer, createTypedArray } from "./base64";
+import { walkArrayDescriptors } from "./walk";
 import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/BehaviorManager";
 
 // ----------------------------------------------------------------------------
@@ -21,9 +22,7 @@ import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRender
 // ----------------------------------------------------------------------------
 
 const WRAPPED_ID_RE = /instance:\${([^}]+)}/;
-const WRAP_ID = (id) => `instance:$\{${id}}`;
 const SKIPPED_INSTANCE_IDS = new Set();
-const EXCLUDE_INSTANCE_MAP = {};
 
 const DATA_ARRAY_MAPPER = {
   vtkPoints,
@@ -116,7 +115,7 @@ function createNewArrayHandler(instance, arrayMetadata, arraysToBind) {
     const vtkClass = arrayMetadata.vtkClass
       ? arrayMetadata.vtkClass
       : "vtkDataArray";
-    // Filter out metadata fields that shouldn't be passed to the constructor
+    // _-prefixed fields are stripped by the constructor; we collect the rest.
     /* eslint-disable no-unused-vars */
     const {
       content: _content,
@@ -175,19 +174,6 @@ function isInlineArrayMetadata(value) {
   );
 }
 
-function isArrayMetadata(value) {
-  return (
-    value &&
-    typeof value === "object" &&
-    value.hash !== undefined &&
-    value.dataType !== undefined
-  );
-}
-
-function isBinaryLike(value) {
-  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
-}
-
 function inlineContentToTypedArray(arrayMetadata) {
   const content = arrayMetadata.content;
   let buffer;
@@ -238,26 +224,13 @@ export function extractInlineArrays(state, pushCache, options = {}) {
   }
 
   const { stripInlineData = true } = options;
-  const extractFromValue = (value) => {
-    if (!value || typeof value !== "object" || isBinaryLike(value)) {
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach((item) => extractFromValue(item));
-      return;
-    }
-    if (isInlineArrayMetadata(value)) {
-      storeInlineArray(value, pushCache, { stripInlineData });
-      return;
-    }
-    if (isArrayMetadata(value)) {
-      return;
-    }
-
-    Object.values(value).forEach((child) => extractFromValue(child));
-  };
-
-  extractFromValue(state);
+  walkArrayDescriptors(state, {
+    onDescriptor(descriptor) {
+      if (isInlineArrayMetadata(descriptor)) {
+        storeInlineArray(descriptor, pushCache, { stripInlineData });
+      }
+    },
+  });
   return pushCache;
 }
 
@@ -303,14 +276,6 @@ export function genericUpdaterSync(
   if (state.dependencies) {
     state.dependencies.forEach((childState) => {
       const { id, type } = childState;
-
-      if (EXCLUDE_INSTANCE_MAP[type]) {
-        const { key, value } = EXCLUDE_INSTANCE_MAP[type];
-        if (!key || childState.properties[key] === value) {
-          SKIPPED_INSTANCE_IDS.add(WRAP_ID(id));
-          return;
-        }
-      }
 
       let childInstance = getOrPurgeInstance(context, id);
       if (!childInstance) {
@@ -444,35 +409,30 @@ export function cleanupRemovedRendererDependencies(state, context) {
  */
 export function createDataSetUpdateSync(piecesToFetch = []) {
   return (instance, state, context, objectManager, pushCache) => {
-    // Make sure we provide container for std arrays
     const localProperties = { ...state.properties };
-    if (!state.arrays) {
-      state.arrays = {};
-    }
+    const localArrays = { ...(state.arrays || {}) };
 
-    // Array members
-    // => convert old format to generic state.arrays
     for (let i = 0; i < piecesToFetch.length; i++) {
       const key = piecesToFetch[i];
       if (state.properties[key]) {
-        const arrayMeta = state.properties[key];
-        arrayMeta.registration = `set${capitalize(key)}`;
+        const arrayMeta = {
+          ...state.properties[key],
+          registration: `set${capitalize(key)}`,
+        };
         const arrayKey = getArrayKey(arrayMeta);
-        state.arrays[arrayKey] = arrayMeta;
+        localArrays[arrayKey] = arrayMeta;
         delete localProperties[key];
       }
     }
 
-    // Extract dataset fields
     const fieldsArrays = state.properties.fields || [];
     for (let i = 0; i < fieldsArrays.length; i++) {
       const arrayMeta = fieldsArrays[i];
       const arrayKey = getArrayKey(arrayMeta);
-      state.arrays[arrayKey] = arrayMeta;
+      localArrays[arrayKey] = arrayMeta;
     }
     delete localProperties.fields;
 
-    // Reset any pre-existing fields array
     const arrayToKeep = {
       pointData: new Set(),
       cellData: new Set(),
@@ -484,9 +444,11 @@ export function createDataSetUpdateSync(piecesToFetch = []) {
     removeUnavailableArrays(instance.getPointData(), arrayToKeep.pointData);
     removeUnavailableArrays(instance.getCellData(), arrayToKeep.cellData);
 
-    // Generic handling - use sync version
-    const cleanState = { ...state };
-    cleanState.properties = localProperties;
+    const cleanState = {
+      ...state,
+      properties: localProperties,
+      arrays: localArrays,
+    };
     genericUpdaterSync(
       instance,
       cleanState,

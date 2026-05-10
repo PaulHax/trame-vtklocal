@@ -3,6 +3,8 @@
  * Used to verify that state has all required inline array data.
  */
 
+import { walkArrayDescriptors } from "./walk";
+
 /**
  * Check if every array referenced by state has either an inline `content`
  * payload or a previously cached entry in `pushCache`.
@@ -13,60 +15,31 @@
  */
 export function allArraysHaveInlineData(state, pushCache) {
   const inlineHashes = new Set();
-
-  function isArrayDescriptor(value) {
-    return (
-      value &&
-      typeof value === "object" &&
-      value.hash !== undefined &&
-      value.dataType !== undefined
-    );
-  }
-
-  function isBinaryLike(value) {
-    return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
-  }
-
-  function visitArrayDescriptors(value, callback) {
-    if (!value || typeof value !== "object" || isBinaryLike(value)) {
-      return true;
-    }
-
-    if (Array.isArray(value)) {
-      return value.every((item) => visitArrayDescriptors(item, callback));
-    }
-
-    if (isArrayDescriptor(value)) {
-      return callback(value) !== false;
-    }
-
-    return Object.values(value).every((child) =>
-      visitArrayDescriptors(child, callback),
-    );
-  }
-
-  visitArrayDescriptors(state, (descriptor) => {
-    if (descriptor.content != null) {
-      inlineHashes.add(descriptor.hash);
-    }
-    return true;
+  walkArrayDescriptors(state, {
+    onDescriptor(descriptor) {
+      if (descriptor.content != null) {
+        inlineHashes.add(descriptor.hash);
+      }
+    },
   });
 
-  return visitArrayDescriptors(state, (descriptor) => {
-    if (
-      descriptor.content == null &&
-      !inlineHashes.has(descriptor.hash) &&
-      !pushCache?.has(descriptor.hash)
-    ) {
-      console.warn(
-        "[validation] Missing array:",
-        descriptor.hash,
-        "name:",
-        descriptor.name,
-      );
-      return false;
-    }
-    return true;
+  return walkArrayDescriptors(state, {
+    onDescriptor(descriptor) {
+      if (
+        descriptor.content == null &&
+        !inlineHashes.has(descriptor.hash) &&
+        !pushCache?.has(descriptor.hash)
+      ) {
+        console.warn(
+          "[validation] Missing array:",
+          descriptor.hash,
+          "name:",
+          descriptor.name,
+        );
+        return false;
+      }
+      return true;
+    },
   });
 }
 

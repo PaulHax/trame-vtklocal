@@ -1,70 +1,23 @@
+import { TYPED_ARRAYS } from "@kitware/vtk.js/macros";
 import {
   extractInlineArrays,
   genericUpdaterSync,
   getSyncUpdater,
 } from "./sync/syncUpdaters";
-
-const TYPED_ARRAY_CONSTRUCTORS = {
-  Int8Array,
-  Uint8Array,
-  Int16Array,
-  Uint16Array,
-  Int32Array,
-  Uint32Array,
-  Float32Array,
-  Float64Array,
-  BigInt64Array,
-  BigUint64Array,
-};
+import {
+  isArrayDescriptor,
+  isBinaryLike,
+  walkArrayDescriptors,
+} from "./sync/walk";
 
 const PUSH_PROTOCOL_VERSION = 1;
 const SUPPORTED_MESSAGE_KINDS = new Set(["full", "patch", "arrayPartial"]);
 const SUPPORTED_PATCH_OPS = new Set(["updateObject", "setProperties"]);
 
-function isArrayDescriptor(value) {
-  return (
-    value &&
-    typeof value === "object" &&
-    value.hash !== undefined &&
-    value.dataType !== undefined
-  );
-}
-
-function isBinaryLike(value) {
-  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
-}
-
-function collectStateHashes(state, into = new Set()) {
-  function visit(value) {
-    if (!value || typeof value !== "object" || isBinaryLike(value)) {
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((item) => visit(item));
-      return;
-    }
-
-    if (isArrayDescriptor(value)) {
-      into.add(value.hash);
-      return;
-    }
-
-    Object.values(value).forEach((child) => visit(child));
-  }
-
-  visit(state);
-  return into;
-}
-
-function pruneCacheToHashes(pushCache, live) {
-  // The server's known-hash ledger is based on delivered payloads, not on the
-  // client's current scene. Do not evict full-state payloads here unless the
-  // server also observes that eviction. Partial updates still delete superseded
-  // hashes explicitly via bindPartialResultToCache().
-  void pushCache;
-  void live;
-}
+// Server only emits "points" partials today; expand if/when polys/lines/etc. land.
+const PARTIAL_ARRAY_GETTERS = {
+  points: "getPoints",
+};
 
 function getPartialArrayTarget(update, synchronizerContext) {
   const { instanceId, arrayPath } = update;
@@ -74,18 +27,8 @@ function getPartialArrayTarget(update, synchronizerContext) {
     return { instance: null, target: null, values: null };
   }
 
-  let target = instance;
-  if (arrayPath === "points" && instance.getPoints) {
-    target = instance.getPoints();
-  } else if (arrayPath === "polys" && instance.getPolys) {
-    target = instance.getPolys();
-  } else if (arrayPath === "lines" && instance.getLines) {
-    target = instance.getLines();
-  } else if (arrayPath === "verts" && instance.getVerts) {
-    target = instance.getVerts();
-  } else if (arrayPath === "strips" && instance.getStrips) {
-    target = instance.getStrips();
-  }
+  const getter = PARTIAL_ARRAY_GETTERS[arrayPath];
+  const target = getter && instance[getter] ? instance[getter]() : instance;
 
   const values = target?.getData?.() || null;
   return { instance, target, values };
@@ -219,35 +162,16 @@ export function getPartialUpdates(message) {
 }
 
 function collectStateArrayPathHashes(state, into = new Map()) {
-  function visit(value) {
-    if (!value || typeof value !== "object" || isBinaryLike(value)) {
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((item) => visit(item));
-      return;
-    }
-
-    const instanceId = value.id;
-    const properties = value.properties;
-    if (instanceId !== undefined && properties) {
-      ["points"].forEach((arrayPath) => {
-        const descriptor = properties[arrayPath];
-        if (isArrayDescriptor(descriptor)) {
-          into.set(arrayPathKey(instanceId, arrayPath), descriptor.hash);
-        }
-      });
-    }
-
-    if (isArrayDescriptor(value)) {
-      return;
-    }
-
-    Object.values(value).forEach((child) => visit(child));
-  }
-
-  visit(state);
+  walkArrayDescriptors(state, {
+    onObject(value) {
+      const { id, properties } = value;
+      if (id === undefined || !properties) return;
+      const points = properties.points;
+      if (isArrayDescriptor(points)) {
+        into.set(arrayPathKey(id, "points"), points.hash);
+      }
+    },
+  });
   return into;
 }
 
@@ -296,7 +220,7 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
     return false;
   }
 
-  const TypedArrayCtor = TYPED_ARRAY_CONSTRUCTORS[dataType] || Float32Array;
+  const TypedArrayCtor = TYPED_ARRAYS[dataType] || Float32Array;
   let newData;
   if (data instanceof ArrayBuffer) {
     newData = new TypedArrayCtor(data);
@@ -469,21 +393,6 @@ export function createPushSync(
 
   const session = client.getConnection().getSession();
 
-  function collectQueuedFullStateHashes(into = new Set()) {
-    messageQueue.forEach(({ payload, kind }) => {
-      if (kind === "full") {
-        collectStateHashes(payload, into);
-      }
-    });
-    return into;
-  }
-
-  function retainCacheForAppliedStateAndQueue(state) {
-    const live = collectStateHashes(state);
-    collectQueuedFullStateHashes(live);
-    pruneCacheToHashes(pushCache, live);
-  }
-
   function markStatesApplied(states) {
     if (!states?.length) {
       return;
@@ -495,10 +404,9 @@ export function createPushSync(
       if (state?.seq !== undefined) {
         clientLastSeq = state.seq;
       }
-      arrayPathHashes.clear();
-      collectStateArrayPathHashes(state, arrayPathHashes);
     });
-    retainCacheForAppliedStateAndQueue(states[states.length - 1]);
+    arrayPathHashes.clear();
+    collectStateArrayPathHashes(states[states.length - 1], arrayPathHashes);
   }
 
   function clearGapResyncTimer() {
@@ -543,34 +451,34 @@ export function createPushSync(
     );
   }
 
-  function enqueueMessage(payload, { requestOnInvalidEnvelope = true } = {}) {
+  function validateEnvelope(payload) {
     const kind = getMessageKind(payload);
     if (!hasSupportedProtocolVersion(payload)) {
       warnUnsupportedProtocolVersion(payload, kind);
-      if (requestOnInvalidEnvelope) {
-        requestResync("message-version");
-      }
-      return false;
+      return { ok: false, reason: "message-version" };
     }
     if (!hasSupportedMessageKind(payload)) {
       warnUnsupportedMessageKind(payload);
-      if (requestOnInvalidEnvelope) {
-        requestResync("message-kind");
-      }
-      return false;
+      return { ok: false, reason: "message-kind" };
     }
     if (!payloadMatchesRenderWindow(payload)) {
       warnMismatchedRenderWindow(payload);
+      return { ok: false, reason: "message-rw-id" };
+    }
+    return { ok: true, kind };
+  }
+
+  function enqueueMessage(payload, { requestOnInvalidEnvelope = true } = {}) {
+    const result = validateEnvelope(payload);
+    if (!result.ok) {
       if (requestOnInvalidEnvelope) {
-        requestResync("message-rw-id");
+        requestResync(result.reason);
       }
       return false;
     }
+    const { kind } = result;
     const wasEmpty = messageQueue.length === 0;
 
-    // The server is authoritative: every hash referenced by `state` is either
-    // already in the push cache or inlined in this payload. Capture inline
-    // payloads now so consumers see a fully-populated cache.
     if (kind === "full") {
       extractInlineArrays(payload, pushCache, { stripInlineData: true });
     }
@@ -648,6 +556,12 @@ export function createPushSync(
     },
   );
 
+  function resetBroadcastsAndAccept() {
+    bufferBroadcasts = false;
+    broadcastBuffer.length = 0;
+    acceptBroadcasts = true;
+  }
+
   async function requestResync(reason = "client-request") {
     if (reason !== "initial") {
       console.warn(`[pushSync] Requesting full resync: ${reason}`);
@@ -668,25 +582,8 @@ export function createPushSync(
       if (version !== resyncVersion) {
         return false;
       }
-      if (!hasSupportedProtocolVersion(state)) {
-        warnUnsupportedProtocolVersion(state, "full");
-        bufferBroadcasts = false;
-        broadcastBuffer.length = 0;
-        acceptBroadcasts = true;
-        return false;
-      }
-      if (!hasSupportedMessageKind(state)) {
-        warnUnsupportedMessageKind(state);
-        bufferBroadcasts = false;
-        broadcastBuffer.length = 0;
-        acceptBroadcasts = true;
-        return false;
-      }
-      if (!payloadMatchesRenderWindow(state)) {
-        warnMismatchedRenderWindow(state);
-        bufferBroadcasts = false;
-        broadcastBuffer.length = 0;
-        acceptBroadcasts = true;
+      if (!validateEnvelope(state).ok) {
+        resetBroadcastsAndAccept();
         return false;
       }
       const buffered = broadcastBuffer.splice(0);
@@ -701,10 +598,8 @@ export function createPushSync(
       if (version !== resyncVersion) {
         return false;
       }
-      bufferBroadcasts = false;
-      broadcastBuffer.length = 0;
       console.warn("[pushSync] Failed to request resync", error);
-      acceptBroadcasts = true;
+      resetBroadcastsAndAccept();
       return false;
     }
   }
@@ -829,7 +724,6 @@ export function createPushSync(
     if (kind === "full") {
       arrayPathHashes.clear();
       collectStateArrayPathHashes(payload, arrayPathHashes);
-      retainCacheForAppliedStateAndQueue(payload);
       return;
     }
 
@@ -974,11 +868,19 @@ export function createPushSync(
     return messageQueue.length;
   }
 
+  function getDiagnostics() {
+    return {
+      epoch: clientEpoch,
+      lastSeq: clientLastSeq,
+    };
+  }
+
   return {
     applyQueuedState,
     cleanup,
     drainReadyPartialUpdates,
     drainReadyStates,
+    getDiagnostics,
     getQueueLength,
     markMessageApplied,
     markMessageFailed,

@@ -8,11 +8,11 @@
  * Usage:
  *   import { withSyncCapability } from "./sync/syncCapability";
  *
- *   const syncMethods = withSyncCapability(
+ *   const synchronizePreparedStateSync = withSyncCapability(
  *     renderWindow, synchronizerContext, objectManager, pushCache,
  *   );
- *   syncMethods.synchronizePreparedStateSync(state) - synchronous application
- *                                                    for push-queue-prepared states
+ *   synchronizePreparedStateSync(state) - synchronous application for
+ *                                         push-queue-prepared states.
  */
 
 import { allArraysHaveInlineData } from "./validation";
@@ -33,13 +33,13 @@ export {
 } from "./syncUpdaters";
 
 /**
- * Add synchronous sync capability to a SynchronizableRenderWindow.
+ * Bind a SynchronizableRenderWindow to a synchronous-apply function.
  *
  * @param {Object} renderWindow         a vtkSynchronizableRenderWindow instance
  * @param {Object} synchronizerContext  the synchronizer context
  * @param {Object} objectManager        vtkObjectManager for building instances
  * @param {Map}    pushCache            Map<hash, TypedArray> owned by the caller
- * @returns {Object} sync API
+ * @returns {Function} synchronizePreparedStateSync(state, skipRender?) -> boolean
  */
 export function withSyncCapability(
   renderWindow,
@@ -99,14 +99,10 @@ export function withSyncCapability(
    * A real failure to apply MUST throw — the ordered push queue treats a false
    * return as "consume the envelope and advance the per-client cursor."
    */
-  function synchronizePreparedStateSync(state, skipRender = false) {
+  return function synchronizePreparedStateSync(state, skipRender = false) {
     // Push states are server-authoritative; array hashes/counts can change
     // even when the root render-window mtime is unchanged.
     return applyStateSync(state, skipRender, { force: true });
-  }
-
-  return {
-    synchronizePreparedStateSync,
   };
 }
 

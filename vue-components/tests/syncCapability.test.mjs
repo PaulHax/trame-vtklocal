@@ -41,7 +41,7 @@ test("prepared push states apply even when root mtime is unchanged", async () =>
     incrementMTime() {},
   };
 
-  const sync = withSyncCapability(renderWindow, context, {}, new Map());
+  const synchronize = withSyncCapability(renderWindow, context, {}, new Map());
 
   const firstState = {
     id: "rw",
@@ -54,8 +54,8 @@ test("prepared push states apply even when root mtime is unchanged", async () =>
     properties: { marker: "second" },
   };
 
-  assert.equal(sync.synchronizePreparedStateSync(firstState, true), true);
-  assert.equal(sync.synchronizePreparedStateSync(secondState, true), true);
+  assert.equal(synchronize(firstState, true), true);
+  assert.equal(synchronize(secondState, true), true);
   assert.deepEqual(renderWindow.propertySets, [
     { marker: "first" },
     { marker: "second" },

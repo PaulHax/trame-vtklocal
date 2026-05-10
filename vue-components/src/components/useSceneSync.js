@@ -209,9 +209,7 @@ export function useSceneSync(
         }
 
         try {
-          if (
-            syncCapability.synchronizePreparedStateSync(message.payload, true)
-          ) {
+          if (syncCapability(message.payload, true)) {
             synced = true;
           }
         } catch (error) {

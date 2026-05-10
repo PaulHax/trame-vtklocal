@@ -93,6 +93,11 @@ export function withSyncCapability(
    * Synchronous state application for states already prepared by the push queue.
    * The caller must ensure every referenced array is in the push cache before
    * calling this.
+   *
+   * Contract: returns true when the state was applied or the renderer mutated;
+   * returns false when the state was a no-op (e.g. stale mtime, nothing to do).
+   * A real failure to apply MUST throw — the ordered push queue treats a false
+   * return as "consume the envelope and advance the per-client cursor."
    */
   function synchronizePreparedStateSync(state, skipRender = false) {
     // Push states are server-authoritative; array hashes/counts can change

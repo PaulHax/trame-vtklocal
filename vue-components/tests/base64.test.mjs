@@ -114,19 +114,33 @@ test("applyPartialArrayUpdate applies an unaligned Float32 view", async () => {
   assert.deepEqual(Array.from(targetValues), [1.5, 2.25, 3.125]);
 });
 
-test("extractInlineArrays caches an unaligned Float32 view as a Float32Array", async () => {
+test("viewAsTypedArray with copy:true does not alias an aligned ArrayBuffer view", async () => {
+  const { viewAsTypedArray } = await loadModule(
+    "/src/components/sync/base64.js",
+  );
+
+  const view = alignedFloat32View([1.5, 2.25, 3.125]);
+  const result = viewAsTypedArray(view, "Float32Array", { copy: true });
+
+  assert.notEqual(result.buffer, view.buffer);
+  assert.deepEqual(Array.from(result), [1.5, 2.25, 3.125]);
+});
+
+test("extractInlineArrays caches inline content without aliasing the receive buffer", async () => {
   const { extractInlineArrays } = await loadModule(
     "/src/components/sync/syncUpdaters.js",
   );
 
-  const unaligned = unalignedFloat32View([4.5, 5.25, 6.125]);
+  // Build the inline content as an aligned view so the only thing keeping
+  // it from aliasing is the inline path explicitly requesting copy:true.
+  const aligned = alignedFloat32View([4.5, 5.25, 6.125]);
   const state = {
     id: "rw",
     properties: {
       payload: {
         hash: "h1",
         dataType: "Float32Array",
-        content: unaligned,
+        content: aligned,
       },
     },
   };
@@ -138,4 +152,6 @@ test("extractInlineArrays caches an unaligned Float32 view as a Float32Array", a
   assert.ok(cached, "cache should contain hash h1");
   assert.equal(cached.constructor.name, "Float32Array");
   assert.deepEqual(Array.from(cached), [4.5, 5.25, 6.125]);
+  // Cache must not alias the msgpack receive buffer.
+  assert.notEqual(cached.buffer, aligned.buffer);
 });

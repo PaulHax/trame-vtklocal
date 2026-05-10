@@ -49,8 +49,6 @@ export function useSceneSync(
   let disposed = false;
   let partialAppliedCallback = null;
   let messageAppliedCallback = null;
-  let lastAppliedSeq = 0;
-  let lastAppliedEpoch = null;
   let lastAppliedOp = null;
   let syncedRootId = null;
 
@@ -74,13 +72,6 @@ export function useSceneSync(
 
   function noteMessageApplied(message) {
     if (!message) return;
-    const payload = message.payload;
-    if (payload?.epoch !== undefined) {
-      lastAppliedEpoch = payload.epoch;
-    }
-    if (payload?.seq !== undefined) {
-      lastAppliedSeq = payload.seq;
-    }
     recordLastAppliedOp(message);
     sync?.markMessageApplied?.(message);
     messageAppliedCallback?.(message);
@@ -422,8 +413,6 @@ export function useSceneSync(
     pushCache = null;
     partialAppliedCallback = null;
     messageAppliedCallback = null;
-    lastAppliedSeq = 0;
-    lastAppliedEpoch = null;
     lastAppliedOp = null;
     syncedRootId = null;
     managedSyncContext?.cleanup?.();
@@ -485,11 +474,10 @@ export function useSceneSync(
   }
 
   function getSyncDiagnostics() {
-    // Diagnostics / oracle support (not general app integration). Read-only;
-    // safe to call from production code (debug panels, dev tools).
+    const { epoch = null, lastSeq = 0 } = sync?.getDiagnostics?.() ?? {};
     return {
-      lastSeq: lastAppliedSeq,
-      lastEpoch: lastAppliedEpoch,
+      lastSeq,
+      lastEpoch: epoch,
       queueLength: getQueueLength(),
       lastAppliedOp,
       syncedRootId,
@@ -497,9 +485,6 @@ export function useSceneSync(
   }
 
   function getAppliedSceneState(rwId) {
-    // Diagnostics / oracle support: walks live ``synchronizerContext`` and
-    // returns a nested-tree dump in the same shape the Python translator
-    // emits server-side. Read-only.
     const id = rwId !== undefined ? String(rwId) : syncedRootId;
     if (!id || !managedSyncContext?.synchronizerContext) return null;
     const rootInstance = getRenderWindow?.();

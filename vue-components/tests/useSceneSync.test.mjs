@@ -49,13 +49,9 @@ test("useSceneSync applies immediate partial updates from pushSync", async () =>
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync() {
-          return true;
-        },
         synchronizePreparedStateSync() {
           return true;
         },
-        updateGarbageCollectorThreshold() {},
       }),
       createPushSync(
         _client,
@@ -140,13 +136,9 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync() {
-          return true;
-        },
         synchronizePreparedStateSync() {
           return true;
         },
-        updateGarbageCollectorThreshold() {},
       }),
       createPushSync(
         _client,
@@ -236,15 +228,9 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync() {
-          throw new Error(
-            "Queued push states should use synchronizePreparedStateSync",
-          );
-        },
         synchronizePreparedStateSync() {
           return synchronizeResult;
         },
-        updateGarbageCollectorThreshold() {},
       }),
       createPushSync(
         _client,
@@ -433,23 +419,17 @@ test("useSceneSync keeps partial updates buffered until the full-state queue dra
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync() {
-          throw new Error(
-            "Queued push states should use synchronizePreparedStateSync",
-          );
-        },
         synchronizePreparedStateSync(state) {
           appliedStates.push(state);
           return true;
         },
-        updateGarbageCollectorThreshold() {},
       }),
       createPushSync() {
         return {
           cleanup() {},
           requestResync() {},
           getQueueLength() {
-            return queuedStates.length;
+            return queuedStates.length + bufferedPartialUpdates.length;
           },
           drainReadyStates() {
             const readyCount = Math.max(
@@ -551,13 +531,9 @@ test("useSceneSync applies ordered property patches and emits patch extras", asy
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync() {
-          throw new Error("Patch messages should not full-sync");
-        },
         synchronizePreparedStateSync() {
           throw new Error("Patch messages should not full-sync");
         },
-        updateGarbageCollectorThreshold() {},
       }),
       createPushSync() {
         return {
@@ -641,15 +617,9 @@ test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra
         cleanup() {},
       }),
       withSyncCapability: () => ({
-        synchronizeSync() {
-          throw new Error(
-            "Queued push states should use synchronizePreparedStateSync",
-          );
-        },
         synchronizePreparedStateSync() {
           return true;
         },
-        updateGarbageCollectorThreshold() {},
       }),
       createPushSync() {
         return {

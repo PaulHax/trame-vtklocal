@@ -101,26 +101,32 @@ export function cleanupSyncContext(contextName) {
   vtkSynchronizableRenderWindow.clearSynchronizerContext(contextName);
 }
 
+const CAMERA_FIELDS = [
+  { name: "position", getter: "getPosition", setter: "setPosition", spread: true },
+  { name: "focalPoint", getter: "getFocalPoint", setter: "setFocalPoint", spread: true },
+  { name: "viewUp", getter: "getViewUp", setter: "setViewUp", spread: true },
+  { name: "viewAngle", getter: "getViewAngle", setter: "setViewAngle", spread: false },
+  { name: "parallelProjection", getter: "getParallelProjection", setter: "setParallelProjection", spread: false },
+  { name: "parallelScale", getter: "getParallelScale", setter: "setParallelScale", spread: false },
+  { name: "clippingRange", getter: "getClippingRange", setter: "setClippingRange", spread: true },
+];
+
 export function extractCameraParams(camera) {
-  return {
-    position: camera.getPosition(),
-    focalPoint: camera.getFocalPoint(),
-    viewUp: camera.getViewUp(),
-    viewAngle: camera.getViewAngle(),
-    parallelProjection: camera.getParallelProjection(),
-    parallelScale: camera.getParallelScale(),
-    clippingRange: camera.getClippingRange(),
-  };
+  const params = {};
+  for (const { name, getter } of CAMERA_FIELDS) {
+    params[name] = camera[getter]();
+  }
+  return params;
 }
 
 export function applyCameraParams(camera, params) {
-  if (params.position) camera.setPosition(...params.position);
-  if (params.focalPoint) camera.setFocalPoint(...params.focalPoint);
-  if (params.viewUp) camera.setViewUp(...params.viewUp);
-  if (params.viewAngle !== undefined) camera.setViewAngle(params.viewAngle);
-  if (params.parallelProjection !== undefined)
-    camera.setParallelProjection(params.parallelProjection);
-  if (params.parallelScale !== undefined)
-    camera.setParallelScale(params.parallelScale);
-  if (params.clippingRange) camera.setClippingRange(...params.clippingRange);
+  for (const { name, setter, spread } of CAMERA_FIELDS) {
+    const value = params[name];
+    if (value === undefined) continue;
+    if (spread) {
+      if (value) camera[setter](...value);
+    } else {
+      camera[setter](value);
+    }
+  }
 }

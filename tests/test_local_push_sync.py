@@ -717,6 +717,63 @@ def test_push_sync_partial_flush_consumes_matching_dirty_observer_state():
     assert server.protocol.messages == []
 
 
+def test_push_sync_pipeline_update_does_not_re_dirty_consumed_ids(monkeypatch):
+    """producer.Update() can fire ModifiedEvent on observed objects; that
+    must not re-add ids to _dirty_object_ids during the same update().
+    """
+    from vtkmodules.vtkRenderingCore import vtkPolyDataMapper
+
+    server = _FakeServer()
+    api, rw, _renderer, _actor, polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    polydata_id = str(api.vtk_object_manager.GetId(polydata))
+    push_sync._dirty_pipeline_updates.setdefault(polydata_id, {})["mapper"] = polydata
+
+    push_sync._dirty_object_ids.add(polydata_id)
+
+    points.SetPoint(0, 7.0, 8.0, 9.0)
+    points.Modified()
+    polydata.Modified()
+    push_sync.update()
+    server.protocol.messages.clear()
+
+    # A second update with no real changes must not republish anything;
+    # the first update's pipeline refresh would re-dirty without the guard.
+    push_sync.update()
+    assert server.protocol.messages == []
+
+
+def test_push_sync_reset_dirty_state_clears_all_fields():
+    """Both cleanup() and the _sync_dirty_observers early-return path must
+    clear every dirty-tracking field together."""
+    server = _FakeServer()
+    push_sync = PushSync(
+        server,
+        _make_points_state_getter(),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+    )
+
+    push_sync._dirty_object_ids.add("a")
+    push_sync._dirty_owner_ids["a"] = {"b"}
+    push_sync._dirty_pipeline_updates["a"] = {"mapper": object()}
+    push_sync._dirty_structural_ids.add("a")
+    push_sync._dirty_structure_pending = True
+
+    # Early-return path: object_manager None -> _reset_dirty_state.
+    push_sync._sync_dirty_observers({"ids": []})
+
+    assert push_sync._dirty_object_ids == set()
+    assert push_sync._dirty_owner_ids == {}
+    assert push_sync._dirty_pipeline_updates == {}
+    assert push_sync._dirty_structural_ids == set()
+    assert push_sync._dirty_structure_pending is False
+
+
 def test_push_sync_object_delta_falls_back_for_real_structural_change():
     from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
@@ -1016,6 +1073,61 @@ def test_push_sync_flush_rejects_unsupported_partial_paths_without_publishing():
 
     assert server.protocol.messages == []
     assert len(push_sync._pending_changes) == 1
+
+
+def test_push_sync_flush_promotes_all_clients_to_full_when_one_mismatches():
+    """Mixing partial publish + full fallback in one flush would call
+    retire_all() and wipe synthetic versions still referenced by clients
+    that received the partial. All clients must take the same fallback path.
+    """
+    server = _FakeServer()
+
+    def get_state(version_registry=None, _collection_tracker=None):
+        version = (version_registry or {}).get((1, 62, "points"))
+        points_hash = (
+            f"v:1:62:points:{version}" if version is not None else "initial-points"
+        )
+        return deepcopy(_state_with_points("62", points_hash))
+
+    push_sync = PushSync(
+        server,
+        get_state,
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+        api=_FakeApi(),
+    )
+
+    push_sync.client_resync("client-a")
+    push_sync.client_resync("client-b")
+    server.protocol.messages.clear()
+
+    # Push client-a's sequence forward so it matches the next flush's base_seq,
+    # but leave client-b at the original sequence.
+    push_sync._client_sequences["client-b"] = -1
+
+    push_sync.mark_modified(
+        "62", "points", start=0, data=b"", data_type="Float32Array"
+    )
+    push_sync.flush()
+
+    by_client = {client_id: payload for _topic, payload, client_id in server.protocol.messages}
+    assert set(by_client) == {"client-a", "client-b"}
+    # Both clients see full-state (delta) publishes — no arrayPartial emitted.
+    assert all(
+        topic == "trame.vtk.delta" for topic, _payload, _cid in server.protocol.messages
+    )
+
+    # Synthetic ledger must remain consistent with what each client received.
+    # Each client's stored state holds the points hash they were published.
+    state_a = push_sync._client_states["client-a"]
+    state_b = push_sync._client_states["client-b"]
+    hash_a = _find_points_array(state_a, "62")["hash"]
+    hash_b = _find_points_array(state_b, "62")["hash"]
+    # Both got non-synthetic hashes after retire_all + reconcile.
+    assert hash_a == "initial-points"
+    assert hash_b == "initial-points"
+
+    assert push_sync._pending_changes == []
 
 
 def test_push_sync_partial_flush_advances_synthetic_hash_ledger():

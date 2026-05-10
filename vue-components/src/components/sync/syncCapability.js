@@ -11,10 +11,8 @@
  *   const syncMethods = withSyncCapability(
  *     renderWindow, synchronizerContext, objectManager, pushCache,
  *   );
- *   syncMethods.synchronizeSync(state) - synchronous state application
  *   syncMethods.synchronizePreparedStateSync(state) - synchronous application
  *                                                    for push-queue-prepared states
- *   syncMethods.hasInlineData(state) - check if state has inline data
  */
 
 import { allArraysHaveInlineData } from "./validation";
@@ -22,7 +20,7 @@ import { extractInlineArrays, updateRenderWindowSync } from "./syncUpdaters";
 
 // Re-export components for direct access
 export { base64ToArrayBuffer, createTypedArray } from "./base64";
-export { allArraysHaveInlineData } from "./validation";
+export { allArraysHaveInlineData };
 export {
   genericUpdaterSync,
   updateRenderWindowSync,
@@ -92,21 +90,6 @@ export function withSyncCapability(
   }
 
   /**
-   * Synchronous state application - requires every referenced array to be
-   * inline in `state` or already present in the push cache.
-   */
-  function synchronizeSync(state, skipRender = false) {
-    if (!allArraysHaveInlineData(state, cache)) {
-      throw new Error(
-        'synchronizeSync requires all arrays to have inline "content" field or be previously cached. ' +
-          "The server must inline payloads for hashes the client has not yet received."
-      );
-    }
-
-    return applyStateSync(state, skipRender);
-  }
-
-  /**
    * Synchronous state application for states already prepared by the push queue.
    * The caller must ensure every referenced array is in the push cache before
    * calling this.
@@ -117,19 +100,8 @@ export function withSyncCapability(
     return applyStateSync(state, skipRender, { force: true });
   }
 
-  function hasInlineData(state) {
-    return allArraysHaveInlineData(state, cache);
-  }
-
-  // No-op kept for API compatibility while the GC threshold knob is unused
-  // in the push-only world (the cache is bounded by what the server inlines).
-  function updateGarbageCollectorThreshold() {}
-
   return {
-    synchronizeSync,
     synchronizePreparedStateSync,
-    hasInlineData,
-    updateGarbageCollectorThreshold,
   };
 }
 

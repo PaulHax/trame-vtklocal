@@ -113,6 +113,13 @@ def _inline_payload_bytes(state):
     )
 
 
+def _object_manager_iid(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _walk_descriptors(state):
     """Yield each array descriptor dict in a translated state tree."""
     if isinstance(state, list):
@@ -161,9 +168,8 @@ def _collect_partial_array_hashes(state):
                     continue
                 if "hash" not in descriptor or "dataType" not in descriptor:
                     continue
-                try:
-                    iid = int(instance_id)
-                except (TypeError, ValueError):
+                iid = _object_manager_iid(instance_id)
+                if iid is None:
                     continue
                 result[(iid, array_path)] = descriptor["hash"]
 
@@ -177,7 +183,6 @@ def _collect_partial_array_hashes(state):
 
 
 def _state_for_ledger(value):
-    """Deep-copy state with transport-only fields and inline bytes removed."""
     if isinstance(value, list):
         return [_state_for_ledger(item) for item in value]
     if not isinstance(value, dict):
@@ -251,6 +256,19 @@ def _object_patch_signature(obj):
     }
 
 
+def _iter_via_getters(obj, names):
+    """Yield each non-None result of calling obj.<name>() for each name."""
+    if obj is None:
+        return
+    for getter in names:
+        get = getattr(obj, getter, None)
+        if get is None:
+            continue
+        result = get()
+        if result is not None:
+            yield result
+
+
 def _iter_field_data_arrays(field_data):
     if field_data is None:
         return
@@ -266,13 +284,9 @@ def _iter_field_data_arrays(field_data):
         if array is not None:
             yield array
 
-    for getter in ("GetScalars", "GetTCoords", "GetNormals", "GetVectors"):
-        get_array = getattr(field_data, getter, None)
-        if get_array is None:
-            continue
-        array = get_array()
-        if array is not None:
-            yield array
+    yield from _iter_via_getters(
+        field_data, ("GetScalars", "GetTCoords", "GetNormals", "GetVectors")
+    )
 
 
 def _iter_cell_array_children(cell_array):
@@ -280,41 +294,28 @@ def _iter_cell_array_children(cell_array):
         return
 
     yield cell_array
-    for getter in ("GetData", "GetConnectivityArray", "GetOffsetsArray"):
-        get_child = getattr(cell_array, getter, None)
-        if get_child is None:
-            continue
-        child = get_child()
-        if child is not None:
-            yield child
+    yield from _iter_via_getters(
+        cell_array, ("GetData", "GetConnectivityArray", "GetOffsetsArray")
+    )
 
 
 def _iter_dataset_dirty_children(dataset):
     if dataset is None:
         return
 
-    get_points = getattr(dataset, "GetPoints", None)
-    if get_points is not None:
-        points = get_points()
-        if points is not None:
-            yield points
-            get_data = getattr(points, "GetData", None)
-            if get_data is not None:
-                data = get_data()
-                if data is not None:
-                    yield data
+    for points in _iter_via_getters(dataset, ("GetPoints",)):
+        yield points
+        yield from _iter_via_getters(points, ("GetData",))
 
-    for getter in ("GetVerts", "GetLines", "GetPolys", "GetStrips"):
-        get_cells = getattr(dataset, getter, None)
-        if get_cells is None:
-            continue
-        yield from _iter_cell_array_children(get_cells())
+    for cell_array in _iter_via_getters(
+        dataset, ("GetVerts", "GetLines", "GetPolys", "GetStrips")
+    ):
+        yield from _iter_cell_array_children(cell_array)
 
-    for getter in ("GetPointData", "GetCellData", "GetFieldData"):
-        get_field_data = getattr(dataset, getter, None)
-        if get_field_data is None:
-            continue
-        yield from _iter_field_data_arrays(get_field_data())
+    for field_data in _iter_via_getters(
+        dataset, ("GetPointData", "GetCellData", "GetFieldData")
+    ):
+        yield from _iter_field_data_arrays(field_data)
 
 
 def _numpy_array_from_vtk_data(data):
@@ -408,9 +409,8 @@ class PartialArrayLedger:
         self.clear()
 
     def retire_object(self, object_id):
-        try:
-            iid = int(object_id)
-        except (TypeError, ValueError):
+        iid = _object_manager_iid(object_id)
+        if iid is None:
             return
 
         for array_path in PARTIAL_ARRAY_PATHS:
@@ -529,9 +529,18 @@ class PushSync:
         self._dirty_structural_ids = set()
         self._dirty_structure_pending = False
         self._observed_objects = {}
+        self._disposed = False
+        self._consuming_dirty = False
 
         if api is not None:
             api.register_push_view(self._rw_id_int, self)
+
+    def _reset_dirty_state(self):
+        self._dirty_object_ids.clear()
+        self._dirty_owner_ids.clear()
+        self._dirty_pipeline_updates.clear()
+        self._dirty_structural_ids.clear()
+        self._dirty_structure_pending = False
 
     def cleanup(self):
         self._clear_dirty_observers()
@@ -547,11 +556,8 @@ class PushSync:
         self._client_states.clear()
         self._client_statuses.clear()
         self._object_class_names.clear()
-        self._dirty_object_ids.clear()
-        self._dirty_owner_ids.clear()
-        self._dirty_pipeline_updates.clear()
-        self._dirty_structural_ids.clear()
-        self._dirty_structure_pending = False
+        self._reset_dirty_state()
+        self._disposed = True
 
     def drop_client(self, client_id):
         self._view_clients.discard(client_id)
@@ -575,12 +581,13 @@ class PushSync:
         self._observed_objects.clear()
 
     def _mark_dirty(self, object_id):
-        dirty_object_ids = getattr(self, "_dirty_object_ids", None)
-        if dirty_object_ids is None:
+        # Observer can fire during interpreter teardown when self.__dict__ is
+        # already cleared; default-True _disposed makes that a silent no-op.
+        if getattr(self, "_disposed", True) or self._consuming_dirty:
             return
         object_id = str(object_id)
-        dirty_object_ids.add(object_id)
-        if object_id in getattr(self, "_dirty_structural_ids", set()):
+        self._dirty_object_ids.add(object_id)
+        if object_id in self._dirty_structural_ids:
             self._dirty_structure_pending = True
 
     def _make_dirty_callback(self, object_id):
@@ -610,9 +617,7 @@ class PushSync:
         object_manager = self._object_manager()
         if object_manager is None or status is None:
             self._clear_dirty_observers()
-            self._dirty_owner_ids.clear()
-            self._dirty_pipeline_updates.clear()
-            self._dirty_structural_ids.clear()
+            self._reset_dirty_state()
             return
 
         pending_dirty_ids = set(self._dirty_object_ids)
@@ -967,8 +972,14 @@ class PushSync:
             for object_id in (self._object_manager_id(value) for value in object_ids)
             if object_id is not None
         }
-        for object_id in sorted(manager_ids, key=int):
-            object_manager.UpdateStateFromObject(int(object_id))
+        # UpdateStateFromObject can fire ModifiedEvent on observed VTK objects;
+        # suppress those re-entrant marks so they don't dirty ids we just consumed.
+        self._consuming_dirty = True
+        try:
+            for object_id in sorted(manager_ids, key=int):
+                object_manager.UpdateStateFromObject(int(object_id))
+        finally:
+            self._consuming_dirty = False
 
     @staticmethod
     def _object_manager_id(value):
@@ -982,10 +993,18 @@ class PushSync:
         for dirty_id in dirty_ids:
             producers.update(self._dirty_pipeline_updates.get(str(dirty_id), {}))
 
-        for producer in producers.values():
-            update = getattr(producer, "Update", None)
-            if update is not None:
-                update()
+        if not producers:
+            return
+        # producer.Update() can fire ModifiedEvent on the producer or downstream,
+        # which would re-add ids we just cleared via _consume_dirty_tracking().
+        self._consuming_dirty = True
+        try:
+            for producer in producers.values():
+                update = getattr(producer, "Update", None)
+                if update is not None:
+                    update()
+        finally:
+            self._consuming_dirty = False
 
     def _snapshot_status(self):
         object_manager = self._object_manager()
@@ -1007,8 +1026,10 @@ class PushSync:
             if vtk_obj is not None and hasattr(vtk_obj, "GetMTime"):
                 mtimes[object_id] = vtk_obj.GetMTime()
             class_name = self._object_class_names.get(object_id)
-            if class_name is None:
-                class_name = self._get_state_class_name(vtk_id)
+            if class_name is None and vtk_obj is not None:
+                get_class_name = getattr(vtk_obj, "GetClassName", None)
+                if get_class_name is not None:
+                    class_name = get_class_name() or ""
                 if class_name:
                     self._object_class_names[object_id] = class_name
             if class_name:
@@ -1020,21 +1041,6 @@ class PushSync:
             "classes": classes,
             "hashes": set(object_manager.GetBlobHashes(ids)),
         }
-
-    def _get_state_class_name(self, object_id):
-        object_manager = self._object_manager()
-        if object_manager is None:
-            return ""
-        try:
-            state_json = object_manager.GetState(int(object_id))
-        except (TypeError, ValueError, RuntimeError):
-            return ""
-        if not state_json:
-            return ""
-        try:
-            return json.loads(state_json).get("ClassName", "")
-        except (TypeError, ValueError):
-            return ""
 
     @staticmethod
     def _is_ignored_delta_class(class_name):
@@ -1432,7 +1438,9 @@ class PushSync:
             state.setdefault("extra", {}).update(extra)
 
         self._partial_arrays.reconcile_state(state)
-        full_status = self._snapshot_status() or status
+        full_status = status
+        if self._can_build_object_delta():
+            full_status = self._snapshot_status() or status
         self._publish_client_state(
             client_id,
             state,
@@ -1736,25 +1744,12 @@ class PushSync:
 
         seq = self._next_sequence()
 
-        self._partial_arrays.retire_all()
-        # Translation is per-client because collection membership tracking is
-        # per-client. Revisit if many subscribers make that cost material.
         for sid in list(self._view_clients):
-            debug = _debug_push_enabled()
-            translate_start = time.perf_counter() if debug else None
-            state = self._get_client_state(sid, reset_tracker=True)
-            translate_ms = _debug_ms(translate_start) if debug else None
-            if extra:
-                state.setdefault("extra", {}).update(extra)
-
-            self._partial_arrays.reconcile_state(state)
-            self._known_hashes[sid] = set()
-            self._publish_client_state(
+            self._publish_full_fallback(
                 sid,
-                state,
-                seq=seq,
+                seq,
+                extra=extra,
                 debug_source="server_request_resync",
-                translate_ms=translate_ms,
             )
 
     def update(self, extra=None):
@@ -1807,6 +1802,25 @@ class PushSync:
                 )
 
         base_seq = self._sequence
+        sids = list(self._view_clients)
+
+        # If any client cannot accept the partial (sequence mismatch), promote
+        # ALL clients to full fallback. Mixing partial publishes with a
+        # retire_all() in the same flush would wipe ledger versions still
+        # referenced by clients that already received the partial.
+        if any(self._client_sequences.get(sid, 0) != base_seq for sid in sids):
+            seq = self._next_sequence()
+            for sid in sids:
+                self._publish_full_fallback(
+                    sid,
+                    seq,
+                    extra=extra,
+                    reason="flush_sequence_mismatch",
+                    debug_source="flush_sequence_fallback",
+                )
+            self._pending_changes.clear()
+            return True
+
         seq = self._next_sequence()
         bumped = self._partial_arrays.reserve_partial_versions(self._pending_changes)
 
@@ -1850,26 +1864,7 @@ class PushSync:
             self._pending_changes.clear()
             return False
 
-        for sid in list(self._view_clients):
-            if self._client_sequences.get(sid, 0) != base_seq:
-                debug = _debug_push_enabled()
-                translate_start = time.perf_counter() if debug else None
-                self._partial_arrays.retire_all()
-                state = self._get_client_state(sid, reset_tracker=True)
-                translate_ms = _debug_ms(translate_start) if debug else None
-                if extra:
-                    state.setdefault("extra", {}).update(extra)
-                self._partial_arrays.reconcile_state(state)
-                self._known_hashes[sid] = set()
-                self._publish_client_state(
-                    sid,
-                    state,
-                    seq=seq,
-                    debug_source="flush_sequence_fallback",
-                    translate_ms=translate_ms,
-                )
-                continue
-
+        for sid in sids:
             debug = _debug_push_enabled()
             total_start = time.perf_counter() if debug else None
             data_bytes = sum(_payload_nbytes(update.get("data")) for update in updates)

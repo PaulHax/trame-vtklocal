@@ -24,7 +24,7 @@ import json
 import numpy as np
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
-from trame_vtklocal.widgets.push_sync import (
+from trame_vtklocal.module.protocol_constants import (
     SYNTHETIC_CELL_PREFIX,
     SYNTHETIC_VERSION_PREFIX,
 )

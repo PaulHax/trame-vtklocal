@@ -13,9 +13,12 @@ except ImportError:  # pragma: no cover - VTK is an optional dependency
     vtk_to_numpy = None
 
 
-SYNTHETIC_VERSION_PREFIX = "v:"
-SYNTHETIC_CELL_PREFIX = "cell:"
-RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
+from trame_vtklocal.module.protocol_constants import (
+    RESERVED_HASH_PREFIXES,
+    SYNTHETIC_CELL_PREFIX,
+    SYNTHETIC_VERSION_PREFIX,
+)
+
 PARTIAL_ARRAY_PATHS = {"points"}
 PUSH_PROTOCOL_VERSION = 1
 
@@ -428,6 +431,10 @@ class PartialArrayLedger:
         self._current_hashes.clear()
 
     def retire_all(self):
+        # Bulk-promotion paths call this once per client; second-and-later
+        # iterations are no-ops, so short-circuit when the registry is empty.
+        if not self._versions and not self._current_hashes:
+            return
         self.clear()
 
     def retire_object(self, object_id):
@@ -1818,11 +1825,17 @@ class PushSync:
         base_seq = self._sequence
         sids = list(self._view_clients)
 
-        # If any client cannot accept the partial (sequence mismatch), promote
-        # ALL clients to full fallback. Mixing partial publishes with a
-        # retire_all() in the same flush would wipe ledger versions still
-        # referenced by clients that already received the partial.
-        if any(self._client_sequences.get(sid, 0) != base_seq for sid in sids):
+        # If any *initialized* client cannot accept the partial (sequence
+        # mismatch), promote ALL clients to full fallback. Mixing partial
+        # publishes with a retire_all() in the same flush would wipe ledger
+        # versions still referenced by clients that already received the
+        # partial. A late-joiner that has not been client_resync()'d yet has
+        # no ledger to corrupt; ignore it here so it doesn't penalize others.
+        if any(
+            sid in self._client_sequences
+            and self._client_sequences[sid] != base_seq
+            for sid in sids
+        ):
             seq = self._next_sequence()
             for sid in sids:
                 self._publish_full_fallback(

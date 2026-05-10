@@ -175,7 +175,12 @@ function isInlineArrayMetadata(value) {
 }
 
 function inlineContentToTypedArray(arrayMetadata) {
-  return viewAsTypedArray(arrayMetadata.content, arrayMetadata.dataType);
+  // Inline payloads are cached in pushCache for the lifetime of the session;
+  // copy so the msgpack receive buffer can be GC'd and so cache consumers
+  // can mutate without poisoning the original network payload.
+  return viewAsTypedArray(arrayMetadata.content, arrayMetadata.dataType, {
+    copy: true,
+  });
 }
 
 function storeInlineArray(arrayMetadata, pushCache, options) {

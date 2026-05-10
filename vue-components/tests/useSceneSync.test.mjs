@@ -359,9 +359,9 @@ test("useSceneSync emits viewStateExtra when ready push state has stale mtime", 
     ),
     [{ eventName: "viewStateExtra", payload: fullState.extra }],
   );
-  // The ordered API marks the envelope consumed even when synchronize is a
-  // no-op so the per-client cursor advances; legacy markStatesApplied would
-  // have skipped this and stuck the seq pointer.
+  // synchronizePreparedStateSync returning false is contractually a no-op
+  // (e.g. stale mtime), so the ordered API consumes the envelope and advances
+  // the per-client cursor. Real failures throw and don't reach mark-applied.
   assert.deepEqual(harness.markedStates, [fullState]);
 });
 

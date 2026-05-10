@@ -1508,6 +1508,21 @@ class PushSync:
         for sid in list(self._view_clients):
             self._publish_full_fallback(sid, seq, extra=extra, reason=reason)
 
+    def _promote_all_to_full(self, seq, extra=None, status=None):
+        # Mixing _publish_full_fallback (retire_all() wipes _versions globally)
+        # with _publish_patch (reconcile_state() re-captures stale v:* hashes
+        # into _current_hashes) in one dispatch round desyncs the ledger, so
+        # the next flush() mints a v:* hash that collides with the stale entry.
+        self._sequence = seq
+        for sid in list(self._view_clients):
+            self._publish_full_fallback(
+                sid,
+                seq,
+                extra=extra,
+                reason="mixed-fallback-promotion",
+                status=status,
+            )
+
     def _update_from_status_snapshot(self, extra=None):
         self._refresh_object_manager_state()
         status = self._snapshot_status()
@@ -1557,18 +1572,12 @@ class PushSync:
         if not any_publish:
             return
 
+        if any(r.kind == "full" for r in results):
+            self._promote_all_to_full(seq, extra=extra, status=status)
+            return
+
         self._sequence = seq
         for r in results:
-            if r.kind == "full":
-                self._publish_full_fallback(
-                    r.sid,
-                    seq,
-                    extra=extra,
-                    reason=r.reason,
-                    translate_ms=r.translate_ms,
-                    status=status,
-                )
-                continue
             patch, ledger_state = r.patch, r.ledger_state
             if patch is None:
                 patch, ledger_state = self._build_sequence_patch(
@@ -1676,17 +1685,12 @@ class PushSync:
             self._clear_dirty_ids_for_partial_owners(all_candidate_ids)
             return
 
+        if any(r.kind == "full" for r in results):
+            self._promote_all_to_full(seq, extra=extra)
+            return
+
         self._sequence = seq
         for r in results:
-            if r.kind == "full":
-                self._publish_full_fallback(
-                    r.sid,
-                    seq,
-                    extra=extra,
-                    reason=r.reason,
-                    translate_ms=r.translate_ms,
-                )
-                continue
             patch, ledger_state = r.patch, r.ledger_state
             if patch is None:
                 patch, ledger_state = self._build_sequence_patch(

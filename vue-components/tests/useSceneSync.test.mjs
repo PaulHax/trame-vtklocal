@@ -46,11 +46,7 @@ test("useSceneSync applies immediate partial updates from pushSync", async () =>
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => ({
-        synchronizePreparedStateSync() {
-          return true;
-        },
-      }),
+      withSyncCapability: () => () => true,
       createPushSync(
         _client,
         _syncRenderWindow,
@@ -133,11 +129,7 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => ({
-        synchronizePreparedStateSync() {
-          return true;
-        },
-      }),
+      withSyncCapability: () => () => true,
       createPushSync(
         _client,
         _syncRenderWindow,
@@ -223,11 +215,7 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => ({
-        synchronizePreparedStateSync() {
-          return synchronizeResult;
-        },
-      }),
+      withSyncCapability: () => () => synchronizeResult,
       createPushSync(
         _client,
         _syncRenderWindow,
@@ -413,12 +401,10 @@ test("useSceneSync keeps partial updates buffered until the full-state queue dra
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => ({
-        synchronizePreparedStateSync(state) {
-          appliedStates.push(state);
-          return true;
-        },
-      }),
+      withSyncCapability: () => (state) => {
+        appliedStates.push(state);
+        return true;
+      },
       createPushSync() {
         return {
           cleanup() {},
@@ -529,11 +515,9 @@ test("useSceneSync applies ordered property patches and emits patch extras", asy
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => ({
-        synchronizePreparedStateSync() {
-          throw new Error("Patch messages should not full-sync");
-        },
-      }),
+      withSyncCapability: () => () => {
+        throw new Error("Patch messages should not full-sync");
+      },
       createPushSync() {
         return {
           cleanup() {},
@@ -615,11 +599,7 @@ test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => ({
-        synchronizePreparedStateSync() {
-          return true;
-        },
-      }),
+      withSyncCapability: () => () => true,
       createPushSync() {
         return {
           cleanup() {},

@@ -328,9 +328,12 @@ def _iter_dataset_dirty_children(dataset):
     if dataset is None:
         return
 
-    for points in _iter_via_getters(dataset, ("GetPoints",)):
+    points = dataset.GetPoints() if hasattr(dataset, "GetPoints") else None
+    if points is not None:
         yield points
-        yield from _iter_via_getters(points, ("GetData",))
+        data = points.GetData() if hasattr(points, "GetData") else None
+        if data is not None:
+            yield data
 
     for cell_array in _iter_via_getters(
         dataset, ("GetVerts", "GetLines", "GetPolys", "GetStrips")

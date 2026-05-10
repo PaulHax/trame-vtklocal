@@ -24,12 +24,10 @@ test("useSceneSync applies immediate partial updates from pushSync", async () =>
     getQueueLength() {
       return 0;
     },
-    drainReadyStates() {
-      return [];
+    takeNextMessage() {
+      return null;
     },
-    drainReadyPartialUpdates() {
-      return [];
-    },
+    markMessageApplied() {},
   };
 
   let pushCallbacks = null;
@@ -155,12 +153,10 @@ test("useSceneSync emits viewStateExtra with unwrapped extra for partial updates
           getQueueLength() {
             return 0;
           },
-          drainReadyStates() {
-            return [];
+          takeNextMessage() {
+            return null;
           },
-          drainReadyPartialUpdates() {
-            return [];
-          },
+          markMessageApplied() {},
         };
       },
       applyPartialArrayUpdate() {
@@ -208,7 +204,7 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
   let queuedStatesBlocked = true;
   let remainingStates = queuedStates;
   let pushCallbacks = null;
-  let markedStates = null;
+  const markedStates = [];
   const emittedEvents = [];
 
   const scene = useSceneSyncRef.useSceneSync(
@@ -247,19 +243,15 @@ function buildFullStateSyncHarness({ queuedStates, synchronizeResult = true }) {
           getQueueLength() {
             return queuedStatesBlocked ? 1 : remainingStates.length;
           },
-          drainReadyStates() {
-            if (queuedStatesBlocked) {
-              return [];
+          takeNextMessage() {
+            if (queuedStatesBlocked || !remainingStates.length) {
+              return null;
             }
-            const readyStates = remainingStates;
-            remainingStates = [];
-            return readyStates;
+            const payload = remainingStates.shift();
+            return { kind: "full", payload };
           },
-          drainReadyPartialUpdates() {
-            return [];
-          },
-          markStatesApplied(states) {
-            markedStates = states;
+          markMessageApplied(message) {
+            markedStates.push(message.payload);
           },
         };
       },
@@ -367,7 +359,10 @@ test("useSceneSync emits viewStateExtra when ready push state has stale mtime", 
     ),
     [{ eventName: "viewStateExtra", payload: fullState.extra }],
   );
-  assert.deepEqual(harness.markedStates, []);
+  // The ordered API marks the envelope consumed even when synchronize is a
+  // no-op so the per-client cursor advances; legacy markStatesApplied would
+  // have skipped this and stuck the seq pointer.
+  assert.deepEqual(harness.markedStates, [fullState]);
 });
 
 test("useSceneSync does not emit viewStateExtra when full state has no extra", async () => {
@@ -431,22 +426,26 @@ test("useSceneSync keeps partial updates buffered until the full-state queue dra
           getQueueLength() {
             return queuedStates.length + bufferedPartialUpdates.length;
           },
-          drainReadyStates() {
-            const readyCount = Math.max(
+          takeNextMessage() {
+            const readyFullCount = Math.max(
               queuedStates.length - blockedStateCount,
               0,
             );
-            return queuedStates.splice(0, readyCount);
-          },
-          drainReadyPartialUpdates() {
-            if (queuedStates.length) {
-              return [];
+            if (readyFullCount > 0) {
+              return { kind: "full", payload: queuedStates.shift() };
             }
-
-            const readyPartials = bufferedPartialUpdates;
-            bufferedPartialUpdates = [];
-            return readyPartials;
+            // Partial updates only become ready once the full-state queue drains.
+            if (queuedStates.length) {
+              return null;
+            }
+            if (bufferedPartialUpdates.length) {
+              const updates = bufferedPartialUpdates;
+              bufferedPartialUpdates = [];
+              return { kind: "arrayPartial", payload: { updates } };
+            }
+            return null;
           },
+          markMessageApplied() {},
         };
       },
       applyPartialArrayUpdate(update, ctx) {
@@ -628,16 +627,18 @@ test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra
           getQueueLength() {
             return remainingStates.length + remainingPartials.length;
           },
-          drainReadyStates() {
-            const ready = remainingStates;
-            remainingStates = [];
-            return ready;
+          takeNextMessage() {
+            if (remainingStates.length) {
+              return { kind: "full", payload: remainingStates.shift() };
+            }
+            if (remainingPartials.length) {
+              const updates = remainingPartials;
+              remainingPartials = [];
+              return { kind: "arrayPartial", payload: { updates } };
+            }
+            return null;
           },
-          drainReadyPartialUpdates() {
-            const ready = remainingPartials;
-            remainingPartials = [];
-            return ready;
-          },
+          markMessageApplied() {},
         };
       },
       applyPartialArrayUpdate() {

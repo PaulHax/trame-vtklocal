@@ -24,6 +24,11 @@ import json
 import numpy as np
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
+from trame_vtklocal.widgets.push_sync import (
+    SYNTHETIC_CELL_PREFIX,
+    SYNTHETIC_VERSION_PREFIX,
+)
+
 _scene_mtime_counter = [0]
 
 CLASS_NAME_MAP = {
@@ -542,10 +547,9 @@ class VtkJsTranslator:
                                 )
                                 version = self._version_registry.get(version_key)
                                 if version is not None:
-                                    # `v:` is a PushSync-reserved synthetic hash
-                                    # namespace for versioned partial arrays.
                                     array_meta["hash"] = (
-                                        f"v:{self._rw_id}:{state['Id']}:points:{version}"
+                                        f"{SYNTHETIC_VERSION_PREFIX}"
+                                        f"{self._rw_id}:{state['Id']}:points:{version}"
                                     )
                                 props["points"] = array_meta
 
@@ -560,9 +564,9 @@ class VtkJsTranslator:
                                 conn_hash = conn_state.get("Hash")
                                 off_hash = off_state.get("Hash")
                                 if conn_hash and off_hash:
-                                    # `cell:` is a PushSync-reserved synthetic hash
-                                    # namespace for packed vtk.js cell arrays.
-                                    combined_hash = f"cell:{conn_hash}:{off_hash}"
+                                    combined_hash = (
+                                        f"{SYNTHETIC_CELL_PREFIX}{conn_hash}:{off_hash}"
+                                    )
                                     num_conn = conn_state.get("NumberOfTuples", 0)
                                     array_meta = {
                                         "hash": combined_hash,

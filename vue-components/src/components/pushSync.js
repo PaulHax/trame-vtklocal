@@ -4,6 +4,7 @@ import {
   genericUpdaterSync,
   getSyncUpdater,
 } from "./sync/syncUpdaters";
+import { viewAsTypedArray } from "./sync/base64";
 import {
   isArrayDescriptor,
   isBinaryLike,
@@ -221,25 +222,7 @@ export function applyPartialArrayUpdate(update, synchronizerContext) {
   }
 
   const TypedArrayCtor = TYPED_ARRAYS[dataType] || Float32Array;
-  let newData;
-  if (data instanceof ArrayBuffer) {
-    newData = new TypedArrayCtor(data);
-  } else if (ArrayBuffer.isView(data)) {
-    // msgpack may place binary data at unaligned offsets within a shared buffer
-    if (data.byteOffset % TypedArrayCtor.BYTES_PER_ELEMENT === 0) {
-      newData = new TypedArrayCtor(
-        data.buffer,
-        data.byteOffset,
-        data.byteLength / TypedArrayCtor.BYTES_PER_ELEMENT,
-      );
-    } else {
-      newData = new TypedArrayCtor(
-        data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-      );
-    }
-  } else {
-    newData = new TypedArrayCtor(data);
-  }
+  const newData = viewAsTypedArray(data, dataType);
 
   const TargetCtor = values.constructor;
   if (TypedArrayCtor !== TargetCtor) {
@@ -392,22 +375,6 @@ export function createPushSync(
   const arrayPathHashes = new Map();
 
   const session = client.getConnection().getSession();
-
-  function markStatesApplied(states) {
-    if (!states?.length) {
-      return;
-    }
-    states.forEach((state) => {
-      if (state?.epoch !== undefined) {
-        clientEpoch = state.epoch;
-      }
-      if (state?.seq !== undefined) {
-        clientLastSeq = state.seq;
-      }
-    });
-    arrayPathHashes.clear();
-    collectStateArrayPathHashes(states[states.length - 1], arrayPathHashes);
-  }
 
   function clearGapResyncTimer() {
     if (gapResyncTimer !== null) {
@@ -746,66 +713,6 @@ export function createPushSync(
     requestResync("message-apply-failed");
   }
 
-  function drainReadyStates() {
-    const readyStates = [];
-    let currentEpoch = clientEpoch;
-    let currentSeq = clientLastSeq;
-    while (messageQueue.length && messageQueue[0].kind === "full") {
-      const status = validateMessageEnvelope(
-        messageQueue[0],
-        currentEpoch,
-        currentSeq,
-      );
-      if (status === "drop") {
-        messageQueue.shift();
-        continue;
-      }
-      if (status === "resync") {
-        clearGapResyncTimer();
-        requestResync("full-state-envelope");
-        break;
-      }
-      if (status === "blocked") {
-        scheduleGapResync("full-state-envelope-gap-timeout");
-        break;
-      }
-      clearGapResyncTimer();
-      const state = messageQueue.shift().payload;
-      if (state?.epoch !== undefined) {
-        currentEpoch = state.epoch;
-      }
-      if (state?.seq !== undefined) {
-        currentSeq = state.seq;
-      }
-      readyStates.push(state);
-    }
-    return readyStates;
-  }
-
-  function drainReadyPartialUpdates() {
-    const readyUpdates = [];
-    while (messageQueue.length && messageQueue[0].kind !== "full") {
-      const status = validateMessageEnvelope(messageQueue[0]);
-      if (status === "drop") {
-        messageQueue.shift();
-        continue;
-      }
-      if (status === "resync") {
-        clearGapResyncTimer();
-        requestResync("partial-envelope");
-        break;
-      }
-      if (status === "blocked") {
-        scheduleGapResync("partial-envelope-gap-timeout");
-        break;
-      }
-      clearGapResyncTimer();
-      const message = messageQueue.shift();
-      readyUpdates.push(...getPartialUpdates(message.payload));
-    }
-    return readyUpdates;
-  }
-
   async function applyQueuedState() {
     let didApply = false;
     let message = takeNextMessage();
@@ -878,13 +785,10 @@ export function createPushSync(
   return {
     applyQueuedState,
     cleanup,
-    drainReadyPartialUpdates,
-    drainReadyStates,
     getDiagnostics,
     getQueueLength,
     markMessageApplied,
     markMessageFailed,
-    markStatesApplied,
     requestResync,
     takeNextMessage,
     validatePartialUpdate,

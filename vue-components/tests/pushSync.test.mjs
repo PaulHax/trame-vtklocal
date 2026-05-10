@@ -197,6 +197,31 @@ async function flushAsyncWork() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function takeAllReadyMessages(sync, { mark = true } = {}) {
+  const messages = [];
+  let message = sync.takeNextMessage();
+  while (message) {
+    messages.push(message);
+    if (mark) {
+      sync.markMessageApplied(message);
+    }
+    message = sync.takeNextMessage();
+  }
+  return messages;
+}
+
+function takeAllReadyStates(sync, options) {
+  return takeAllReadyMessages(sync, options)
+    .filter((message) => message.kind === "full")
+    .map((message) => message.payload);
+}
+
+function takeAllReadyPartialUpdates(sync, options) {
+  return takeAllReadyMessages(sync, options)
+    .filter((message) => message.kind === "arrayPartial")
+    .flatMap((message) => message.payload.updates ?? []);
+}
+
 test("createPushSync captures inlined payloads from delta states", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
@@ -230,7 +255,7 @@ test("createPushSync captures inlined payloads from delta states", async () => {
     );
 
     await flushAsyncWork();
-    sync.markStatesApplied(sync.drainReadyStates()); // discard initial resync state
+    takeAllReadyMessages(sync); // discard initial resync state
 
     emit(
       "trame.vtk.delta",
@@ -238,7 +263,7 @@ test("createPushSync captures inlined payloads from delta states", async () => {
     );
     await flushAsyncWork();
 
-    const states = sync.drainReadyStates();
+    const states = takeAllReadyStates(sync);
     assert.equal(states.length, 1);
     assert.ok(pushCache.has("hash-a"));
     assert.equal(pushCache.get("hash-a").length, 3);
@@ -327,7 +352,7 @@ test("createPushSync retains nested inlined payloads after states are applied", 
     );
 
     await flushAsyncWork();
-    sync.markStatesApplied(sync.drainReadyStates());
+    takeAllReadyMessages(sync);
 
     const state = createNestedInlineState({
       mtime: 1,
@@ -337,15 +362,13 @@ test("createPushSync retains nested inlined payloads after states are applied", 
     emit("trame.vtk.delta", state);
     await flushAsyncWork();
 
-    const states = sync.drainReadyStates();
+    const states = takeAllReadyStates(sync);
     assert.equal(states.length, 1);
     assert.ok(pushCache.has("nested-hash"));
     assert.equal(
       states[0].properties.custom.arbitrary.payload.content,
       undefined,
     );
-
-    sync.markStatesApplied(states);
     assert.ok(pushCache.has("nested-hash"));
 
     sync.cleanup();
@@ -387,7 +410,7 @@ test("createPushSync retains full-state payloads after states are marked applied
     );
 
     await flushAsyncWork();
-    sync.markStatesApplied(sync.drainReadyStates());
+    takeAllReadyMessages(sync);
 
     const stateA = createInlineState({ mtime: 1, hash: "hash-a", seq: 1 });
     const stateB = createInlineState({ mtime: 2, hash: "hash-b", seq: 2 });
@@ -395,12 +418,10 @@ test("createPushSync retains full-state payloads after states are marked applied
     emit("trame.vtk.delta", stateB);
     await flushAsyncWork();
 
-    const states = sync.drainReadyStates();
+    const states = takeAllReadyStates(sync);
     assert.deepEqual(states, [stateA, stateB]);
     assert.ok(pushCache.has("hash-a"));
     assert.ok(pushCache.has("hash-b"));
-
-    sync.markStatesApplied(states);
     assert.equal(pushCache.has("hash-a"), true);
     assert.equal(pushCache.has("hash-b"), true);
 
@@ -515,7 +536,7 @@ test("createPushSync buffers broadcasts while resync is pending", async () => {
     resolveResync(createEmptyState(0, { seq: 0 }));
     await flushAsyncWork();
 
-    const states = sync.drainReadyStates();
+    const states = takeAllReadyStates(sync);
     assert.deepEqual(
       states.map((state) => state.seq),
       [0, 1],
@@ -869,7 +890,7 @@ test("createPushSync buffers partial updates until queued states drain", async (
 
     await flushAsyncWork();
     // drain initial resync state so the queue is empty
-    sync.markStatesApplied(sync.drainReadyStates());
+    takeAllReadyMessages(sync);
 
     const blockedState = createInlineState({
       mtime: 1,
@@ -897,14 +918,20 @@ test("createPushSync buffers partial updates until queued states drain", async (
     emit("trame.vtk.array.partial", partialMessage);
     await flushAsyncWork();
 
-    // Partial buffered behind pending state
+    // The partial sits behind the full state in the ordered queue.
     assert.deepEqual(partialUpdateCalls, []);
-    assert.deepEqual(sync.drainReadyPartialUpdates(), []);
 
-    // Drain the state, then partial becomes ready
-    assert.deepEqual(sync.drainReadyStates(), [blockedState]);
-    sync.markStatesApplied([blockedState]);
-    assert.deepEqual(sync.drainReadyPartialUpdates(), [partialUpdate]);
+    const firstMessage = sync.takeNextMessage();
+    assert.equal(firstMessage.kind, "full");
+    assert.equal(firstMessage.payload, blockedState);
+    sync.markMessageApplied(firstMessage);
+
+    const secondMessage = sync.takeNextMessage();
+    assert.equal(secondMessage.kind, "arrayPartial");
+    assert.deepEqual(secondMessage.payload.updates, [partialUpdate]);
+    sync.markMessageApplied(secondMessage);
+
+    assert.equal(sync.takeNextMessage(), null);
 
     sync.cleanup();
   } finally {

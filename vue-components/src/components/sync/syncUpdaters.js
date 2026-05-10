@@ -13,7 +13,7 @@ import { capitalize } from "@kitware/vtk.js/macros";
 import vtkPoints from "@kitware/vtk.js/Common/Core/Points";
 import vtkCellArray from "@kitware/vtk.js/Common/Core/CellArray";
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
-import { base64ToArrayBuffer, createTypedArray } from "./base64";
+import { viewAsTypedArray } from "./base64";
 import { walkArrayDescriptors } from "./walk";
 import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/BehaviorManager";
 
@@ -175,19 +175,7 @@ function isInlineArrayMetadata(value) {
 }
 
 function inlineContentToTypedArray(arrayMetadata) {
-  const content = arrayMetadata.content;
-  let buffer;
-  if (content instanceof ArrayBuffer) {
-    buffer = content;
-  } else if (ArrayBuffer.isView(content)) {
-    buffer = content.buffer.slice(
-      content.byteOffset,
-      content.byteOffset + content.byteLength,
-    );
-  } else {
-    buffer = base64ToArrayBuffer(content);
-  }
-  return createTypedArray(arrayMetadata.dataType, buffer);
+  return viewAsTypedArray(arrayMetadata.content, arrayMetadata.dataType);
 }
 
 function storeInlineArray(arrayMetadata, pushCache, options) {

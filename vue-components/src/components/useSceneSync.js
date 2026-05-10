@@ -175,27 +175,6 @@ export function useSceneSync(
     };
   }
 
-  function applyReadyPartialUpdates(syncCtx = null) {
-    const resolvedSyncContext =
-      syncCtx || managedSyncContext?.synchronizerContext;
-    if (!resolvedSyncContext) {
-      return { didApply: false, failed: false };
-    }
-
-    const partialUpdates = sync?.drainReadyPartialUpdates?.() ?? [];
-    if (!partialUpdates.length) {
-      return { didApply: false, failed: false };
-    }
-
-    for (const partialUpdate of partialUpdates) {
-      if (!applySinglePartialUpdate(partialUpdate, resolvedSyncContext)) {
-        return { didApply: true, failed: true };
-      }
-    }
-
-    return { didApply: true, failed: false };
-  }
-
   function applyQueuedStateSyncResult({
     emitLifecycle = true,
     emitUpdated = true,
@@ -203,77 +182,7 @@ export function useSceneSync(
     if (!syncCapability) {
       return { status: "idle", didSync: false };
     }
-
-    if (sync?.takeNextMessage) {
-      return applyQueuedOrderedMessages({ emitLifecycle, emitUpdated });
-    }
-
-    const states = sync?.drainReadyStates?.() ?? [];
-    if (!states.length) {
-      const partialResult = applyReadyPartialUpdates();
-      if (partialResult.failed) {
-        return { status: "failed", didSync: false };
-      }
-      if (partialResult.didApply) {
-        return { status: "applied", didSync: false };
-      }
-      return {
-        status: getQueueLength() > 0 ? "blocked" : "idle",
-        didSync: false,
-      };
-    }
-
-    if (emitLifecycle) {
-      emit?.("beforeSceneLoaded");
-    }
-
-    let synced = false;
-    const appliedStates = [];
-    let latestExtraState = null;
-    for (const state of states) {
-      try {
-        if (syncCapability.synchronizePreparedStateSync(state, true)) {
-          synced = true;
-          appliedStates.push(state);
-        }
-        if (state?.extra) {
-          latestExtraState = state;
-        }
-      } catch (error) {
-        console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
-        requestResync("full-state-apply-exception");
-        if (emitLifecycle) {
-          emit?.("afterSceneLoaded");
-        }
-        return { status: "failed", didSync: false };
-      }
-    }
-    sync?.markStatesApplied?.(appliedStates);
-
-    if (latestExtraState?.extra) {
-      emit?.("viewStateExtra", latestExtraState.extra);
-    }
-
-    const partialResult = applyReadyPartialUpdates();
-    if (partialResult.failed) {
-      if (emitLifecycle) {
-        emit?.("afterSceneLoaded");
-      }
-      return { status: "failed", didSync: false };
-    }
-
-    if (synced && emitUpdated) {
-      emit?.("updated");
-    }
-
-    if (emitLifecycle) {
-      emit?.("afterSceneLoaded");
-    }
-
-    return {
-      status: getQueueLength() > 0 ? "blocked" : "applied",
-      didSync: synced,
-    };
+    return applyQueuedOrderedMessages({ emitLifecycle, emitUpdated });
   }
 
   function applyQueuedOrderedMessages({

@@ -747,6 +747,22 @@ def test_push_sync_pipeline_update_does_not_re_dirty_consumed_ids(monkeypatch):
     assert server.protocol.messages == []
 
 
+def _prime_all_dirty_fields(push_sync):
+    push_sync._dirty_object_ids.add("a")
+    push_sync._dirty_owner_ids["a"] = {"b"}
+    push_sync._dirty_pipeline_updates["a"] = {"mapper": object()}
+    push_sync._dirty_structural_ids.add("a")
+    push_sync._dirty_structure_pending = True
+
+
+def _assert_dirty_fields_empty(push_sync):
+    assert push_sync._dirty_object_ids == set()
+    assert push_sync._dirty_owner_ids == {}
+    assert push_sync._dirty_pipeline_updates == {}
+    assert push_sync._dirty_structural_ids == set()
+    assert push_sync._dirty_structure_pending is False
+
+
 def test_push_sync_reset_dirty_state_clears_all_fields():
     """Both cleanup() and the _sync_dirty_observers early-return path must
     clear every dirty-tracking field together."""
@@ -758,20 +774,52 @@ def test_push_sync_reset_dirty_state_clears_all_fields():
         render_window_id=1,
     )
 
-    push_sync._dirty_object_ids.add("a")
-    push_sync._dirty_owner_ids["a"] = {"b"}
-    push_sync._dirty_pipeline_updates["a"] = {"mapper": object()}
-    push_sync._dirty_structural_ids.add("a")
-    push_sync._dirty_structure_pending = True
+    _prime_all_dirty_fields(push_sync)
 
     # Early-return path: object_manager None -> _reset_dirty_state.
     push_sync._sync_dirty_observers({"ids": []})
 
+    _assert_dirty_fields_empty(push_sync)
+
+
+def test_push_sync_cleanup_clears_all_dirty_state_fields():
+    """cleanup() must use the same _reset_dirty_state shape as the
+    _sync_dirty_observers early-return path. Drift between the two would
+    leave fields populated after one of the two paths."""
+    server = _FakeServer()
+    push_sync = PushSync(
+        server,
+        _make_points_state_getter(),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+    )
+
+    _prime_all_dirty_fields(push_sync)
+
+    push_sync.cleanup()
+
+    _assert_dirty_fields_empty(push_sync)
+
+
+def test_push_sync_consuming_dirty_suppresses_observer_re_fire():
+    """While dirty consumption is in progress, observer callbacks must be
+    no-ops. Without the flag, UpdateStateFromObject / producer.Update()
+    would re-add ids that were just consumed in the same update() pass."""
+    server = _FakeServer()
+    push_sync = PushSync(
+        server,
+        _make_points_state_getter(),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+    )
+
+    push_sync._consuming_dirty = True
+    push_sync._mark_dirty("123")
     assert push_sync._dirty_object_ids == set()
-    assert push_sync._dirty_owner_ids == {}
-    assert push_sync._dirty_pipeline_updates == {}
-    assert push_sync._dirty_structural_ids == set()
-    assert push_sync._dirty_structure_pending is False
+
+    push_sync._consuming_dirty = False
+    push_sync._mark_dirty("123")
+    assert push_sync._dirty_object_ids == {"123"}
 
 
 def test_push_sync_object_delta_falls_back_for_real_structural_change():
@@ -1105,6 +1153,18 @@ def test_push_sync_flush_promotes_all_clients_to_full_when_one_mismatches():
     # but leave client-b at the original sequence.
     push_sync._client_sequences["client-b"] = -1
 
+    # Spy on the partial-version reservation entry point. The mismatch fix
+    # must skip the partial path entirely, so no synthetic version may be
+    # reserved during this flush.
+    reserve_calls = {"count": 0}
+    real_reserve = push_sync._partial_arrays.reserve_partial_versions
+
+    def spy_reserve(pending_changes):
+        reserve_calls["count"] += 1
+        return real_reserve(pending_changes)
+
+    push_sync._partial_arrays.reserve_partial_versions = spy_reserve
+
     push_sync.mark_modified(
         "62", "points", start=0, data=b"", data_type="Float32Array"
     )
@@ -1113,9 +1173,9 @@ def test_push_sync_flush_promotes_all_clients_to_full_when_one_mismatches():
     by_client = {client_id: payload for _topic, payload, client_id in server.protocol.messages}
     assert set(by_client) == {"client-a", "client-b"}
     # Both clients see full-state (delta) publishes — no arrayPartial emitted.
-    assert all(
-        topic == "trame.vtk.delta" for topic, _payload, _cid in server.protocol.messages
-    )
+    topics = {topic for topic, _payload, _cid in server.protocol.messages}
+    assert topics == {"trame.vtk.delta"}
+    assert reserve_calls["count"] == 0
 
     # Synthetic ledger must remain consistent with what each client received.
     # Each client's stored state holds the points hash they were published.
@@ -1126,6 +1186,9 @@ def test_push_sync_flush_promotes_all_clients_to_full_when_one_mismatches():
     # Both got non-synthetic hashes after retire_all + reconcile.
     assert hash_a == "initial-points"
     assert hash_b == "initial-points"
+    # The version_registry holds no leaked v:* entries from the aborted partial
+    # — it must be empty so a fresh partial in the next flush starts at v:...:1.
+    assert push_sync._partial_arrays.version_registry == {}
 
     assert push_sync._pending_changes == []
 

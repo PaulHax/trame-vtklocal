@@ -3,6 +3,7 @@ import json
 import os
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -17,6 +18,27 @@ SYNTHETIC_CELL_PREFIX = "cell:"
 RESERVED_HASH_PREFIXES = (SYNTHETIC_VERSION_PREFIX, SYNTHETIC_CELL_PREFIX)
 PARTIAL_ARRAY_PATHS = {"points"}
 PUSH_PROTOCOL_VERSION = 1
+
+
+@dataclass
+class PerClientResult:
+    """Decision for one client in a multi-client publish round.
+
+    `kind == "patch"` with `patch is None` is a no-op for that client; the
+    dispatch loop emits an empty-ops sequence-bump only if some other client
+    in the same round publishes something. `kind == "full"` triggers a full
+    fallback with the recorded `reason`.
+    """
+
+    sid: str
+    kind: str
+    patch: dict = None
+    ledger_state: dict = None
+    reason: str = None
+    translate_ms: str = None
+    candidate_ids: set = field(default_factory=set)
+
+
 MESSAGE_ENVELOPE_KEYS = {
     "version",
     "rwId",
@@ -908,12 +930,22 @@ class PushSync:
     def _get_client_epoch(self, client_id):
         return self._client_epochs.get(client_id, 0)
 
+    def _make_envelope(self, client_id, kind, *, base_seq=None, seq, extra=None):
+        payload = {
+            "version": PUSH_PROTOCOL_VERSION,
+            "rwId": self._render_window_id,
+            "kind": kind,
+            "epoch": self._get_client_epoch(client_id),
+            "seq": seq,
+        }
+        if base_seq is not None:
+            payload["baseSeq"] = base_seq
+        if extra is not None:
+            payload["extra"] = extra
+        return payload
+
     def _annotate_full_state(self, state, client_id, seq):
-        state["version"] = PUSH_PROTOCOL_VERSION
-        state["rwId"] = self._render_window_id
-        state["kind"] = "full"
-        state["epoch"] = self._get_client_epoch(client_id)
-        state["seq"] = seq
+        state.update(self._make_envelope(client_id, "full", seq=seq))
         return state
 
     def _get_client_tracker(self, client_id, reset=False):
@@ -1176,19 +1208,12 @@ class PushSync:
         ledger_state = _replace_objects_in_state(previous_state, replacements)
 
         if not ops and extra is None:
-            return None, None, "no-op", translate_ms
+            return None, None, None, translate_ms
 
-        payload = {
-            "version": PUSH_PROTOCOL_VERSION,
-            "rwId": self._render_window_id,
-            "kind": "patch",
-            "epoch": self._get_client_epoch(client_id),
-            "baseSeq": base_seq,
-            "seq": seq,
-            "ops": ops,
-        }
-        if extra is not None:
-            payload["extra"] = extra
+        payload = self._make_envelope(
+            client_id, "patch", base_seq=base_seq, seq=seq, extra=extra
+        )
+        payload["ops"] = ops
         return payload, ledger_state, None, translate_ms
 
     def _build_sequence_patch(self, client_id, base_seq, seq, extra=None):
@@ -1196,17 +1221,10 @@ class PushSync:
         if previous_state is None:
             return None, None
 
-        payload = {
-            "version": PUSH_PROTOCOL_VERSION,
-            "rwId": self._render_window_id,
-            "kind": "patch",
-            "epoch": self._get_client_epoch(client_id),
-            "baseSeq": base_seq,
-            "seq": seq,
-            "ops": [],
-        }
-        if extra is not None:
-            payload["extra"] = extra
+        payload = self._make_envelope(
+            client_id, "patch", base_seq=base_seq, seq=seq, extra=extra
+        )
+        payload["ops"] = []
         return payload, previous_state
 
     def _publish_client_state(
@@ -1437,7 +1455,6 @@ class PushSync:
         if extra:
             state.setdefault("extra", {}).update(extra)
 
-        self._partial_arrays.reconcile_state(state)
         full_status = status
         if self._can_build_object_delta():
             full_status = self._snapshot_status() or status
@@ -1495,61 +1512,65 @@ class PushSync:
 
         for sid in list(self._view_clients):
             if self._client_sequences.get(sid, 0) != base_seq:
-                results.append(("full", sid, "sequence-mismatch", None, None))
+                results.append(
+                    PerClientResult(sid=sid, kind="full", reason="sequence-mismatch")
+                )
                 any_publish = True
                 continue
 
             patch, ledger_state, fallback_reason, translate_ms = (
                 self._build_object_delta_patch(sid, status, base_seq, seq, extra=extra)
             )
-            if fallback_reason == "no-op":
-                results.append(("noop", sid, fallback_reason, None, translate_ms))
-                continue
             if fallback_reason is not None:
-                results.append(("full", sid, fallback_reason, None, translate_ms))
+                results.append(
+                    PerClientResult(
+                        sid=sid,
+                        kind="full",
+                        reason=fallback_reason,
+                        translate_ms=translate_ms,
+                    )
+                )
                 any_publish = True
                 continue
-            results.append(("patch", sid, None, (patch, ledger_state), translate_ms))
-            any_publish = True
+            results.append(
+                PerClientResult(
+                    sid=sid,
+                    kind="patch",
+                    patch=patch,
+                    ledger_state=ledger_state,
+                    translate_ms=translate_ms,
+                )
+            )
+            if patch is not None:
+                any_publish = True
 
         if not any_publish:
             return
 
         self._sequence = seq
-        for result_type, sid, reason, payload_data, translate_ms in results:
-            if result_type == "noop":
-                patch, ledger_state = self._build_sequence_patch(
-                    sid,
-                    base_seq,
+        for r in results:
+            if r.kind == "full":
+                self._publish_full_fallback(
+                    r.sid,
                     seq,
                     extra=extra,
-                )
-                if patch is not None:
-                    self._publish_patch(
-                        sid,
-                        patch,
-                        ledger_state,
-                        translate_ms=translate_ms,
-                        status=status,
-                    )
-                continue
-            if result_type == "patch":
-                patch, ledger_state = payload_data
-                self._publish_patch(
-                    sid,
-                    patch,
-                    ledger_state,
-                    translate_ms=translate_ms,
+                    reason=r.reason,
+                    translate_ms=r.translate_ms,
                     status=status,
                 )
                 continue
-
-            self._publish_full_fallback(
-                sid,
-                seq,
-                extra=extra,
-                reason=reason,
-                translate_ms=translate_ms,
+            patch, ledger_state = r.patch, r.ledger_state
+            if patch is None:
+                patch, ledger_state = self._build_sequence_patch(
+                    r.sid, base_seq, seq, extra=extra
+                )
+                if patch is None:
+                    continue
+            self._publish_patch(
+                r.sid,
+                patch,
+                ledger_state,
+                translate_ms=r.translate_ms,
                 status=status,
             )
 
@@ -1575,14 +1596,18 @@ class PushSync:
 
         for sid in list(self._view_clients):
             if self._client_sequences.get(sid, 0) != base_seq:
-                results.append(("full", sid, "sequence-mismatch", None, None, set()))
+                results.append(
+                    PerClientResult(sid=sid, kind="full", reason="sequence-mismatch")
+                )
                 any_publish = True
                 continue
 
             previous_state = self._client_states.get(sid)
             if previous_state is None:
                 results.append(
-                    ("full", sid, "missing-client-ledger", None, None, set())
+                    PerClientResult(
+                        sid=sid, kind="full", reason="missing-client-ledger"
+                    )
                 )
                 any_publish = True
                 continue
@@ -1594,13 +1619,10 @@ class PushSync:
             )
             if unsupported_dirty:
                 results.append(
-                    (
-                        "full",
-                        sid,
-                        f"unsupported-dirty-ids:{','.join(unsupported_dirty[:5])}",
-                        None,
-                        None,
-                        set(),
+                    PerClientResult(
+                        sid=sid,
+                        kind="full",
+                        reason=f"unsupported-dirty-ids:{','.join(unsupported_dirty[:5])}",
                     )
                 )
                 any_publish = True
@@ -1616,68 +1638,60 @@ class PushSync:
                     extra=extra,
                 )
             )
-            if fallback_reason == "no-op":
-                results.append(
-                    ("noop", sid, fallback_reason, None, translate_ms, candidate_ids)
-                )
-                continue
             if fallback_reason is not None:
                 results.append(
-                    ("full", sid, fallback_reason, None, translate_ms, set())
+                    PerClientResult(
+                        sid=sid,
+                        kind="full",
+                        reason=fallback_reason,
+                        translate_ms=translate_ms,
+                    )
                 )
                 any_publish = True
                 continue
             results.append(
-                (
-                    "patch",
-                    sid,
-                    None,
-                    (patch, ledger_state),
-                    translate_ms,
-                    candidate_ids,
+                PerClientResult(
+                    sid=sid,
+                    kind="patch",
+                    patch=patch,
+                    ledger_state=ledger_state,
+                    translate_ms=translate_ms,
+                    candidate_ids=candidate_ids,
                 )
             )
-            any_publish = True
+            if patch is not None:
+                any_publish = True
 
         if not any_publish:
             self._clear_dirty_ids_for_partial_owners(all_candidate_ids)
             return
 
         self._sequence = seq
-        for result_type, sid, reason, payload_data, translate_ms, candidate_ids in results:
-            if result_type == "noop":
-                patch, ledger_state = self._build_sequence_patch(
-                    sid,
-                    base_seq,
+        for r in results:
+            if r.kind == "full":
+                self._publish_full_fallback(
+                    r.sid,
                     seq,
                     extra=extra,
+                    reason=r.reason,
+                    translate_ms=r.translate_ms,
                 )
-                if patch is not None:
-                    self._publish_patch(
-                        sid,
-                        patch,
-                        ledger_state,
-                        translate_ms=translate_ms,
-                    )
                 continue
-            if result_type == "patch":
-                patch, ledger_state = payload_data
+            patch, ledger_state = r.patch, r.ledger_state
+            if patch is None:
+                patch, ledger_state = self._build_sequence_patch(
+                    r.sid, base_seq, seq, extra=extra
+                )
+                if patch is None:
+                    continue
                 self._publish_patch(
-                    sid,
-                    patch,
-                    ledger_state,
-                    translate_ms=translate_ms,
+                    r.sid, patch, ledger_state, translate_ms=r.translate_ms
                 )
-                published_candidate_ids.update(candidate_ids)
                 continue
-
-            self._publish_full_fallback(
-                sid,
-                seq,
-                extra=extra,
-                reason=reason,
-                translate_ms=translate_ms,
+            self._publish_patch(
+                r.sid, patch, ledger_state, translate_ms=r.translate_ms
             )
+            published_candidate_ids.update(r.candidate_ids)
 
         self._refresh_dataset_dirty_children_for_candidates(published_candidate_ids)
         self._clear_dirty_ids_for_partial_owners(published_candidate_ids)
@@ -1868,17 +1882,10 @@ class PushSync:
             debug = _debug_push_enabled()
             total_start = time.perf_counter() if debug else None
             data_bytes = sum(_payload_nbytes(update.get("data")) for update in updates)
-            payload = {
-                "version": PUSH_PROTOCOL_VERSION,
-                "rwId": self._render_window_id,
-                "kind": "arrayPartial",
-                "epoch": self._get_client_epoch(sid),
-                "baseSeq": base_seq,
-                "seq": seq,
-                "updates": copy.deepcopy(updates),
-            }
-            if extra is not None:
-                payload["extra"] = extra
+            payload = self._make_envelope(
+                sid, "arrayPartial", base_seq=base_seq, seq=seq, extra=extra
+            )
+            payload["updates"] = copy.deepcopy(updates)
 
             convert_start = time.perf_counter() if debug else None
             self._convert_attachments(payload)

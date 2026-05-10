@@ -1193,6 +1193,70 @@ def test_push_sync_flush_promotes_all_clients_to_full_when_one_mismatches():
     assert push_sync._pending_changes == []
 
 
+def test_push_sync_update_promotes_all_clients_to_full_when_one_mismatches():
+    """Mixing _publish_full_fallback (retire_all() wipes _versions globally)
+    with _publish_patch (reconcile_state() re-captures stale v:* hashes into
+    _current_hashes) in one update round leaves the synthetic ledger desynced,
+    so the next flush() mints a v:* hash that collides with the stale entry.
+    """
+    server = _FakeServer()
+    api, rw, _renderer, actor, polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    push_sync.client_resync("client-b")
+    server.protocol.messages.clear()
+
+    # First partial flush establishes synthetic v:* hashes for both clients.
+    points.SetPoint(0, 2.0, 3.0, 4.0)
+    points.GetData().Modified()
+    points.Modified()
+    polydata.Modified()
+    push_sync.mark_modified(polydata, "points", 0, points.GetNumberOfPoints())
+    assert push_sync.flush()
+    server.protocol.messages.clear()
+
+    # Force a sequence mismatch on client-b. Without the dispatch promotion,
+    # the next update() would full-fallback client-b while sequence-bumping
+    # client-a, leaking client-a's v:1 hash into _current_hashes after
+    # _versions was wiped.
+    push_sync._client_sequences["client-b"] = -1
+
+    actor.SetVisibility(False)
+    push_sync.update()
+
+    topics = {topic for topic, _payload, _cid in server.protocol.messages}
+    assert topics == {"trame.vtk.delta"}, (
+        f"expected all-full dispatch, got topics={topics}"
+    )
+    by_client = {client_id for _topic, _payload, client_id in server.protocol.messages}
+    assert by_client == {"client-a", "client-b"}
+
+    # Next partial flush must mint a fresh, non-aliased synthetic hash. With
+    # the bug, oldHash and newHash both equal 'v:...:points:1'.
+    server.protocol.messages.clear()
+    points.SetPoint(0, 5.0, 6.0, 7.0)
+    points.GetData().Modified()
+    points.Modified()
+    polydata.Modified()
+    push_sync.mark_modified(polydata, "points", 0, points.GetNumberOfPoints())
+    assert push_sync.flush()
+
+    partials = [
+        payload
+        for topic, payload, _cid in server.protocol.messages
+        if topic == "trame.vtk.array.partial"
+    ]
+    assert partials, "expected arrayPartial messages on the next flush"
+    for partial in partials:
+        for update in partial["updates"]:
+            old_hash = update.get("oldHash")
+            new_hash = update["newHash"]
+            assert old_hash != new_hash, (
+                f"synthetic-hash collision: oldHash={old_hash!r} newHash={new_hash!r}"
+            )
+
+
 def test_push_sync_partial_flush_advances_synthetic_hash_ledger():
     server = _FakeServer()
 

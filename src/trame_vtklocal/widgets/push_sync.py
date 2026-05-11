@@ -555,6 +555,7 @@ class PushSync:
         self._client_states = {}
         self._client_statuses = {}
         self._object_class_names = {}
+        self._fallback_object_manager_blob_hashes = set()
         self._dirty_object_ids = set()
         self._dirty_owner_ids = {}
         self._dirty_pipeline_updates = {}
@@ -566,6 +567,15 @@ class PushSync:
 
         if api is not None:
             api.register_push_view(self._rw_id_int, self)
+            self._prune_startup_object_manager()
+
+    def _prune_startup_object_manager(self):
+        # Targeted blob GC works from a per-view live-hash snapshot. Prune once
+        # at construction so stale blobs from pre-push serialization aren't
+        # invisible to the targeted previous/current ledger.
+        object_manager = self._object_manager()
+        if object_manager is not None:
+            self._prune_object_manager(object_manager, include_blobs=True)
 
     def _reset_dirty_state(self):
         self._dirty_object_ids.clear()
@@ -588,6 +598,7 @@ class PushSync:
         self._client_states.clear()
         self._client_statuses.clear()
         self._object_class_names.clear()
+        self._fallback_object_manager_blob_hashes.clear()
         self._reset_dirty_state()
         self._disposed = True
 
@@ -1025,22 +1036,86 @@ class PushSync:
         finally:
             self._consuming_dirty = False
 
-        self._prune_object_manager(object_manager)
+        # Per-frame prune skips PruneUnusedBlobs: its sweep cost grows linearly
+        # with uptime (2 ms → 50 ms in 5 min of video playback) while the other
+        # two stay flat at < 0.02 ms. Rate-limiting doesn't help — each sweep
+        # still pays the bucket-scan cost over the historical-max table size.
+        # Stale object-manager blobs are retired directly via
+        # _record_live_object_manager_blobs() after each publish using
+        # vtkObjectManager.UnRegisterBlob (targeted O(1) per dead hash).
+        self._prune_object_manager(object_manager, include_blobs=False)
 
-    def _prune_object_manager(self, object_manager):
-        # vtkObjectManager retains every state and content-hashed blob it has
-        # ever seen; an animation that mutates a vtkDataArray (e.g. cell
-        # connectivity rotating in a ring buffer) accumulates stale entries
-        # forever, growing RSS unboundedly. Prune after each state refresh.
-        # Order matters: drop dead objects/states first so blob references
-        # they hold don't keep otherwise-unreferenced blobs alive.
-        # Animations that churn arrays per frame should prefer the
-        # partial-array API (mark_modified/flush) — it bypasses
-        # UpdateStatesFromObjects entirely for the array slot.
-        for name in ("PruneUnusedObjects", "PruneUnusedStates", "PruneUnusedBlobs"):
+    # vtkObjectManager retains every state and content-hashed blob it has ever
+    # seen; an animation that mutates a vtkDataArray (e.g. cell connectivity
+    # rotating in a ring buffer) accumulates stale entries forever, growing RSS
+    # unboundedly. Order matters: drop dead objects/states first so blob
+    # references they hold don't keep otherwise-unreferenced blobs alive.
+    # Animations that churn arrays per frame should prefer the partial-array
+    # API (mark_modified/flush) — it bypasses UpdateStatesFromObjects entirely
+    # for the array slot.
+    _PRUNE_METHODS_ALL = ("PruneUnusedObjects", "PruneUnusedStates", "PruneUnusedBlobs")
+    _PRUNE_METHODS_NO_BLOBS = ("PruneUnusedObjects", "PruneUnusedStates")
+
+    def _prune_object_manager(self, object_manager, include_blobs=True):
+        methods = self._PRUNE_METHODS_ALL if include_blobs else self._PRUNE_METHODS_NO_BLOBS
+        for name in methods:
             prune = getattr(object_manager, name, None)
             if prune is not None:
                 prune()
+
+    def _current_object_manager_blob_hashes(self, object_manager=None):
+        object_manager = object_manager or self._object_manager()
+        if object_manager is None:
+            return set()
+        try:
+            ids = list(object_manager.GetAllDependencies(self._rw_id_int))
+            return {str(value) for value in object_manager.GetBlobHashes(ids)}
+        except (RuntimeError, TypeError, ValueError):
+            return set()
+
+    def _record_live_object_manager_blobs(self, live_hashes=None):
+        """Retire object-manager blobs that fell out of this view's live set.
+
+        Replaces per-frame PruneUnusedBlobs (whose O(historical-bucket-count)
+        sweep climbs to ~50 ms in 5 min of playback) with targeted O(1)
+        UnRegisterBlob calls on the previous/current set-difference. The
+        ObjectManagerAPI variant protects other registered push views and any
+        non-push live dependencies before unregistering.
+        """
+        if self._api is None:
+            return 0
+
+        current = (
+            {str(value) for value in live_hashes}
+            if live_hashes is not None
+            else self._current_object_manager_blob_hashes()
+        )
+
+        update = getattr(self._api, "update_push_view_blob_hashes", None)
+        if update is not None:
+            return update(self._rw_id_int, current)
+
+        # Test/lightweight API fallback: no multi-view protection, no non-push
+        # subscriber check. ObjectManagerAPI does both.
+        previous = self._fallback_object_manager_blob_hashes
+        self._fallback_object_manager_blob_hashes = set(current)
+        stale = set(previous) - current
+        if not stale:
+            return 0
+
+        object_manager = self._object_manager()
+        unregister = getattr(object_manager, "UnRegisterBlob", None)
+        if unregister is None:
+            return 0
+
+        count = 0
+        for hash_value in sorted(stale):
+            try:
+                if unregister(hash_value):
+                    count += 1
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        return count
 
     @staticmethod
     def _object_manager_id(value):
@@ -1305,6 +1380,7 @@ class PushSync:
                 self._client_statuses[client_id] = snapshot
         if snapshot is not None:
             self._sync_dirty_observers(snapshot)
+            self._record_live_object_manager_blobs(snapshot.get("hashes"))
         if debug:
             _debug_push_event(
                 "full_publish",
@@ -1430,6 +1506,7 @@ class PushSync:
         self._partial_arrays.reconcile_state(ledger_state)
         if status is not None:
             self._client_statuses[client_id] = copy.deepcopy(status)
+            self._record_live_object_manager_blobs(status.get("hashes"))
         if debug:
             _debug_push_event(
                 "patch_publish",
@@ -1509,12 +1586,21 @@ class PushSync:
         if object_manager is None:
             return
 
+        # Filter to ids we've already observed (_object_class_names is updated
+        # by _snapshot_status with the current dependency graph). Without this
+        # filter, _sync_dataset_dirty_children observes every child VTK object
+        # the iteration yields, including transient Python wrappers that
+        # vtkObjectManager assigns fresh ids to on every GetId() call —
+        # _observed_objects then grows ~32 entries per patch round (33k / 5 min
+        # of playback), pinning observer callbacks and pushing this function
+        # to 340 ms/call.
+        live_ids = set(self._object_class_names)
         for object_id in candidate_ids:
             class_name = self._object_class_names.get(str(object_id), "")
             if class_name not in DATASET_PATCH_TYPES:
                 continue
             dataset = object_manager.GetObjectAtId(int(object_id))
-            self._sync_dataset_dirty_children(str(object_id), dataset)
+            self._sync_dataset_dirty_children(str(object_id), dataset, live_ids=live_ids)
 
     def _clear_dirty_ids_for_partial_owners(self, owner_ids):
         owner_ids = {str(object_id) for object_id in owner_ids}
@@ -1712,6 +1798,7 @@ class PushSync:
 
         if not any_publish:
             self._clear_dirty_ids_for_partial_owners(all_candidate_ids)
+            self._record_live_object_manager_blobs()
             return
 
         if any(r.kind == "full" for r in results):
@@ -1735,6 +1822,7 @@ class PushSync:
 
         self._refresh_dataset_dirty_children_for_candidates(published_candidate_ids)
         self._clear_dirty_ids_for_partial_owners(published_candidate_ids)
+        self._record_live_object_manager_blobs()
 
     # ------------------------------------------------------------------
     # Public API
@@ -1772,6 +1860,7 @@ class PushSync:
                 if snapshot is not None:
                     self._client_statuses[client_id] = snapshot
                     self._sync_dirty_observers(snapshot)
+                    self._record_live_object_manager_blobs(snapshot.get("hashes"))
         if debug:
             _debug_push_event(
                 "client_resync",

@@ -721,8 +721,6 @@ def test_push_sync_pipeline_update_does_not_re_dirty_consumed_ids(monkeypatch):
     """producer.Update() can fire ModifiedEvent on observed objects; that
     must not re-add ids to _dirty_object_ids during the same update().
     """
-    from vtkmodules.vtkRenderingCore import vtkPolyDataMapper
-
     server = _FakeServer()
     api, rw, _renderer, _actor, polydata, points, rw_id = _make_real_vtk_scene()
     push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
@@ -1423,22 +1421,91 @@ def test_protocol_push_resync_requires_registered_push_view():
         protocol.push_resync(1)
 
 
+def test_push_sync_startup_runs_one_full_object_manager_prune():
+    class _PruningObjectManager:
+        def __init__(self):
+            self.calls = {"objects": 0, "states": 0, "blobs": 0}
+
+        def PruneUnusedObjects(self):
+            self.calls["objects"] += 1
+
+        def PruneUnusedStates(self):
+            self.calls["states"] += 1
+
+        def PruneUnusedBlobs(self):
+            self.calls["blobs"] += 1
+
+    class _Api:
+        def __init__(self):
+            self.vtk_object_manager = _PruningObjectManager()
+            self.registered_push_views = {}
+
+        def register_push_view(self, rw_id, push_sync):
+            self.registered_push_views[int(rw_id)] = push_sync
+
+        def unregister_push_view(self, rw_id):
+            self.registered_push_views.pop(int(rw_id), None)
+
+    api = _Api()
+
+    push_sync = PushSync(
+        _FakeServer(),
+        _make_points_state_getter(),
+        lambda vtk_object: str(vtk_object),
+        render_window_id=1,
+        api=api,
+    )
+
+    assert api.vtk_object_manager.calls == {"objects": 1, "states": 1, "blobs": 1}
+    push_sync.cleanup()
+
+
+def test_protocol_targeted_blob_unregister_protects_other_live_hashes():
+    class _FakeBlobObjectManager:
+        def __init__(self):
+            self.active_hashes = {"active"}
+            self.unregistered = []
+
+        def GetAllDependencies(self, _root_id):
+            return [1]
+
+        def GetBlobHashes(self, _ids):
+            return list(self.active_hashes)
+
+        def UnRegisterBlob(self, hash_value):
+            self.unregistered.append(hash_value)
+            return True
+
+    protocol = ObjectManagerAPI()
+    protocol.vtk_object_manager = _FakeBlobObjectManager()
+    protocol._push_view_blob_hashes = {
+        1: {"active", "old", "shared"},
+        2: {"shared"},
+    }
+
+    count = protocol.update_push_view_blob_hashes(1, {"new"})
+
+    assert count == 1
+    assert protocol.vtk_object_manager.unregistered == ["old"]
+    assert protocol._push_view_blob_hashes[1] == {"new"}
+
+
 def test_vtkjs_views_do_not_expose_inline_array_policy():
     assert not hasattr(VtkJsBaseView, "_always_inline_arrays")
     assert not hasattr(VtkJsLocalView, "_always_inline_arrays")
     assert not hasattr(VtkJsSharedView, "_always_inline_arrays")
 
 
-def test_push_sync_update_prunes_unused_blobs_under_per_frame_array_churn():
+def test_push_sync_update_retires_unused_blobs_under_per_frame_array_churn(
+    monkeypatch,
+):
     """Regression for unbounded vtkObjectManager growth under animation.
 
-    Without prune, mutating a vtkDataArray every frame leaves a content-hashed
-    blob in vtkObjectManager for every distinct byte sequence ever seen — RSS
-    grows linearly, the per-update scan slows down, and the example's seq/sec
-    drops from ~22 to ~5 over a few minutes. The library now calls
-    PruneUnusedObjects/PruneUnusedStates/PruneUnusedBlobs after every state
-    refresh; this test verifies the live-blob count does not drift after many
-    churn cycles.
+    The library calls PruneUnusedObjects + PruneUnusedStates after every dirty
+    refresh. PruneUnusedBlobs is not used on the dirty hot path because its
+    sweep cost grows linearly with uptime (2 ms → 50 ms in 5 min); stale blobs
+    are unregistered directly from the server's previous-live/current-live hash
+    signal instead.
     """
     server = _FakeServer()
     api, rw, _renderer, _actor, _polydata, points, rw_id = _make_real_vtk_scene()
@@ -1451,20 +1518,24 @@ def test_push_sync_update_prunes_unused_blobs_under_per_frame_array_churn():
         ids = list(api.vtk_object_manager.GetAllDependencies(rw_id))
         return len(set(api.vtk_object_manager.GetBlobHashes(ids)))
 
+    def blob_memory():
+        return int(api.vtk_object_manager.GetTotalBlobMemoryUsage())
+
     # Warm up: drive one update so steady-state blob set is established.
     points.SetPoint(0, 0.5, 0.5, 0.0)
     points.Modified()
     push_sync.update()
     baseline = live_blob_count()
+    baseline_memory = blob_memory()
     assert baseline > 0
+    assert baseline_memory > 0
 
     # Per-frame churn: mutate the points array each tick. Without prune,
     # vtkObjectManager would keep every distinct content hash in its registry
     # and live_blob_count() (which only counts hashes referenced by the live
-    # tree) would stay constant while internal storage grew unboundedly. With
-    # prune wired in, live_blob_count must remain at the baseline AND
-    # PruneUnusedBlobs must actually be invoked.
+    # tree) would stay constant while internal storage grew unboundedly.
     prune_calls = {"objects": 0, "states": 0, "blobs": 0}
+    unregister_calls = {"blobs": 0}
     real = api.vtk_object_manager
 
     def _wrap(name, key):
@@ -1476,9 +1547,21 @@ def test_push_sync_update_prunes_unused_blobs_under_per_frame_array_churn():
 
         return wrapper
 
+    def _wrap_unregister():
+        original = real.UnRegisterBlob
+
+        def wrapper(hash_value):
+            if original(hash_value):
+                unregister_calls["blobs"] += 1
+                return True
+            return False
+
+        return wrapper
+
     real.PruneUnusedObjects = _wrap("PruneUnusedObjects", "objects")
     real.PruneUnusedStates = _wrap("PruneUnusedStates", "states")
     real.PruneUnusedBlobs = _wrap("PruneUnusedBlobs", "blobs")
+    real.UnRegisterBlob = _wrap_unregister()
 
     for tick in range(30):
         # Each tick writes a fresh xyz triple, forcing the points array to a
@@ -1487,14 +1570,25 @@ def test_push_sync_update_prunes_unused_blobs_under_per_frame_array_churn():
         points.Modified()
         push_sync.update()
 
-    assert prune_calls["blobs"] >= 30, (
-        f"PruneUnusedBlobs should run on every state refresh, got {prune_calls}"
+    assert prune_calls["states"] >= 30, (
+        f"PruneUnusedStates must run per refresh, got {prune_calls}"
     )
-    assert prune_calls["states"] >= 30
-    assert prune_calls["objects"] >= 30
+    assert prune_calls["objects"] >= 30, (
+        f"PruneUnusedObjects must run per refresh, got {prune_calls}"
+    )
+    assert prune_calls["blobs"] == 0, (
+        f"PruneUnusedBlobs must stay off the dirty hot path, got {prune_calls}"
+    )
+    assert unregister_calls["blobs"] >= 29, (
+        f"stale blobs should be retired directly, got {unregister_calls}"
+    )
     assert live_blob_count() == baseline, (
         "Live-blob count must stay bounded under per-frame array churn; "
         "growth indicates vtkObjectManager pruning is no longer wired in."
+    )
+    assert blob_memory() <= baseline_memory, (
+        "Internal vtkObjectManager blob memory must stay bounded; live hash "
+        "counts alone can hide stale blob retention."
     )
 
 

@@ -46,6 +46,7 @@ class ObjectManagerAPI(LinkProtocol):
         self._last_publish_hash = set()
         self._push_camera = False
         self._push_views = {}
+        self._push_view_blob_hashes = {}
         self._warned_missing_client_id = False
 
         self._debug_state = False
@@ -60,10 +61,70 @@ class ObjectManagerAPI(LinkProtocol):
         # )
 
     def register_push_view(self, rw_id, push_sync):
-        self._push_views[int(rw_id)] = push_sync
+        rw_id = int(rw_id)
+        self._push_views[rw_id] = push_sync
+        self._push_view_blob_hashes.setdefault(rw_id, set())
 
     def unregister_push_view(self, rw_id):
-        self._push_views.pop(int(rw_id), None)
+        rw_id = int(rw_id)
+        self._push_views.pop(rw_id, None)
+        self._push_view_blob_hashes.pop(rw_id, None)
+
+    def update_push_view_blob_hashes(self, rw_id, live_hashes):
+        """Forget stale vtkObjectManager blobs known to be dead for a push view.
+
+        PushSync already knows the live object-manager hashes for each render
+        window after it publishes a state. Use that bounded live set to unregister
+        hashes that fell out of the view instead of running PruneUnusedBlobs(),
+        whose cost grows with the historical blob table.
+        """
+        rw_id = int(rw_id)
+        current = {str(hash_value) for hash_value in (live_hashes or set())}
+        previous = self._push_view_blob_hashes.get(rw_id, set())
+        self._push_view_blob_hashes[rw_id] = current
+
+        stale = set(previous) - current
+        if not stale:
+            return 0
+
+        stale -= self._all_tracked_push_blob_hashes()
+        if not stale:
+            return 0
+
+        # The object manager is shared with non-push subscriptions/widgets.
+        # Protect the globally live dependency set before unregistering.
+        stale -= self._active_object_blob_hashes()
+        if not stale:
+            return 0
+
+        unregister = getattr(self.vtk_object_manager, "UnRegisterBlob", None)
+        if unregister is None:
+            return 0
+
+        count = 0
+        for hash_value in sorted(stale):
+            try:
+                if unregister(hash_value):
+                    count += 1
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        return count
+
+    def _all_tracked_push_blob_hashes(self):
+        hashes = set()
+        for live_hashes in self._push_view_blob_hashes.values():
+            hashes.update(live_hashes)
+        return hashes
+
+    def _active_object_blob_hashes(self):
+        try:
+            active_ids = list(self.vtk_object_manager.GetAllDependencies(""))
+        except (RuntimeError, TypeError, ValueError):
+            return set()
+        try:
+            return {str(value) for value in self.vtk_object_manager.GetBlobHashes(active_ids)}
+        except (RuntimeError, TypeError, ValueError):
+            return set()
 
     def get_active_client_id(self):
         core_server = getattr(self, "coreServer", None)

@@ -57,6 +57,12 @@ export function withSyncCapability(
   const getSynchronizedViewId = () =>
     renderWindow.get("synchronizedViewId").synchronizedViewId;
 
+  // A renderWindow re-used across cleanup/reinitialize keeps any prior
+  // synchronizedViewId. Without resetting it, the first state from a new
+  // view would fail the id check below, throw, trigger requestResync, and
+  // loop indefinitely (resync resends the same state). Claim fresh.
+  setSynchronizedViewId(null);
+
   function applyStateSync(state, skipRender = false, options = {}) {
     const { force = false } = options;
     if (!getSynchronizedViewId()) {

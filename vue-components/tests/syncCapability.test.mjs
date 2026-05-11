@@ -227,3 +227,50 @@ test("array validation finds descriptors nested in arbitrary state objects", asy
     true,
   );
 });
+
+
+test("resetRendererCollections drains renderers off the window and view-props/lights off each kept renderer", async () => {
+  // Bug scenario: a renderer from the prior session ("stale") is still
+  // attached to the render window when a new full-state push lands. The new
+  // state only references "kept". Without draining, "stale" keeps rendering
+  // and "kept"'s old view-props/lights survive next to the fresh ones.
+  const { resetRendererCollections } = await loadModule(
+    "/src/components/sync/syncUpdaters.js",
+  );
+
+  const removed = [];
+  const stale = { tag: "stale" };
+  const kept = {
+    tag: "kept",
+    removeAllViewProps: () => removed.push("kept-view-props"),
+    removeAllLights: () => removed.push("kept-lights"),
+  };
+  const renderWindow = {
+    getRenderers: () => [stale, kept],
+    removeRenderer: (r) => removed.push(`rw-${r.tag}`),
+  };
+  const context = {
+    getInstance: (id) => (id === "kept-id" ? kept : null),
+  };
+
+  resetRendererCollections(
+    renderWindow,
+    {
+      id: "rw",
+      type: "vtkRenderWindow",
+      dependencies: [
+        { id: "kept-id", type: "vtkRenderer" },
+        { id: "actor-x", type: "vtkActor" }, // ignored: not a renderer
+        { id: "missing-id", type: "vtkRenderer" }, // not in context — skipped
+      ],
+    },
+    context,
+  );
+
+  assert.deepEqual(removed, [
+    "rw-stale",
+    "rw-kept",
+    "kept-view-props",
+    "kept-lights",
+  ]);
+});

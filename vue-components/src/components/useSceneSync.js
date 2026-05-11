@@ -103,21 +103,6 @@ export function useSceneSync(
     bindPartialResultToCacheImpl(partialUpdate, syncCtx, pushCache);
   }
 
-  function applySinglePartialUpdate(partialUpdate, syncCtx) {
-    const applied = applyPartialArrayUpdateImpl(partialUpdate, syncCtx);
-    if (!applied) {
-      requestResync("partial-apply-failed");
-    }
-    if (applied) {
-      bindPartialResultToCache(partialUpdate, syncCtx);
-      if (partialUpdate?.extra) {
-        emit?.("viewStateExtra", partialUpdate.extra);
-      }
-    }
-    partialAppliedCallback?.(partialUpdate, syncCtx, applied);
-    return applied;
-  }
-
   function applyArrayPartialMessage(message, syncCtx) {
     const payload = message?.payload || message;
     const updates = getPartialUpdates(payload);
@@ -368,9 +353,6 @@ export function useSceneSync(
         onQueueReady() {
           onQueueReady?.();
         },
-        onPartialUpdate(partialUpdate, syncCtx) {
-          return applySinglePartialUpdate(partialUpdate, syncCtx);
-        },
       },
     );
   }
@@ -382,12 +364,24 @@ export function useSceneSync(
 
   function getSyncDiagnostics() {
     const { epoch = null, lastSeq = 0 } = sync?.getDiagnostics?.() ?? {};
+    let pushCacheSize = 0;
+    let pushCacheBytes = 0;
+    if (pushCache) {
+      pushCacheSize = pushCache.size;
+      for (const value of pushCache.values()) {
+        if (value && typeof value.byteLength === "number") {
+          pushCacheBytes += value.byteLength;
+        }
+      }
+    }
     return {
       lastSeq,
       lastEpoch: epoch,
       queueLength: getQueueLength(),
       lastAppliedOp,
       syncedRootId,
+      pushCacheSize,
+      pushCacheBytes,
     };
   }
 

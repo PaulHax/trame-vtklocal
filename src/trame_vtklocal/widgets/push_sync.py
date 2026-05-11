@@ -1007,6 +1007,8 @@ class PushSync:
                 "Push sync requires vtkObjectManager.UpdateStatesFromObjects(ids)"
             ) from exc
 
+        self._prune_object_manager(object_manager)
+
     def _refresh_dirty_object_states(self, object_ids):
         object_manager = self._require_object_delta()
         manager_ids = {
@@ -1022,6 +1024,23 @@ class PushSync:
                 object_manager.UpdateStateFromObject(int(object_id))
         finally:
             self._consuming_dirty = False
+
+        self._prune_object_manager(object_manager)
+
+    def _prune_object_manager(self, object_manager):
+        # vtkObjectManager retains every state and content-hashed blob it has
+        # ever seen; an animation that mutates a vtkDataArray (e.g. cell
+        # connectivity rotating in a ring buffer) accumulates stale entries
+        # forever, growing RSS unboundedly. Prune after each state refresh.
+        # Order matters: drop dead objects/states first so blob references
+        # they hold don't keep otherwise-unreferenced blobs alive.
+        # Animations that churn arrays per frame should prefer the
+        # partial-array API (mark_modified/flush) — it bypasses
+        # UpdateStatesFromObjects entirely for the array slot.
+        for name in ("PruneUnusedObjects", "PruneUnusedStates", "PruneUnusedBlobs"):
+            prune = getattr(object_manager, name, None)
+            if prune is not None:
+                prune()
 
     @staticmethod
     def _object_manager_id(value):
@@ -1396,6 +1415,12 @@ class PushSync:
         convert_start = time.perf_counter() if debug else None
         self._convert_attachments(payload)
         convert_ms = _debug_ms(convert_start) if debug else None
+        # Hashes the client still has cached but the live tree no longer
+        # references — instruct the client to drop them so its pushCache stays
+        # bounded. (inlined ⊆ live ∖ known, so it cannot intersect `known`.)
+        evict = sorted(known - live)
+        if evict:
+            payload["evictHashes"] = evict
         publish_start = time.perf_counter() if debug else None
         self._server.protocol.publish("trame.vtk.patch", payload, client_id=client_id)
         publish_ms = _debug_ms(publish_start) if debug else None
@@ -1418,6 +1443,7 @@ class PushSync:
                 known=len(known),
                 missing=len(missing),
                 inlined=len(inlined),
+                evicted=len(evict),
                 inline_bytes=inline_bytes,
                 translate_ms=translate_ms if translate_ms is not None else "",
                 inline_ms=inline_ms,

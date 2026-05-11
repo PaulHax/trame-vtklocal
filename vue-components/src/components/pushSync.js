@@ -646,6 +646,43 @@ export function createPushSync(
     return "ready";
   }
 
+  function collectQueuedFullHashes(startIndex) {
+    const hashes = new Set();
+    for (let i = startIndex; i < messageQueue.length; i += 1) {
+      if (messageQueue[i].kind !== "full") continue;
+      walkArrayDescriptors(messageQueue[i].payload, {
+        onDescriptor(descriptor) {
+          if (descriptor?.hash) hashes.add(descriptor.hash);
+        },
+      });
+    }
+    return hashes;
+  }
+
+  function dropEvictionsNeededByQueuedFulls(message, queueIndexAfterSplice) {
+    // A patch's evictHashes drop entries from pushCache. If a queued full
+    // behind this patch already extracted its inline content into pushCache
+    // (enqueueMessage strips fulls on arrival), applying this patch's evict
+    // would erase content the future full now relies on. Filter those out.
+    if (
+      message.kind !== "patch" ||
+      !Array.isArray(message.payload?.evictHashes) ||
+      message.payload.evictHashes.length === 0
+    ) {
+      return;
+    }
+    const needed = collectQueuedFullHashes(queueIndexAfterSplice);
+    if (needed.size === 0) return;
+    const filtered = message.payload.evictHashes.filter((h) => !needed.has(h));
+    if (filtered.length === message.payload.evictHashes.length) return;
+    message.payload = { ...message.payload };
+    if (filtered.length) {
+      message.payload.evictHashes = filtered;
+    } else {
+      delete message.payload.evictHashes;
+    }
+  }
+
   function takeNextMessage() {
     for (let index = 0; index < messageQueue.length; ) {
       const message = messageQueue[index];
@@ -661,7 +698,9 @@ export function createPushSync(
       }
       if (status === "ready") {
         clearGapResyncTimer();
-        return messageQueue.splice(index, 1)[0];
+        const taken = messageQueue.splice(index, 1)[0];
+        dropEvictionsNeededByQueuedFulls(taken, index);
+        return taken;
       }
       index += 1;
     }

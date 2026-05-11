@@ -1962,6 +1962,96 @@ test("applyPatchUpdate without evictHashes leaves pushCache untouched", async ()
   assert.equal(pushCache.size, 1);
 });
 
+test("queued full's inlined hash survives a queued patch's eviction", async () => {
+  // Server can emit [P1, F2] where P1.evictHashes contains a hash H that F2
+  // also references (H died then revived, or _promote_all_to_full fires right
+  // after a per-client patch). enqueueMessage extracts F2's inline arrays into
+  // pushCache and strips them from F2.payload. If P1 then drains first and
+  // applyPatchUpdate evicts H, F2 applies against a missing-from-cache
+  // descriptor — corrupt render.
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync, applyPatchUpdate } = await loadModule(
+      "/src/components/pushSync.js",
+    );
+    const { client, emit } = createClientHarness({
+      onCall(method) {
+        if (method === "vtkjs.push.resync") {
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const synchronizerContext = {
+      getInstance: () => ({ set: () => true, modified: () => {} }),
+    };
+    const sync = createPushSync(
+      client,
+      { async synchronize() { return true; } },
+      synchronizerContext,
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    takeAllReadyMessages(sync); // discard initial resync state
+
+    const patch = createPatchMessage({
+      baseSeq: 0,
+      seq: 1,
+      ops: [{ op: "setProperties", id: "1", properties: { foo: 1 } }],
+    });
+    patch.evictHashes = ["H-revive"];
+    emit("trame.vtk.patch", patch);
+    await flushAsyncWork();
+
+    emit(
+      "trame.vtk.delta",
+      createInlineState({ mtime: 1, hash: "H-revive", seq: 2 }),
+    );
+    await flushAsyncWork();
+
+    // At this point: F2's enqueue moved H-revive into pushCache (and stripped
+    // its inline content from F2.payload). pushCache should have H-revive.
+    assert.equal(pushCache.has("H-revive"), true, "F2 enqueue must seed pushCache");
+
+    // Drain P1 — apply it (markMessageApplied alone doesn't run ops or evict;
+    // applyPatchUpdate is what useSceneSync calls in production).
+    const patchMessage = sync.takeNextMessage();
+    assert.ok(patchMessage && patchMessage.kind === "patch", "P1 should be ready");
+    assert.equal(
+      applyPatchUpdate(patchMessage.payload, synchronizerContext, null, pushCache),
+      true,
+    );
+    sync.markMessageApplied(patchMessage);
+
+    // F2 is queued behind P1; takeNextMessage on P1 must have filtered
+    // P1.evictHashes so the upcoming full's content isn't dropped.
+    assert.equal(
+      pushCache.has("H-revive"),
+      true,
+      "F2's inlined hash must survive P1's eviction when F2 is queued behind P1",
+    );
+
+    const fullMessage = sync.takeNextMessage();
+    assert.ok(fullMessage && fullMessage.kind === "full", "F2 should be ready");
+    sync.markMessageApplied(fullMessage);
+
+    assert.equal(
+      pushCache.has("H-revive"),
+      true,
+      "F2 application must keep its referenced hash live in pushCache",
+    );
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
 test("pushCache stays bounded across many patches that churn one hash slot", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();

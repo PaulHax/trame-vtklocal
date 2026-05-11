@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - VTK is an optional dependency
     vtk_to_numpy = None
 
 
-from trame_vtklocal.module.protocol_constants import (
+from trame_vtklocal._protocol_constants import (
     RESERVED_HASH_PREFIXES,
     SYNTHETIC_CELL_PREFIX,
     SYNTHETIC_VERSION_PREFIX,
@@ -1534,18 +1534,21 @@ class PushSync:
         for sid in list(self._view_clients):
             self._publish_full_fallback(sid, seq, extra=extra, reason=reason)
 
-    def _promote_all_to_full(self, seq, extra=None, status=None):
+    def _promote_all_to_full(self, seq, results, extra=None, status=None):
         # Mixing _publish_full_fallback (retire_all() wipes _versions globally)
         # with _publish_patch (reconcile_state() re-captures stale v:* hashes
         # into _current_hashes) in one dispatch round desyncs the ledger, so
         # the next flush() mints a v:* hash that collides with the stale entry.
         self._sequence = seq
+        by_sid = {r.sid: r for r in results}
         for sid in list(self._view_clients):
+            r = by_sid.get(sid)
             self._publish_full_fallback(
                 sid,
                 seq,
                 extra=extra,
-                reason="mixed-fallback-promotion",
+                reason=(r.reason if r else None) or "mixed-fallback-promotion",
+                translate_ms=r.translate_ms if r else None,
                 status=status,
             )
 
@@ -1599,7 +1602,7 @@ class PushSync:
             return
 
         if any(r.kind == "full" for r in results):
-            self._promote_all_to_full(seq, extra=extra, status=status)
+            self._promote_all_to_full(seq, results, extra=extra, status=status)
             return
 
         self._sequence = seq
@@ -1712,7 +1715,7 @@ class PushSync:
             return
 
         if any(r.kind == "full" for r in results):
-            self._promote_all_to_full(seq, extra=extra)
+            self._promote_all_to_full(seq, results, extra=extra)
             return
 
         self._sequence = seq
@@ -1724,14 +1727,11 @@ class PushSync:
                 )
                 if patch is None:
                     continue
-                self._publish_patch(
-                    r.sid, patch, ledger_state, translate_ms=r.translate_ms
-                )
-                continue
+            else:
+                published_candidate_ids.update(r.candidate_ids)
             self._publish_patch(
                 r.sid, patch, ledger_state, translate_ms=r.translate_ms
             )
-            published_candidate_ids.update(r.candidate_ids)
 
         self._refresh_dataset_dirty_children_for_candidates(published_candidate_ids)
         self._clear_dirty_ids_for_partial_owners(published_candidate_ids)

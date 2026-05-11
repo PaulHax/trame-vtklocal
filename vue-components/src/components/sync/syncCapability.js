@@ -63,8 +63,17 @@ export function withSyncCapability(
       setSynchronizedViewId(state.id);
     }
 
+    if (getSynchronizedViewId() !== state.id) {
+      // Real failure: this renderer is bound to a different view's state.
+      // The caller (ordered push queue) translates throws into requestResync.
+      throw new Error(
+        `synchronizedViewId mismatch: bound=${getSynchronizedViewId()}, ` +
+          `state=${state.id}`,
+      );
+    }
+
     const mtime = state.mtime || 0;
-    if (getSynchronizedViewId() === state.id && (force || lastMtime < mtime)) {
+    if (force || lastMtime < mtime) {
       lastMtime = Math.max(lastMtime, mtime);
       synchronizerContext.setActiveViewId(state.id);
       synchronizerContext.incrementMTime();
@@ -95,9 +104,9 @@ export function withSyncCapability(
    * calling this.
    *
    * Contract: returns true when the state was applied or the renderer mutated;
-   * returns false when the state was a no-op (e.g. stale mtime, nothing to do).
-   * A real failure to apply MUST throw — the ordered push queue treats a false
-   * return as "consume the envelope and advance the per-client cursor."
+   * returns false only for stale-mtime no-ops (the ordered push queue
+   * consumes the envelope and advances the per-client cursor). View-id
+   * mismatches and other real failures throw.
    */
   return function synchronizePreparedStateSync(state, skipRender = false) {
     // Push states are server-authoritative; array hashes/counts can change

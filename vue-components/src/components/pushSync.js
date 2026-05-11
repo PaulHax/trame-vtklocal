@@ -69,6 +69,14 @@ function mergePatchExtra(previousExtra, nextExtra) {
   return nextExtra;
 }
 
+function mergeEvictHashes(a, b) {
+  if (!a || !a.length) return b;
+  if (!b || !b.length) return a;
+  const merged = new Set(a);
+  for (const h of b) merged.add(h);
+  return [...merged];
+}
+
 function removeOpsForId(ops, id) {
   for (let i = ops.length - 1; i >= 0; i -= 1) {
     if (ops[i]?.id === id) {
@@ -346,6 +354,15 @@ export function applyPatchUpdate(
     instance.modified?.();
   }
 
+  // Server lists hashes the live tree no longer references; drop them so the
+  // client cache stays bounded. Run after ops apply in case any op needed
+  // them transiently.
+  if (pushCache && Array.isArray(patch?.evictHashes)) {
+    for (const hash of patch.evictHashes) {
+      pushCache.delete(hash);
+    }
+  }
+
   return true;
 }
 
@@ -361,7 +378,6 @@ export function createPushSync(
     gapResyncDelayMs = 1000,
     onStateReceived,
     onQueueReady,
-    onPartialUpdate,
   } = callbacks;
 
   let messageQueue = [];
@@ -393,18 +409,6 @@ export function createPushSync(
         requestResync(reason);
       }
     }, gapResyncDelayMs);
-  }
-
-  async function dispatchPartialUpdate(update) {
-    if (onPartialUpdate) {
-      return onPartialUpdate(update, synchronizerContext);
-    }
-
-    const applied = applyPartialArrayUpdate(update, synchronizerContext);
-    if (applied) {
-      bindPartialResultToCache(update, synchronizerContext, pushCache);
-    }
-    return applied;
   }
 
   function payloadMatchesRenderWindow(payload) {
@@ -458,9 +462,19 @@ export function createPushSync(
           seq: payload.seq,
           ops: mergePatchOps(previous.payload.ops, payload.ops),
           extra: mergePatchExtra(previous.payload.extra, payload.extra),
+          evictHashes: mergeEvictHashes(
+            previous.payload.evictHashes,
+            payload.evictHashes,
+          ),
         };
         if (previous.payload.extra === undefined) {
           delete previous.payload.extra;
+        }
+        if (
+          !previous.payload.evictHashes ||
+          !previous.payload.evictHashes.length
+        ) {
+          delete previous.payload.evictHashes;
         }
         return true;
       }
@@ -675,6 +689,27 @@ export function createPushSync(
     return true;
   }
 
+  function pruneCacheToLiveFulls(currentFullPayload) {
+    // Collect hashes from this full and from any queued future fulls. Patches
+    // (queued or applied) extract their inline content at apply time, so we
+    // do not need to preserve their hashes here.
+    const live = new Set();
+    const collect = (payload) => {
+      walkArrayDescriptors(payload, {
+        onDescriptor(descriptor) {
+          if (descriptor?.hash) live.add(descriptor.hash);
+        },
+      });
+    };
+    collect(currentFullPayload);
+    for (const queued of messageQueue) {
+      if (queued.kind === "full") collect(queued.payload);
+    }
+    for (const hash of pushCache.keys()) {
+      if (!live.has(hash)) pushCache.delete(hash);
+    }
+  }
+
   function markMessageApplied(message) {
     if (!message) {
       return;
@@ -691,6 +726,12 @@ export function createPushSync(
     if (kind === "full") {
       arrayPathHashes.clear();
       collectStateArrayPathHashes(payload, arrayPathHashes);
+      // A full state is an authoritative scene snapshot. Anything in
+      // pushCache that is not referenced by this full (or by another full
+      // still waiting in the queue) is unreferenced and can be dropped.
+      if (pushCache) {
+        pruneCacheToLiveFulls(payload);
+      }
       return;
     }
 
@@ -707,41 +748,6 @@ export function createPushSync(
         );
       }
     });
-  }
-
-  function markMessageFailed() {
-    requestResync("message-apply-failed");
-  }
-
-  async function applyQueuedState() {
-    let didApply = false;
-    let message = takeNextMessage();
-    while (message) {
-      if (message.kind === "full") {
-        if (syncRenderWindow) {
-          await syncRenderWindow.synchronize(message.payload);
-        }
-      } else if (message.kind === "arrayPartial") {
-        for (const update of getPartialUpdates(message.payload)) {
-          if (!validatePartialUpdate(update)) {
-            return didApply;
-          }
-          const applied = await dispatchPartialUpdate(update);
-          if (!applied) {
-            markMessageFailed();
-            return didApply;
-          }
-        }
-      } else if (!applyPatchUpdate(message.payload, synchronizerContext)) {
-        markMessageFailed();
-        return didApply;
-      }
-
-      markMessageApplied(message);
-      didApply = true;
-      message = takeNextMessage();
-    }
-    return didApply;
   }
 
   function cleanup() {
@@ -783,12 +789,10 @@ export function createPushSync(
   }
 
   return {
-    applyQueuedState,
     cleanup,
     getDiagnostics,
     getQueueLength,
     markMessageApplied,
-    markMessageFailed,
     requestResync,
     takeNextMessage,
     validatePartialUpdate,

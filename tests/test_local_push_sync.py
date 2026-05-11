@@ -1427,3 +1427,168 @@ def test_vtkjs_views_do_not_expose_inline_array_policy():
     assert not hasattr(VtkJsBaseView, "_always_inline_arrays")
     assert not hasattr(VtkJsLocalView, "_always_inline_arrays")
     assert not hasattr(VtkJsSharedView, "_always_inline_arrays")
+
+
+def test_push_sync_update_prunes_unused_blobs_under_per_frame_array_churn():
+    """Regression for unbounded vtkObjectManager growth under animation.
+
+    Without prune, mutating a vtkDataArray every frame leaves a content-hashed
+    blob in vtkObjectManager for every distinct byte sequence ever seen — RSS
+    grows linearly, the per-update scan slows down, and the example's seq/sec
+    drops from ~22 to ~5 over a few minutes. The library now calls
+    PruneUnusedObjects/PruneUnusedStates/PruneUnusedBlobs after every state
+    refresh; this test verifies the live-blob count does not drift after many
+    churn cycles.
+    """
+    server = _FakeServer()
+    api, rw, _renderer, _actor, _polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    def live_blob_count():
+        ids = list(api.vtk_object_manager.GetAllDependencies(rw_id))
+        return len(set(api.vtk_object_manager.GetBlobHashes(ids)))
+
+    # Warm up: drive one update so steady-state blob set is established.
+    points.SetPoint(0, 0.5, 0.5, 0.0)
+    points.Modified()
+    push_sync.update()
+    baseline = live_blob_count()
+    assert baseline > 0
+
+    # Per-frame churn: mutate the points array each tick. Without prune,
+    # vtkObjectManager would keep every distinct content hash in its registry
+    # and live_blob_count() (which only counts hashes referenced by the live
+    # tree) would stay constant while internal storage grew unboundedly. With
+    # prune wired in, live_blob_count must remain at the baseline AND
+    # PruneUnusedBlobs must actually be invoked.
+    prune_calls = {"objects": 0, "states": 0, "blobs": 0}
+    real = api.vtk_object_manager
+
+    def _wrap(name, key):
+        original = getattr(real, name)
+
+        def wrapper():
+            prune_calls[key] += 1
+            return original()
+
+        return wrapper
+
+    real.PruneUnusedObjects = _wrap("PruneUnusedObjects", "objects")
+    real.PruneUnusedStates = _wrap("PruneUnusedStates", "states")
+    real.PruneUnusedBlobs = _wrap("PruneUnusedBlobs", "blobs")
+
+    for tick in range(30):
+        # Each tick writes a fresh xyz triple, forcing the points array to a
+        # new content hash on the next serialization.
+        points.SetPoint(0, float(tick), float(tick) * 0.5, 0.0)
+        points.Modified()
+        push_sync.update()
+
+    assert prune_calls["blobs"] >= 30, (
+        f"PruneUnusedBlobs should run on every state refresh, got {prune_calls}"
+    )
+    assert prune_calls["states"] >= 30
+    assert prune_calls["objects"] >= 30
+    assert live_blob_count() == baseline, (
+        "Live-blob count must stay bounded under per-frame array churn; "
+        "growth indicates vtkObjectManager pruning is no longer wired in."
+    )
+
+
+def test_publish_patch_lists_stale_hashes_for_eviction():
+    """Regression for client pushCache leak under per-frame array churn.
+
+    When a vtkDataArray's content changes (e.g. trail/tube-filter output
+    regenerated each frame), the server's _known_hashes for the client
+    drops the prior content hash from `live`. The patch must carry that
+    hash in `evictHashes` so the client drops it from its push cache;
+    otherwise pushCache grows linearly with the number of distinct hashes
+    the run produces.
+    """
+    server = _FakeServer()
+    api, rw, _renderer, _actor, _polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    known_after_resync = set(push_sync._known_hashes["client-a"])
+    assert known_after_resync, "resync should populate _known_hashes"
+    server.protocol.messages.clear()
+
+    # Mutate the points array: same instance, new content hash.
+    points.SetPoint(0, 0.5, 0.5, 0.0)
+    points.Modified()
+    push_sync.update()
+
+    patch_messages = [
+        payload for topic, payload, _client in server.protocol.messages
+        if topic == "trame.vtk.patch"
+    ]
+    assert len(patch_messages) == 1, f"expected one patch, got {patch_messages!r}"
+    patch = patch_messages[0]
+
+    evict = set(patch.get("evictHashes") or [])
+    assert evict, "patch must list hashes the client should drop"
+    # Every evicted hash must have been known to this client previously.
+    assert evict <= known_after_resync, (
+        f"evictHashes must be a subset of previously-known hashes; "
+        f"extras={evict - known_after_resync!r}"
+    )
+    # Newly-inlined hashes (i.e. the patch's own array content) must not be
+    # evicted at the same time.
+    inlined_hashes = _collect_hashes_with_content(patch)
+    assert not (evict & inlined_hashes), (
+        f"evictHashes overlaps inlined content: {evict & inlined_hashes!r}"
+    )
+
+
+def test_known_hashes_stays_bounded_under_per_frame_array_churn():
+    """End-to-end leak check on the server's per-client cache model.
+
+    Even if a run produces unboundedly many distinct content hashes,
+    `_known_hashes[client_id]` (the server's model of what the client has
+    cached) must stay bounded by the size of the live tree — not the
+    cumulative hash count. This mirrors the invariant the client sees in
+    its pushCache after honoring evictHashes.
+    """
+    server = _FakeServer()
+    api, rw, _renderer, _actor, _polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    baseline = len(push_sync._known_hashes["client-a"])
+
+    for tick in range(50):
+        points.SetPoint(0, float(tick), float(tick) * 0.5, 0.0)
+        points.Modified()
+        push_sync.update()
+
+    final = len(push_sync._known_hashes["client-a"])
+    assert final <= baseline + 2, (
+        f"_known_hashes must stay bounded under per-frame churn; "
+        f"baseline={baseline}, after 50 ticks={final}"
+    )
+
+
+def _collect_hashes_with_content(payload):
+    """Collect hashes whose payload was inlined in this patch."""
+    found = set()
+
+    def visit(node):
+        if isinstance(node, dict):
+            if (
+                "hash" in node
+                and "content" in node
+                and "dataType" in node
+            ):
+                found.add(node["hash"])
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(payload)
+    return found

@@ -377,7 +377,7 @@ test("createPushSync retains nested inlined payloads after states are applied", 
   }
 });
 
-test("createPushSync retains full-state payloads after states are marked applied", async () => {
+test("createPushSync drops prior-full hashes once a newer full is applied", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();
 
@@ -412,18 +412,26 @@ test("createPushSync retains full-state payloads after states are marked applied
     await flushAsyncWork();
     takeAllReadyMessages(sync);
 
+    // Two fulls arrive back-to-back. While stateB is still queued, applying
+    // stateA must keep hash-b (queued future full needs it). Once stateB
+    // applies, hash-a is unreferenced and gets dropped.
     const stateA = createInlineState({ mtime: 1, hash: "hash-a", seq: 1 });
     const stateB = createInlineState({ mtime: 2, hash: "hash-b", seq: 2 });
     emit("trame.vtk.delta", stateA);
     emit("trame.vtk.delta", stateB);
     await flushAsyncWork();
 
-    const states = takeAllReadyStates(sync);
-    assert.deepEqual(states, [stateA, stateB]);
-    assert.ok(pushCache.has("hash-a"));
-    assert.ok(pushCache.has("hash-b"));
-    assert.equal(pushCache.has("hash-a"), true);
-    assert.equal(pushCache.has("hash-b"), true);
+    sync.markMessageApplied(sync.takeNextMessage());
+    assert.ok(pushCache.has("hash-a"), "current full's hashes survive");
+    assert.ok(pushCache.has("hash-b"), "queued future full's hashes survive");
+
+    sync.markMessageApplied(sync.takeNextMessage());
+    assert.ok(pushCache.has("hash-b"), "current full's hashes survive");
+    assert.equal(
+      pushCache.has("hash-a"),
+      false,
+      "prior full's hashes are dropped once superseded",
+    );
 
     sync.cleanup();
   } finally {
@@ -858,7 +866,6 @@ test("createPushSync buffers partial updates until queued states drain", async (
   try {
     const { createPushSync } = await loadModule("/src/components/pushSync.js");
 
-    const partialUpdateCalls = [];
     const { client, emit } = createClientHarness({
       onCall(method, [arg]) {
         if (method === "vtkjs.push.resync") {
@@ -881,11 +888,6 @@ test("createPushSync buffers partial updates until queued states drain", async (
       },
       "rw",
       new Map(),
-      {
-        onPartialUpdate(update, ctx) {
-          partialUpdateCalls.push({ update, ctx });
-        },
-      },
     );
 
     await flushAsyncWork();
@@ -919,8 +921,6 @@ test("createPushSync buffers partial updates until queued states drain", async (
     await flushAsyncWork();
 
     // The partial sits behind the full state in the ordered queue.
-    assert.deepEqual(partialUpdateCalls, []);
-
     const firstMessage = sync.takeNextMessage();
     assert.equal(firstMessage.kind, "full");
     assert.equal(firstMessage.payload, blockedState);
@@ -1177,7 +1177,9 @@ test("createPushSync applies property patch messages through the ordered queue",
   globalThis.document = createDocumentStub();
 
   try {
-    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+    const { createPushSync, applyPatchUpdate } = await loadModule(
+      "/src/components/pushSync.js",
+    );
 
     const instance = {
       applied: [],
@@ -1205,6 +1207,7 @@ test("createPushSync applies property patch messages through the ordered queue",
       },
     });
 
+    const pushCache = new Map();
     const sync = createPushSync(
       client,
       {
@@ -1214,7 +1217,7 @@ test("createPushSync applies property patch messages through the ordered queue",
       },
       synchronizerContext,
       "rw",
-      new Map(),
+      pushCache,
     );
 
     await flushAsyncWork();
@@ -1233,7 +1236,13 @@ test("createPushSync applies property patch messages through the ordered queue",
       }),
     );
 
-    assert.equal(await sync.applyQueuedState(), true);
+    const message = sync.takeNextMessage();
+    assert.ok(message);
+    assert.equal(
+      applyPatchUpdate(message.payload, synchronizerContext, null, pushCache),
+      true,
+    );
+    sync.markMessageApplied(message);
     assert.deepEqual(instance.applied, [{ visibility: false }]);
     assert.equal(instance.modifiedCount, 1);
     assert.equal(sync.getQueueLength(), 0);
@@ -1249,7 +1258,9 @@ test("createPushSync coalesces consecutive property patches before apply", async
   globalThis.document = createDocumentStub();
 
   try {
-    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+    const { createPushSync, applyPatchUpdate } = await loadModule(
+      "/src/components/pushSync.js",
+    );
 
     const instance = {
       applied: [],
@@ -1267,7 +1278,6 @@ test("createPushSync coalesces consecutive property patches before apply", async
       },
     };
 
-    let partialCount = 0;
     const { client, emit } = createClientHarness({
       onCall(method, [arg]) {
         if (method === "vtkjs.push.resync") {
@@ -1278,6 +1288,7 @@ test("createPushSync coalesces consecutive property patches before apply", async
       },
     });
 
+    const pushCache = new Map();
     const sync = createPushSync(
       client,
       {
@@ -1287,13 +1298,7 @@ test("createPushSync coalesces consecutive property patches before apply", async
       },
       synchronizerContext,
       "rw",
-      new Map(),
-      {
-        onPartialUpdate() {
-          partialCount += 1;
-          return true;
-        },
-      },
+      pushCache,
     );
 
     await flushAsyncWork();
@@ -1343,32 +1348,16 @@ test("createPushSync coalesces consecutive property patches before apply", async
     );
 
     assert.equal(sync.getQueueLength(), 1);
-    assert.equal(await sync.applyQueuedState(), true);
+    const message = sync.takeNextMessage();
+    assert.ok(message);
+    assert.equal(
+      applyPatchUpdate(message.payload, synchronizerContext, null, pushCache),
+      true,
+    );
+    sync.markMessageApplied(message);
     assert.deepEqual(instance.applied, [{ opacity: 0.2, visibility: false }]);
     assert.equal(instance.modifiedCount, 1);
     assert.equal(sync.getQueueLength(), 0);
-
-    emit("trame.vtk.array.partial", {
-      version: 1,
-      rwId: "rw",
-      kind: "arrayPartial",
-      epoch: 1,
-      baseSeq: 3,
-      seq: 4,
-      updates: [
-        {
-          instanceId: "polydata",
-          arrayPath: "points",
-          offset: 0,
-          data: new Float32Array([1, 2, 3]),
-          dataType: "Float32Array",
-          newHash: "hash-b",
-        },
-      ],
-    });
-
-    assert.equal(await sync.applyQueuedState(), true);
-    assert.equal(partialCount, 1);
 
     sync.cleanup();
   } finally {
@@ -1924,6 +1913,247 @@ test("createPushSync updates partial hash baseline after object patches", async 
     assert.equal(sync.validatePartialUpdate(update), true);
     await flushAsyncWork();
     assert.equal(resyncCalls, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("applyPatchUpdate evicts hashes listed in patch.evictHashes", async () => {
+  const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
+
+  const pushCache = new Map([
+    ["stale-1", new Float32Array([1, 2, 3])],
+    ["stale-2", new Float32Array([4, 5, 6])],
+    ["live", new Float32Array([7, 8, 9])],
+  ]);
+  const synchronizerContext = {
+    getInstance: () => ({ set: () => true, modified: () => {} }),
+  };
+  const patch = {
+    version: 1,
+    kind: "patch",
+    ops: [{ op: "setProperties", id: "1", properties: { foo: 1 } }],
+    evictHashes: ["stale-1", "stale-2"],
+  };
+
+  assert.equal(applyPatchUpdate(patch, synchronizerContext, null, pushCache), true);
+  assert.equal(pushCache.has("stale-1"), false);
+  assert.equal(pushCache.has("stale-2"), false);
+  assert.equal(pushCache.has("live"), true);
+});
+
+test("applyPatchUpdate without evictHashes leaves pushCache untouched", async () => {
+  const { applyPatchUpdate } = await loadModule("/src/components/pushSync.js");
+
+  const pushCache = new Map([["keep", new Float32Array([1])]]);
+  const synchronizerContext = {
+    getInstance: () => ({ set: () => true, modified: () => {} }),
+  };
+  const patch = {
+    version: 1,
+    kind: "patch",
+    ops: [{ op: "setProperties", id: "1", properties: { foo: 1 } }],
+  };
+
+  assert.equal(applyPatchUpdate(patch, synchronizerContext, null, pushCache), true);
+  assert.equal(pushCache.has("keep"), true);
+  assert.equal(pushCache.size, 1);
+});
+
+test("pushCache stays bounded across many patches that churn one hash slot", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+    const { client, emit } = createClientHarness({
+      onCall(method) {
+        if (method === "vtkjs.push.resync") {
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      { async synchronize() { return true; } },
+      { getInstance: () => ({ set: () => true, modified: () => {} }) },
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    takeAllReadyMessages(sync); // discard initial resync state
+
+    // Simulate the trail's tube-filter pattern: each frame replaces one
+    // inline-array slot with a fresh hash and tells the client to drop the
+    // previous one. Without honoring evictHashes, pushCache would grow with
+    // every patch; with the fix it stays bounded.
+    let lastHash = null;
+    for (let i = 0; i < 100; i += 1) {
+      const hash = `hash-${i}`;
+      const patch = createPatchMessage({
+        baseSeq: i,
+        seq: i + 1,
+        ops: [
+          {
+            op: "updateObject",
+            id: "1",
+            state: {
+              id: "1",
+              type: "vtkPolyData",
+              properties: {
+                points: {
+                  hash,
+                  dataType: "Float32Array",
+                  numberOfComponents: 3,
+                  size: 3,
+                  name: "Points",
+                  content: new Uint8Array(new Float32Array([i, i, i]).buffer),
+                },
+              },
+            },
+          },
+        ],
+      });
+      if (lastHash !== null) {
+        patch.evictHashes = [lastHash];
+      }
+      emit("trame.vtk.patch", patch);
+      const message = sync.takeNextMessage();
+      assert.ok(message, `patch ${i} should be ready`);
+      sync.markMessageApplied(message);
+      lastHash = hash;
+    }
+
+    // Steady-state: pushCache holds only the latest hash (or fewer if the
+    // synchronizerContext stub didn't bind it). The key invariant is that
+    // size does NOT scale with the number of patches processed.
+    assert.ok(
+      pushCache.size <= 2,
+      `pushCache should stay bounded; got ${pushCache.size} entries after 100 patches`,
+    );
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("applying a full drops unreferenced entries left in pushCache", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+    const { client, emit } = createClientHarness({
+      onCall(method) {
+        if (method === "vtkjs.push.resync") {
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      { async synchronize() { return true; } },
+      { getInstance: () => ({ set: () => true, modified: () => {} }) },
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    takeAllReadyMessages(sync); // initial resync
+
+    // Apply a full referencing hash-a, then simulate stale entries that
+    // accumulated from earlier patches (no longer referenced by anything).
+    emit(
+      "trame.vtk.delta",
+      createInlineState({ mtime: 1, hash: "hash-a", seq: 1 }),
+    );
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+    assert.ok(pushCache.has("hash-a"));
+    pushCache.set("stale", new Float32Array([1, 2, 3]));
+
+    // Server pushes a fresh full at the next seq; nothing else references
+    // hash-a or "stale" now, so both must be dropped.
+    emit(
+      "trame.vtk.delta",
+      createInlineState({ mtime: 2, hash: "hash-b", seq: 2 }),
+    );
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    assert.ok(pushCache.has("hash-b"));
+    assert.equal(pushCache.has("hash-a"), false);
+    assert.equal(pushCache.has("stale"), false);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("merging consecutive patches unions their evictHashes", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+    const { client, emit } = createClientHarness({
+      onCall(method) {
+        if (method === "vtkjs.push.resync") {
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map([
+      ["A", new Float32Array([0])],
+      ["B", new Float32Array([0])],
+      ["C", new Float32Array([0])],
+    ]);
+    const sync = createPushSync(
+      client,
+      { async synchronize() { return true; } },
+      { getInstance: () => ({ set: () => true, modified: () => {} }) },
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    takeAllReadyMessages(sync);
+
+    // Two patches arrive back-to-back before being applied; the queue merges
+    // them into one. The merged evictHashes must drop everything either
+    // patch wanted dropped — otherwise stale entries leak past the merge.
+    const patchA = createPatchMessage({
+      baseSeq: 0,
+      seq: 1,
+      ops: [{ op: "setProperties", id: "1", properties: {} }],
+    });
+    patchA.evictHashes = ["A"];
+    const patchB = createPatchMessage({
+      baseSeq: 1,
+      seq: 2,
+      ops: [{ op: "setProperties", id: "1", properties: {} }],
+    });
+    patchB.evictHashes = ["B"];
+
+    emit("trame.vtk.patch", patchA);
+    emit("trame.vtk.patch", patchB);
+
+    const merged = sync.takeNextMessage();
+    assert.ok(merged);
+    assert.equal(merged.kind, "patch");
+    assert.deepEqual([...(merged.payload.evictHashes || [])].sort(), ["A", "B"]);
+    sync.markMessageApplied(merged);
 
     sync.cleanup();
   } finally {

@@ -353,12 +353,31 @@ export function updateRenderWindowSync(
 ) {
   SKIPPED_INSTANCE_IDS.clear();
   cleanupRemovedRendererDependencies(state, context);
+  resetRendererCollections(instance, state, context);
 
   // Apply state synchronously (skip pre-render to avoid flicker in shared contexts)
   genericUpdaterSync(instance, state, context, objectManager, pushCache);
 
   // Manage any associated behaviors
   BehaviorManager.applyBehaviors(instance, state, context);
+}
+
+export function resetRendererCollections(renderWindow, state, context) {
+  // Full-state envelopes have add-only collection semantics. Drain renderers
+  // off the render window and view-props / lights off each surviving renderer
+  // before applying — otherwise landmarks dropped before File → Open re-attach
+  // to the new scene alongside fresh actors, and renderer-ID swaps across
+  // reloads leave the prior session's renderer still wired up.
+  for (const renderer of renderWindow?.getRenderers?.() ?? []) {
+    renderWindow.removeRenderer(renderer);
+  }
+  for (const dep of state?.dependencies ?? []) {
+    if (dep.type !== "vtkRenderer") continue;
+    const renderer = context.getInstance(dep.id);
+    if (!renderer) continue;
+    renderer.removeAllViewProps();
+    renderer.removeAllLights();
+  }
 }
 
 export function cleanupRemovedRendererDependencies(state, context) {

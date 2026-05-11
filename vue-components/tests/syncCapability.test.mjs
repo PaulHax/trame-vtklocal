@@ -30,6 +30,39 @@ function createRenderWindowStub() {
   };
 }
 
+test("withSyncCapability claims renderWindow fresh, ignoring prior synchronizedViewId", async () => {
+  // A renderWindow re-used across cleanup/reinit can carry an old
+  // synchronizedViewId. Without the construction-time reset, the first state
+  // from a new rwId would throw → ordered queue requests resync → server
+  // resends the same state → throws again → resync loop.
+  const { withSyncCapability } = await loadModule(
+    "/src/components/sync/syncCapability.js",
+  );
+
+  const renderWindow = createRenderWindowStub();
+  renderWindow.set({ synchronizedViewId: "previous-view" });
+  assert.equal(renderWindow.get("synchronizedViewId").synchronizedViewId, "previous-view");
+
+  const context = {
+    setActiveViewId() {},
+    incrementMTime() {},
+  };
+  const synchronize = withSyncCapability(renderWindow, context, {}, new Map());
+
+  assert.equal(
+    renderWindow.get("synchronizedViewId").synchronizedViewId,
+    null,
+    "construction must clear any prior synchronizedViewId",
+  );
+
+  // First state from a *new* view id must claim cleanly, not throw.
+  assert.equal(synchronize({ id: "new-view", mtime: 1 }, true), true);
+  assert.equal(
+    renderWindow.get("synchronizedViewId").synchronizedViewId,
+    "new-view",
+  );
+});
+
 test("prepared push states apply even when root mtime is unchanged", async () => {
   const { withSyncCapability } = await loadModule(
     "/src/components/sync/syncCapability.js",

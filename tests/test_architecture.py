@@ -69,6 +69,30 @@ def test_module_subpackage_does_not_import_widgets():
     )
 
 
+def test_push_sync_size_budget():
+    """One-way ratchet on push_sync.py line count.
+
+    push_sync.py was 2089 lines before the helpers extraction; today it
+    sits at 1769 with 390 lines lifted into ``_push_sync_helpers.py``.
+    The ceiling below is set just above current size so any net growth
+    fails CI — preventing the module from drifting back toward the
+    2000+ line state it just came out of.
+
+    If growth is justified (a real feature lands here that can't live
+    elsewhere), lower the budget after extracting the next layer, or
+    raise this ceiling in the same PR with the reason in the commit
+    message. Don't quietly bump it.
+    """
+    path = SRC_ROOT / "widgets" / "push_sync.py"
+    line_count = len(path.read_text().splitlines())
+    budget = 1800
+    assert line_count <= budget, (
+        f"push_sync.py has grown to {line_count} lines (budget: {budget}). "
+        "Extract another concern into its own module, or justify the new "
+        "ceiling in this rule (tests/test_architecture.py)."
+    )
+
+
 def test_protocol_constants_stays_a_leaf():
     """``_protocol_constants.py`` may not depend on any other in-package module.
 

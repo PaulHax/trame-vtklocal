@@ -707,7 +707,7 @@ class PushSync:
         self,
         dataset_id,
         dataset,
-        live_ids=None,
+        live_ids,
         owner_ids=None,
     ):
         object_manager = self._object_manager()

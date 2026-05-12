@@ -77,7 +77,7 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
-    "widgets/push_sync.py": 1800,        # downsplit in progress (commit d5c7d59); PartialArrayLedger + state-machine split still to do
+    "widgets/push_sync.py": 1700,        # downsplit in progress; helpers + ledger extracted; PushSync state machine vs publish dispatch is the next seam
     "module/vtkjs_translator.py": 950,   # next candidate for the same downsplit arc as push_sync
 }
 

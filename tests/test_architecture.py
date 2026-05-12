@@ -69,27 +69,44 @@ def test_module_subpackage_does_not_import_widgets():
     )
 
 
-def test_push_sync_size_budget():
-    """One-way ratchet on push_sync.py line count.
+DEFAULT_LINE_BUDGET = 400
 
-    push_sync.py was 2089 lines before the helpers extraction; today it
-    sits at 1769 with 390 lines lifted into ``_push_sync_helpers.py``.
-    The ceiling below is set just above current size so any net growth
-    fails CI — preventing the module from drifting back toward the
-    2000+ line state it just came out of.
+# Files currently over the default. Each entry names why and what brings
+# it down. Lower the value as work lands; never raise without a named
+# reason in the same commit. New files are expected to live under the
+# default — if a new addition needs an entry here, the right move is
+# almost always to split it.
+SIZE_BUDGETS = {
+    "widgets/push_sync.py": 1800,        # downsplit in progress (commit d5c7d59); PartialArrayLedger + state-machine split still to do
+    "module/vtkjs_translator.py": 950,   # next candidate for the same downsplit arc as push_sync
+}
 
-    If growth is justified (a real feature lands here that can't live
-    elsewhere), lower the budget after extracting the next layer, or
-    raise this ceiling in the same PR with the reason in the commit
-    message. Don't quietly bump it.
+
+def test_source_files_under_line_budget():
+    """Every .py file under src/trame_vtklocal/ stays under its line budget.
+
+    Default budget is DEFAULT_LINE_BUDGET. SIZE_BUDGETS lists per-file
+    exceptions for files currently over the default — each is a named
+    commitment to bring the file down over time.
+
+    Single test reports all violations at once so a CI failure shows the
+    whole picture, not just the first file to trip.
     """
-    path = SRC_ROOT / "widgets" / "push_sync.py"
-    line_count = len(path.read_text().splitlines())
-    budget = 1800
-    assert line_count <= budget, (
-        f"push_sync.py has grown to {line_count} lines (budget: {budget}). "
-        "Extract another concern into its own module, or justify the new "
-        "ceiling in this rule (tests/test_architecture.py)."
+    violations = []
+    for path in _iter_python_files(SRC_ROOT):
+        rel = path.relative_to(SRC_ROOT).as_posix()
+        budget = SIZE_BUDGETS.get(rel, DEFAULT_LINE_BUDGET)
+        line_count = len(path.read_text().splitlines())
+        if line_count > budget:
+            violations.append(f"  {rel}: {line_count} lines (budget: {budget})")
+
+    assert not violations, (
+        f"File size budget violations (default: {DEFAULT_LINE_BUDGET}):\n"
+        + "\n".join(violations)
+        + "\n\nDefault remediation: extract a concern into its own module. "
+        "If raising the budget is the right call, add or update the entry "
+        "in SIZE_BUDGETS (tests/test_architecture.py) with a one-line "
+        "reason in the same commit."
     )
 
 

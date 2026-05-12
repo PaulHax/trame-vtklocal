@@ -1,5 +1,6 @@
 """Regression coverage for hash-first local push sync."""
 
+import time
 from copy import deepcopy
 
 import numpy as np
@@ -1686,3 +1687,120 @@ def _collect_hashes_with_content(payload):
 
     visit(payload)
     return found
+
+
+def _percentile(samples, pct):
+    if not samples:
+        return 0.0
+    ordered = sorted(samples)
+    rank = max(0, min(len(ordered) - 1, int(round(pct / 100.0 * (len(ordered) - 1)))))
+    return ordered[rank]
+
+
+SOAK_TICKS = 200
+SOAK_WARMUP = 50
+# Tail-vs-warmup ratio thresholds. Multiplicative budgets are robust to CI
+# noise — the bugs they guard against (observer leak, blob-bucket scan growth)
+# manifested as 100x+ regressions.
+SOAK_MEMORY_TAIL_OVER_WARMUP = 1.10
+SOAK_UPDATE_TAIL_OVER_WARMUP = 10.0
+
+
+def test_push_sync_soak_steady_state_invariants():
+    """Consolidated CI gate for steady-state invariants under per-frame churn.
+
+    Drives ``points.Modified()`` + ``push_sync.update()`` for many ticks against
+    a real vtkObjectManager with one resynced client, so each tick publishes a
+    patch (not a full fallback). After a warmup window we sample three
+    invariants and assert they hold across the tail of the run:
+
+      1. ``_observed_objects`` count stays bounded. Guards against future
+         regressions in dirty-children observation (e.g. dropping the
+         ``live_ids`` filter in ``_refresh_dataset_dirty_children_for_candidates``)
+         that grow the registry linearly with uptime. On this minimal scene,
+         transient-wrapper id minting plateaus quickly, so the absolute
+         growth ceiling is small; richer scenes manifest the same class of
+         bug as the 33,094-entry leak from the maplibre soak in PR #6.
+      2. ``vtkObjectManager.GetTotalBlobMemoryUsage()`` does not grow. Stale
+         blobs from per-frame array churn must be retired (currently via the
+         prev/current live-hash set-difference in PushSync's
+         ``_record_live_object_manager_blobs``) rather than accumulating in
+         the manager's content-hash table. Verified to fire if blob eviction
+         is disabled.
+      3. Per-tick ``update()`` p90 across the tail half does not regress vs
+         warmup p90 by more than 10x. The 589 ms -> 5.5 ms fix in PR #6 was
+         a 107x improvement that shifts the whole distribution, so p90 over
+         a 100-sample window catches it cleanly while absorbing isolated
+         scheduler stalls on shared CI runners. Verified to fire on a cliff
+         regression injected into the dirty hot path.
+    """
+    server = _FakeServer()
+    api, rw, _renderer, _actor, _polydata, points, rw_id = _make_real_vtk_scene()
+    push_sync, _calls = _make_real_push_sync(server, api, rw, rw_id)
+
+    push_sync.client_resync("client-a")
+    server.protocol.messages.clear()
+
+    update_ms = []
+    observed_after_warmup = None
+    memory_after_warmup = None
+
+    for tick in range(SOAK_TICKS):
+        # Same churn shape as test_publish_patch_lists_stale_hashes_for_eviction
+        # and test_push_sync_update_retires_unused_blobs_under_per_frame_array_churn,
+        # extended over enough ticks to expose monotonic growth.
+        points.SetPoint(0, float(tick), float(tick) * 0.5, 0.0)
+        points.Modified()
+
+        start = time.perf_counter()
+        push_sync.update()
+        update_ms.append((time.perf_counter() - start) * 1000.0)
+
+        if tick == SOAK_WARMUP - 1:
+            observed_after_warmup = len(push_sync._observed_objects)
+            memory_after_warmup = int(
+                api.vtk_object_manager.GetTotalBlobMemoryUsage()
+            )
+
+    assert observed_after_warmup is not None, "warmup window must be reached"
+
+    observed_after_soak = len(push_sync._observed_objects)
+    memory_after_soak = int(api.vtk_object_manager.GetTotalBlobMemoryUsage())
+
+    # Wide windows + p90 absorb isolated scheduler stalls on shared CI runners
+    # without losing sensitivity to the 100x-class regression this gate exists
+    # for (PR #6: 589 ms -> 5.5 ms update_avg_ms shifts the whole distribution,
+    # not just the tail percentile).
+    warmup_window = update_ms[SOAK_WARMUP // 2 : SOAK_WARMUP]
+    tail_window = update_ms[SOAK_TICKS // 2 :]
+    warmup_p90 = _percentile(warmup_window, 90)
+    tail_p90 = _percentile(tail_window, 90)
+
+    summary = (
+        f"observed: warmup={observed_after_warmup} tail={observed_after_soak} | "
+        f"blob_bytes: warmup={memory_after_warmup} tail={memory_after_soak} | "
+        f"update_ms p90: warmup={warmup_p90:.3f} tail={tail_p90:.3f}"
+    )
+
+    assert observed_after_soak == observed_after_warmup, (
+        f"_observed_objects must stay bounded under per-frame array churn; "
+        f"growth indicates _refresh_dataset_dirty_children_for_candidates is "
+        f"observing transient vtk wrappers (missing or no-op live_ids filter). "
+        f"{summary}"
+    )
+
+    assert memory_after_soak <= int(memory_after_warmup * SOAK_MEMORY_TAIL_OVER_WARMUP), (
+        f"GetTotalBlobMemoryUsage must stay bounded under per-frame array churn; "
+        f"growth indicates stale blobs are not being retired (PushSync's prev/"
+        f"current live-hash set-difference is no longer wired in). {summary}"
+    )
+
+    # Multiplicative budget — fails on 100x-class regressions (e.g. the 589 ms
+    # _update_from_dirty_tracking hotspot), tolerates the 2-3x variance typical
+    # of shared CI runners. Skip when warmup is too quick to form a stable
+    # baseline (sub-ms ticks on fast hardware).
+    if warmup_p90 >= 0.5:
+        assert tail_p90 <= warmup_p90 * SOAK_UPDATE_TAIL_OVER_WARMUP, (
+            f"update() tail p90 regressed vs warmup p90; expected ratio <= "
+            f"{SOAK_UPDATE_TAIL_OVER_WARMUP}x. {summary}"
+        )

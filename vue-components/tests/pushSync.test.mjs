@@ -1365,6 +1365,116 @@ test("createPushSync coalesces consecutive property patches before apply", async
   }
 });
 
+test("merged patch keeps inline payloads from overwritten patch ops", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync } = await loadModule("/src/components/pushSync.js");
+
+    const { client, emit } = createClientHarness({
+      onCall(method, [arg]) {
+        if (method === "vtkjs.push.resync") {
+          assert.equal(arg, "rw");
+          return Promise.resolve(createEmptyState(0, { seq: 0 }));
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const pushCache = new Map();
+    const sync = createPushSync(
+      client,
+      {
+        async synchronize() {
+          return true;
+        },
+      },
+      {
+        getInstance() {
+          return {};
+        },
+      },
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    sync.markMessageApplied(sync.takeNextMessage());
+
+    const hash = "cell:mesh:1";
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 0,
+        seq: 1,
+        ops: [
+          {
+            op: "updateObject",
+            id: "mesh",
+            state: {
+              id: "mesh",
+              type: "vtkPolyData",
+              properties: {
+                polys: {
+                  hash,
+                  dataType: "Uint32Array",
+                  numberOfComponents: 1,
+                  size: 4,
+                  name: "Polys",
+                  content: new Uint8Array(new Uint32Array([3, 0, 1, 2]).buffer),
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    emit(
+      "trame.vtk.patch",
+      createPatchMessage({
+        baseSeq: 1,
+        seq: 2,
+        ops: [
+          {
+            op: "updateObject",
+            id: "mesh",
+            state: {
+              id: "mesh",
+              type: "vtkPolyData",
+              properties: {
+                polys: {
+                  hash,
+                  dataType: "Uint32Array",
+                  numberOfComponents: 1,
+                  size: 4,
+                  name: "Polys",
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+
+    assert.equal(sync.getQueueLength(), 1);
+    assert.equal(
+      pushCache.has(hash),
+      true,
+      "coalescing must not discard the only inline payload for a known hash",
+    );
+
+    const merged = sync.takeNextMessage();
+    assert.ok(merged);
+    assert.equal(merged.kind, "patch");
+    assert.equal(merged.payload.seq, 2);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test("createPushSync does not coalesce patches with unsupported ops", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = createDocumentStub();

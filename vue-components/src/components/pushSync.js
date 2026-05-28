@@ -457,6 +457,7 @@ export function createPushSync(
     if (kind === "patch" && messageQueue.length) {
       const previous = messageQueue[messageQueue.length - 1];
       if (canMergePatchMessages(previous.payload, payload)) {
+        extractInlineArrays(previous.payload, pushCache, { stripInlineData: true });
         previous.payload = {
           ...previous.payload,
           seq: payload.seq,

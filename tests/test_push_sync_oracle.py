@@ -38,6 +38,20 @@ def _set_color(scene: OracleScene):
     scene.handles["actor"].GetProperty().SetColor(0.1, 0.2, 0.3)
 
 
+def _set_user_matrix(scene: OracleScene):
+    from vtkmodules.vtkCommonMath import vtkMatrix4x4
+
+    matrix = vtkMatrix4x4()
+    matrix.Identity()
+    matrix.SetElement(0, 0, 1.5)
+    matrix.SetElement(1, 1, 1.5)
+    matrix.SetElement(2, 2, 1.5)
+    matrix.SetElement(0, 3, 4.0)
+    matrix.SetElement(1, 3, 5.0)
+    matrix.SetElement(2, 3, 6.0)
+    scene.handles["actor"].SetUserMatrix(matrix)
+
+
 def test_oracle_actor_visibility_property_color_stay_on_patch_path():
     run_oracle_steps(
         make_basic_scene,
@@ -45,6 +59,32 @@ def test_oracle_actor_visibility_property_color_stay_on_patch_path():
             OracleStep(name="hide-actor", mutate=_toggle_visibility),
             OracleStep(name="set-opacity", mutate=_set_opacity),
             OracleStep(name="set-color", mutate=_set_color),
+        ],
+    )
+
+
+def test_oracle_actor_user_matrix_stays_on_patch_path():
+    def assert_message(payload):
+        ops = payload.get("ops") or []
+        assert len(ops) == 1
+        op = ops[0]
+        assert op["op"] == "setProperties"
+        user_matrix = op["properties"]["userMatrix"]
+        assert user_matrix[0] == pytest.approx(1.5)
+        assert user_matrix[5] == pytest.approx(1.5)
+        assert user_matrix[10] == pytest.approx(1.5)
+        assert user_matrix[12] == pytest.approx(4.0)
+        assert user_matrix[13] == pytest.approx(5.0)
+        assert user_matrix[14] == pytest.approx(6.0)
+
+    run_oracle_steps(
+        make_basic_scene,
+        [
+            OracleStep(
+                name="set-user-matrix",
+                mutate=_set_user_matrix,
+                assert_message=assert_message,
+            ),
         ],
     )
 

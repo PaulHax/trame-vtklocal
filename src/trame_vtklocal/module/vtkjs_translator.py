@@ -437,6 +437,18 @@ def normalize_relation_spec(spec):
     }
 
 
+def actor_user_matrix_property(vtk_obj):
+    matrix = vtk_obj.GetUserMatrix() if vtk_obj is not None else None
+    if matrix is None:
+        return None
+
+    return [
+        float(matrix.GetElement(row, col))
+        for col in range(4)
+        for row in range(4)
+    ]
+
+
 class VtkJsTranslator:
     def __init__(
         self,
@@ -730,6 +742,7 @@ class VtkJsTranslator:
         is_renderwindow = vtkjs_type == "vtkRenderWindow"
         is_lookuptable = vtkjs_type == "vtkLookupTable"
         is_property = vtkjs_type == "vtkProperty"
+        is_actor = vtkjs_type == "vtkActor"
 
         for key, value in state.items():
             if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
@@ -820,6 +833,15 @@ class VtkJsTranslator:
                 if is_property and camel_key in PROPERTY_SKIP_PROPERTIES:
                     continue
                 props[camel_key] = value
+
+        if is_actor:
+            # vtkObjectManager doesn't serialize the actor's UserMatrix, so read
+            # it off the live object (same gap-bridging as polydata field arrays).
+            # Only emit when actually set: an unset matrix stays absent so it
+            # matches the vtk.js client, which reports no UserMatrix as null.
+            user_matrix = actor_user_matrix_property(self._get_vtk_object(state["Id"]))
+            if user_matrix is not None:
+                props["userMatrix"] = user_matrix
 
         # vtk.js Light expects string lightType, Python VTK uses integers
         if vtkjs_type == "vtkLight" and "lightType" in props:

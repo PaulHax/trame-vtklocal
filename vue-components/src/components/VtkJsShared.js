@@ -148,6 +148,8 @@ export default {
       getRenderWindow: scene.getRenderWindow,
       getRenderer: scene.getRenderer,
       setCamera: scene.setCamera,
+      setRenderedCamera: scene.setRenderedCamera,
+      getRenderedCamera: scene.getRenderedCamera,
       resetCamera: scene.resetCamera,
       // Diagnostics / oracle support (read-only, not general app integration).
       getSyncDiagnostics: scene.getSyncDiagnostics,

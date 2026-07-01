@@ -132,6 +132,62 @@ test("useSceneSync emits viewStateExtra only after queued push state is applied"
   assert.deepEqual(harness.markedStates, [fullState]);
 });
 
+test("useSceneSync records rendered camera matrices before vtk camera mutation", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+
+  let viewMatrixArgument = null;
+  let projectionMatrixArgument = null;
+  let modifiedCount = 0;
+  const camera = {
+    setViewMatrix(values) {
+      viewMatrixArgument = values;
+      values[0] = -999;
+    },
+    setProjectionMatrix(values) {
+      projectionMatrixArgument = values;
+    },
+    modified() {
+      modifiedCount += 1;
+    },
+  };
+  const renderer = {
+    getActiveCamera: () => camera,
+    getViewport: () => [0, 0, 1, 1],
+  };
+  const renderWindow = {
+    getRenderersByReference: () => [renderer],
+    getViews: () => [{ getSize: () => [640, 480] }],
+  };
+
+  const viewMatrix = Array.from({ length: 16 }, (_value, index) => index + 1);
+  const projectionMatrix = Array.from(
+    { length: 16 },
+    (_value, index) => 101 + index,
+  );
+  const scene = useSceneSync({
+    client: {},
+    emit() {},
+    getRenderWindow: () => renderWindow,
+    renderScene() {},
+  });
+
+  assert.equal(scene.setRenderedCamera({ viewMatrix, projectionMatrix }), true);
+  assert.equal(modifiedCount, 1);
+  assert.notEqual(viewMatrixArgument, viewMatrix);
+  assert.notEqual(projectionMatrixArgument, projectionMatrix);
+  assert.deepEqual(viewMatrix, Array.from({ length: 16 }, (_value, index) => index + 1));
+
+  projectionMatrixArgument[1] = -888;
+  const reported = scene.getRenderedCamera();
+  assert.deepEqual(reported.viewMatrix, viewMatrix);
+  assert.deepEqual(reported.projectionMatrix, projectionMatrix);
+  assert.deepEqual(reported.rendererViewport, [0, 0, 1, 1]);
+  assert.deepEqual(reported.size, [640, 480]);
+
+  reported.viewMatrix[0] = -777;
+  assert.deepEqual(scene.getRenderedCamera().viewMatrix, viewMatrix);
+});
+
 test("useSceneSync emits viewStateExtra when ready push state has stale mtime", async () => {
   const mod = await loadModule("/src/components/useSceneSync.js");
   useSceneSyncRef.useSceneSync = mod.useSceneSync;

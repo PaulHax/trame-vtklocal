@@ -51,6 +51,7 @@ export function useSceneSync(
   let messageAppliedCallback = null;
   let lastAppliedOp = null;
   let syncedRootId = null;
+  let renderedCamera = null;
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -90,6 +91,42 @@ export function useSceneSync(
     if (!camera) return;
     applyCameraParams(camera, params);
     renderScene?.();
+  }
+
+  function matrixCopy16(value) {
+    if (!value || value.length !== 16) return null;
+    const copy = Array.from(value, Number);
+    return copy.every((v) => Number.isFinite(v)) ? copy : null;
+  }
+
+  function setRenderedCamera({ viewMatrix, projectionMatrix } = {}) {
+    const camera = getRenderer()?.getActiveCamera?.();
+    const recordedViewMatrix = matrixCopy16(viewMatrix);
+    const recordedProjectionMatrix = matrixCopy16(projectionMatrix);
+    if (!camera || !recordedViewMatrix || !recordedProjectionMatrix) return false;
+
+    renderedCamera = {
+      viewMatrix: recordedViewMatrix,
+      projectionMatrix: recordedProjectionMatrix,
+    };
+    camera.setViewMatrix(recordedViewMatrix.slice());
+    camera.setProjectionMatrix(recordedProjectionMatrix.slice());
+    camera.modified?.();
+    return true;
+  }
+
+  function getRenderedCamera() {
+    if (!renderedCamera) return null;
+    const rendererViewport = getRenderer()?.getViewport?.();
+    const views = getRenderWindow?.()?.getViews?.() || [];
+    const view = views.length > 0 ? views[0] : null;
+    const size = view?.getSize?.();
+    return {
+      viewMatrix: renderedCamera.viewMatrix.slice(),
+      projectionMatrix: renderedCamera.projectionMatrix.slice(),
+      rendererViewport: rendererViewport ? Array.from(rendererViewport, Number) : null,
+      size: size ? Array.from(size, Number) : null,
+    };
   }
 
   function resetCamera() {
@@ -407,6 +444,8 @@ export function useSceneSync(
     getRenderWindow,
     getRenderer,
     setCamera,
+    setRenderedCamera,
+    getRenderedCamera,
     resetCamera,
     getSyncDiagnostics,
     getAppliedSceneState,

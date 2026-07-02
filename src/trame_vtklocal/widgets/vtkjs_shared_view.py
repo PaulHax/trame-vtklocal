@@ -12,6 +12,11 @@ class VtkJsSharedView(VtkJsBaseView):
 
         self._view_id = str(self._window_id)
 
+        # Pass the ref name through as a prop so the client registers the mounted
+        # view in window.trameVtklocal under this key; consumers then resolve it
+        # via whenView(ref_name) instead of unwrapping the Vue component ref.
+        self._attributes["view_key"] = f'view-key="{self._ref}"'
+
         self._configure_sync_mode(sync_mode)
 
         VtkJsSharedView._shared_views[self._view_id] = self

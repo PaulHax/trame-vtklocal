@@ -9,6 +9,7 @@ import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRender
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
+import { registerView, unregisterView } from "./viewRegistry";
 
 export default {
   emits: [
@@ -23,6 +24,13 @@ export default {
     renderWindow: {
       type: Number,
       required: true,
+    },
+    // The trame ref name this view is mounted under (e.g. "vtkMapView_map").
+    // The Python widget sets it to the same value it uses for `ref`, so
+    // consumers resolve the view via window.trameVtklocal.whenView(refName).
+    viewKey: {
+      type: String,
+      default: null,
     },
     wsClient: {
       type: Object,
@@ -138,22 +146,10 @@ export default {
       repaintCallback = callback;
     }
 
-    onMounted(() => {
-      emit("onReady");
-    });
-
-    onBeforeUnmount(() => {
-      disposed = true;
-      scene.cleanup();
-
-      sharedRenderWindow?.delete?.();
-      sharedRenderWindow = null;
-
-      renderWindow?.delete?.();
-      renderWindow = null;
-    });
-
-    return {
+    // The public API consumers resolve through the registry — the same object
+    // returned from setup, so onSceneApplied/getInstance/render methods keep
+    // working without unwrapping the Vue component ref.
+    const viewApi = {
       initializeForSharedContext,
       update: scene.update,
       requestResync: scene.requestResync,
@@ -174,6 +170,29 @@ export default {
       getInstance: scene.getInstance,
       setRepaintCallback,
     };
+
+    // Keyed by trame ref name and render-window id so consumers can await
+    // whenView(refName) (or look up by render-window id) with no polling.
+    const registryKeys = [props.viewKey, props.renderWindow];
+
+    onMounted(() => {
+      registerView(registryKeys, viewApi);
+      emit("onReady");
+    });
+
+    onBeforeUnmount(() => {
+      disposed = true;
+      unregisterView(registryKeys, viewApi);
+      scene.cleanup();
+
+      sharedRenderWindow?.delete?.();
+      sharedRenderWindow = null;
+
+      renderWindow?.delete?.();
+      renderWindow = null;
+    });
+
+    return viewApi;
   },
   template: `<div style="display: none;"></div>`,
 };

@@ -177,6 +177,7 @@ export default {
       onRenderRequested,
       onSceneApplied: scene.onSceneApplied,
       getInstance: scene.getInstance,
+      uploadTexture: scene.uploadTexture,
       setRepaintCallback,
     };
 

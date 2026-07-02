@@ -22,6 +22,7 @@ import {
   syncDistanceToCameraGlyphState,
   updateDistanceToCameraGlyphs,
 } from "./distanceToCameraGlyphs";
+import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
 export function useSceneSync(
   {
@@ -105,6 +106,19 @@ export function useSceneSync(
     );
   }
 
+  // Stage a texture source for this view's external-texture registry;
+  // vtkProjectedTextureMapper instances resolve it by textureKey at render
+  // time. Upload happens on the next render — triggering that render stays
+  // the caller's job.
+  function uploadTexture(key, source, options = {}) {
+    const registry = getExternalTextures(getRenderWindow?.() || null);
+    if (!registry || key == null) {
+      return false;
+    }
+    registry.setSource(key, source, options);
+    return true;
+  }
+
   function requestResync(reason = "scene-sync") {
     sync?.requestResync?.(reason);
   }
@@ -135,7 +149,8 @@ export function useSceneSync(
     const camera = getRenderer()?.getActiveCamera?.();
     const recordedViewMatrix = matrixCopy16(viewMatrix);
     const recordedProjectionMatrix = matrixCopy16(projectionMatrix);
-    if (!camera || !recordedViewMatrix || !recordedProjectionMatrix) return false;
+    if (!camera || !recordedViewMatrix || !recordedProjectionMatrix)
+      return false;
 
     renderedCamera = {
       viewMatrix: recordedViewMatrix,
@@ -168,7 +183,9 @@ export function useSceneSync(
     return {
       viewMatrix: renderedCamera.viewMatrix.slice(),
       projectionMatrix: renderedCamera.projectionMatrix.slice(),
-      rendererViewport: rendererViewport ? Array.from(rendererViewport, Number) : null,
+      rendererViewport: rendererViewport
+        ? Array.from(rendererViewport, Number)
+        : null,
       size: size ? Array.from(size, Number) : null,
     };
   }
@@ -456,6 +473,9 @@ export function useSceneSync(
 
   function cleanup() {
     disposed = true;
+    // The GL context is shared across views and outlives this one, so its
+    // textures must be deleted explicitly, before the render window goes away.
+    peekExternalTextures(getRenderWindow?.() || null)?.clear();
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
   }
@@ -483,6 +503,9 @@ export function useSceneSync(
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
         distanceToCameraGlyphs,
       ),
+      externalTextures: peekExternalTextures(
+        getRenderWindow?.() || null,
+      )?.describe() ?? { size: 0, entries: [] },
     };
   }
 
@@ -521,6 +544,7 @@ export function useSceneSync(
     resetCamera,
     onSceneApplied,
     getInstance,
+    uploadTexture,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

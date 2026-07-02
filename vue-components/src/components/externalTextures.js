@@ -182,4 +182,13 @@ export function getExternalTextures(renderWindow) {
   return registry;
 }
 
-export default { getExternalTextures };
+// Read-only lookup for cleanup and diagnostics paths that must not create a
+// registry as a side effect.
+export function peekExternalTextures(renderWindow) {
+  if (!renderWindow || typeof renderWindow !== "object") {
+    return null;
+  }
+  return registries.get(renderWindow) || null;
+}
+
+export default { getExternalTextures, peekExternalTextures };

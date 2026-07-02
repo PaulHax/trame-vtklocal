@@ -34,7 +34,11 @@ class VtkJsBaseView(HtmlElement):
         with bypass_distance_to_camera_for_serialization(render_window):
             self._window_id = self.object_manager.RegisterObject(render_window)
             render_window.Render()
-            self.object_manager.UpdateStatesFromObjects()
+            # Scope serialization to this view's window: the object manager is
+            # shared across views, and the no-arg overload would also serialize
+            # other views' glyph mappers whose vtkDistanceToCamera filters are
+            # not bypassed here (they execute renderer-less and error out).
+            self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
 
         self._collection_tracker = {}
         self._push_sync = None
@@ -65,7 +69,9 @@ class VtkJsBaseView(HtmlElement):
 
         with bypass_distance_to_camera_for_serialization(self._render_window):
             self._render_window.Render()
-            self.object_manager.UpdateStatesFromObjects()
+            # Scoped for the same reason as __init__: only this window's
+            # mappers are bypassed, so only this window may be serialized.
+            self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
             tracker = (
                 self._collection_tracker
                 if collection_tracker is None

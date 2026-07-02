@@ -89,6 +89,15 @@ class VtkJsBaseView(HtmlElement):
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
 
+    def has_view_clients(self) -> bool:
+        """Report whether any view client has attached to this view.
+
+        ``PushSync.update()``/``request_resync()`` silently no-op until a client
+        completes its initial resync, so callers use this to tell whether a push
+        will actually deliver.
+        """
+        return bool(self._push_sync and self._push_sync._view_clients)
+
     def _init_push_sync(self):
         from trame_vtklocal.widgets.push_sync import PushSync
 

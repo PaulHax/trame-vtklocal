@@ -38,7 +38,11 @@ jobs:
 
       - name: Build wheel
         working-directory: trame-vtklocal
-        run: pip install build && python -m build --wheel
+        run: |
+          # Stamp the same <base>+shared-context.<sha> version the local
+          # release.sh produces (read by hatch_build.py at build time).
+          export TRAME_VTKLOCAL_SHA=$(git rev-parse --short HEAD)
+          pip install build && python -m build --wheel
 
       - uses: actions/upload-artifact@v4
         with:
@@ -49,7 +53,8 @@ jobs:
         id: version
         working-directory: trame-vtklocal
         run: |
-          VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          # project.version is dynamic now; the base lives in hatch_build.py.
+          VERSION=$(sed -n 's/^BASE_VERSION *= *"\(.*\)".*/\1/p' hatch_build.py | head -n1)
           SHORT_SHA=$(git rev-parse --short HEAD)
           echo "tag=v${VERSION}-shared-context.${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 

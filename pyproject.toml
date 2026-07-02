@@ -1,6 +1,8 @@
 [project]
 name = "trame-vtklocal"
-version = "0.16.0"
+# Version is stamped at build time (base + git short sha) by the custom
+# metadata hook in hatch_build.py. Base version lives there as BASE_VERSION.
+dynamic = ["version"]
 description = "VTK Local Rendering using WASM"
 authors = [
     {name = "Kitware Inc."},
@@ -39,6 +41,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Stamps <base>+shared-context.<short-sha> into the wheel version at build time.
+[tool.hatch.metadata.hooks.custom]
 
 [tool.hatch.build]
 include = [

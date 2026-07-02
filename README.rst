@@ -87,6 +87,49 @@ Optionally, you can develop with bleeding edge VTK by following these steps. Mak
     source ./utils/dev_environment.sh -b master -c RelWithDebInfo
 
 
+Fork release flow (shared-context)
+----------------------------------------
+
+This ``shared-context`` fork ships as a pinned wheel to the app repo rather than
+to PyPI. The wheel version is stamped at build time with the git short sha
+(``0.16.0+shared-context.<sha>``, computed by the ``hatch_build.py`` metadata
+hook) so ``importlib.metadata.version("trame-vtklocal")`` proves exactly which
+fork commit produced the embedded UMD bundle. The CI workflow
+``.github/workflows/build-fork-wheel.yml`` builds the same stamped wheel on every
+push to ``shared-context``.
+
+Use ``release.sh`` at the fork root. It requires the vtk-js fork to be linked
+into ``vue-components`` (see Development above).
+
+Build and verify only (default, does NOT publish):
+
+.. code-block:: console
+
+    ./release.sh
+
+This rebuilds ``vue-components`` (the UMD bundle), builds the wheel, and asserts
+the UMD embedded in the wheel byte-matches the freshly built
+``serve/js/trame_vtklocal.umd.js`` (sha256 compare) so a stale wheel can never
+ship. It prints the stamped version and the release tag but publishes nothing.
+
+Publish a GitHub prerelease and print the app pin:
+
+.. code-block:: console
+
+    ./release.sh --publish
+
+This additionally creates (or re-uploads to) the ``gh`` prerelease
+``v0.16.0-shared-context.<sha>`` with the wheel attached, then prints the exact
+line to paste into the app's ``pyproject.toml`` plus the wheel ``sha256``.
+Re-running is safe (existing releases get the asset re-uploaded with
+``--clobber``).
+
+Two-repo pin bump: after ``--publish``, paste the printed dependency line into
+the app repo's ``pyproject.toml`` (the ``trame-vtklocal = { url = "..." }`` entry
+pointing at the new release asset) and re-lock. The fork release and the app pin
+are the two halves of a single version bump — keep them in sync.
+
+
 Running examples
 ----------------------------------------
 

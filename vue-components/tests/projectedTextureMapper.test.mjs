@@ -98,12 +98,16 @@ test("world-to-clip resolution: provider wins over prop", async () => {
 test("shader replacements consume the TCoord markers in the real templates", async () => {
   const { applyProjectedTextureShaderReplacements, ProjectedTextureMode } =
     await loadMapperModule();
-  const { default: vtkPolyDataVS } = await loadModule(
+  // v36 (Vite) builds export the template string as default; v35 (rollup)
+  // builds export it as the mangled named export `v`.
+  const vsModule = await loadModule(
     "/node_modules/@kitware/vtk.js/Rendering/OpenGL/glsl/vtkPolyDataVS.glsl.js",
   );
-  const { default: vtkPolyDataFS } = await loadModule(
+  const fsModule = await loadModule(
     "/node_modules/@kitware/vtk.js/Rendering/OpenGL/glsl/vtkPolyDataFS.glsl.js",
   );
+  const vtkPolyDataVS = vsModule.default ?? vsModule.v;
+  const vtkPolyDataFS = fsModule.default ?? fsModule.v;
 
   for (const [mode, expectations] of [
     [

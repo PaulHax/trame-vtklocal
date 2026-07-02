@@ -171,6 +171,7 @@ export default {
       renderShared,
       onRenderRequested,
       onSceneApplied: scene.onSceneApplied,
+      getInstance: scene.getInstance,
       setRepaintCallback,
     };
   },

@@ -98,6 +98,13 @@ export function useSceneSync(
     };
   }
 
+  function getInstance(id) {
+    if (id === undefined || id === null) return null;
+    return (
+      managedSyncContext?.synchronizerContext?.getInstance?.(String(id)) ?? null
+    );
+  }
+
   function requestResync(reason = "scene-sync") {
     sync?.requestResync?.(reason);
   }
@@ -496,6 +503,7 @@ export function useSceneSync(
     getRenderedCamera,
     resetCamera,
     onSceneApplied,
+    getInstance,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

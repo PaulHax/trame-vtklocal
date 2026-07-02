@@ -10,6 +10,7 @@ import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
 import { registerView, unregisterView } from "./viewRegistry";
+import { applySharedRenderPolicy } from "./sharedRenderPolicy";
 
 export default {
   emits: [
@@ -46,6 +47,7 @@ export default {
     const client = props.wsClient || trame?.client;
 
     let sharedRenderWindow = null;
+    let sharedContextGl = null;
     let renderWindow = null;
     let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
@@ -91,6 +93,7 @@ export default {
       const { syncStateAtRender = false } = options;
 
       syncStateAtRenderFlag = syncStateAtRender;
+      sharedContextGl = gl;
 
       sharedRenderWindow = vtkSharedRenderWindow.createFromContext(canvas, gl);
       sharedRenderWindow?.setRenderCallback?.(
@@ -120,13 +123,19 @@ export default {
       });
     }
 
+    // options: { clearDepth = true, frontFace = "CW" } — the shared-buffer
+    // depth-clear + triangle-winding policy the host needs around the render.
     function renderShared(options = {}) {
       if (syncStateAtRenderFlag) {
         scene.applyQueuedStateSync();
       }
 
       scene.updateDistanceToCameraGlyphs();
-      sharedRenderWindow?.renderShared?.(options);
+      applySharedRenderPolicy(
+        sharedContextGl,
+        () => sharedRenderWindow?.renderShared?.(),
+        options,
+      );
     }
 
     function onRenderRequested(callback) {
@@ -187,6 +196,7 @@ export default {
 
       sharedRenderWindow?.delete?.();
       sharedRenderWindow = null;
+      sharedContextGl = null;
 
       renderWindow?.delete?.();
       renderWindow = null;

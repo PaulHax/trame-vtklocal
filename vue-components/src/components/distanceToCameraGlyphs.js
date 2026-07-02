@@ -3,8 +3,11 @@ import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 export const DISTANCE_TO_CAMERA_STATE_KEY = "distanceToCamera";
 export const DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera";
 
-// World-unit safety cap for degenerate projections; applications with different
-// scene units may override this with distanceToCamera.maxScale.
+// World-unit fallback cap for degenerate projections, used only when the point
+// set has no usable extent (a single glyph / empty). Non-degenerate sets derive
+// a scene-proportional cap from their own bounds (see boundedMaxScale), so this
+// constant's units no longer need to match the app's; an app can still force a
+// cap with distanceToCamera.maxScale.
 const DEFAULT_MAX_SCALE = 600;
 const EPSILON = 1e-12;
 
@@ -65,7 +68,9 @@ function normalizeConfig(config) {
       ? config.arrayName
       : DEFAULT_DISTANCE_TO_CAMERA_ARRAY,
     inputDataObjectId: String(config.inputDataObjectId),
-    maxScale: isPositiveFinite(maxScale) ? maxScale : DEFAULT_MAX_SCALE,
+    // null (not DEFAULT_MAX_SCALE) when the app gives no explicit cap, so the
+    // per-update path derives a scene-proportional cap from the point extent.
+    maxScale: isPositiveFinite(maxScale) ? maxScale : null,
   };
 }
 
@@ -380,6 +385,39 @@ function entrySignature(entry, camera, input, points, metrics) {
   ].join("|");
 }
 
+function boundedMaxScale(pointValues, fallback) {
+  // Scene-proportional cap for degenerate projections: a screen-sized glyph
+  // never needs a world radius larger than the point set's own extent (its
+  // bounding-box diagonal). Falls back to `fallback` when the set has no
+  // meaningful extent (a single point / empty), so a lone glyph still clamps to
+  // something sane. Computed from the raw values so it never depends on cached
+  // dataset bounds.
+  const count = Math.floor((pointValues?.length || 0) / 3);
+  if (count < 2) {
+    return fallback;
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < count; i += 1) {
+    const offset = i * 3;
+    const x = pointValues[offset];
+    const y = pointValues[offset + 1];
+    const z = pointValues[offset + 2];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+  return isPositiveFinite(diagonal) ? diagonal : fallback;
+}
+
 export function updateDistanceToCameraGlyphs(
   registry,
   { renderer, renderWindow, synchronizerContext } = {},
@@ -459,7 +497,12 @@ export function updateDistanceToCameraGlyphs(
       metrics.width,
       metrics.height,
       entry.screenSize,
-      { maxScale: entry.maxScale, output: target.values },
+      {
+        maxScale: isPositiveFinite(entry.maxScale)
+          ? entry.maxScale
+          : boundedMaxScale(pointValues, DEFAULT_MAX_SCALE),
+        output: target.values,
+      },
     );
     target.array.modified?.();
     target.pointData.modified?.();

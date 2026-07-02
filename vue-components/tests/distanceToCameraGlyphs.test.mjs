@@ -282,6 +282,83 @@ test("distance-to-camera registry sizes the recorded filter input without server
   assert.ok(!serverOutput.getPointData().getArray("DistanceToCamera"));
 });
 
+test("distance-to-camera registry caps degenerate scales at the point-set extent", async () => {
+  const [
+    distanceToCameraGlyphs,
+    vtkGlyph3DMapperMod,
+    vtkPolyDataMod,
+    vtkPointsMod,
+  ] = await Promise.all([
+    loadModule("/src/components/distanceToCameraGlyphs.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Rendering/Core/Glyph3DMapper.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/DataModel/PolyData.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/Core/Points.js"),
+  ]);
+
+  const mapper = vtkGlyph3DMapperMod.default.newInstance();
+  const filterInput = vtkPolyDataMod.default.newInstance();
+  const points = vtkPointsMod.default.newInstance();
+  // Extent 3x4x0 -> bounding-box diagonal 5. A degenerate projection must clamp
+  // to this scene-proportional value, not the 600 world-unit fallback.
+  points.setData(new Float32Array([0, 0, 0, 3, 4, 0]), 3);
+  filterInput.setPoints(points);
+  mapper.setInputData(filterInput);
+
+  const instances = new Map([
+    ["mapper", mapper],
+    ["filter-input", filterInput],
+  ]);
+  const synchronizerContext = {
+    getInstance: (id) => instances.get(String(id)),
+  };
+
+  const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
+  distanceToCameraGlyphs.syncDistanceToCameraGlyphState(
+    {
+      id: "mapper",
+      type: "vtkGlyph3DMapper",
+      distanceToCamera: {
+        arrayName: "DistanceToCamera",
+        screenSize: 40,
+        inputDataObjectId: "filter-input",
+      },
+    },
+    synchronizerContext,
+    registry,
+  );
+
+  const camera = {
+    getMTime: () => 1,
+    getPhysicalScale: () => 1,
+    // All-zero composite -> every point projects to one pixel -> pixels-per-world
+    // is 0, so the cap binds for every glyph.
+    getCompositeProjectionMatrix: () => new Array(16).fill(0),
+  };
+  const renderer = {
+    getActiveCamera: () => camera,
+    getViewport: () => [0, 0, 1, 1],
+  };
+  const renderWindow = {
+    getViews: () => [{ getSize: () => [800, 400] }],
+  };
+
+  assert.equal(
+    distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
+      renderer,
+      renderWindow,
+      synchronizerContext,
+    }),
+    true,
+  );
+
+  const scales = filterInput
+    .getPointData()
+    .getArray("DistanceToCamera")
+    .getData();
+  assertAlmostEqual(scales[0], 5);
+  assertAlmostEqual(scales[1], 5);
+});
+
 test("distance-to-camera registry honors lock-style projection zoom", async () => {
   const [
     distanceToCameraGlyphs,

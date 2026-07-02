@@ -246,6 +246,7 @@ def _object_patch_signature(obj):
         "calls": obj.get("calls") or [],
         "arrays": obj.get("arrays") or {},
         "dependencies": _dependency_signature(obj),
+        "distanceToCamera": obj.get("distanceToCamera"),
     }
 
 

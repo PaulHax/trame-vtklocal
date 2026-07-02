@@ -28,6 +28,7 @@ from trame_vtklocal._protocol_constants import (
     SYNTHETIC_CELL_PREFIX,
     SYNTHETIC_VERSION_PREFIX,
 )
+from trame_vtklocal.module import distance_to_camera as dtc
 
 _scene_mtime_counter = [0]
 
@@ -686,6 +687,16 @@ class VtkJsTranslator:
         props = {}
         dependencies = []
         calls = []
+        vtk_mapper = self._get_vtk_object(state["Id"])
+        distance_to_camera = dtc.prepare_mapper_translation(
+            vtkjs_type,
+            vtk_mapper,
+            self.object_manager,
+            props,
+            self._translate_ref,
+            self._states_cache.clear,
+        )
+        dependencies.extend(distance_to_camera.get("dependencies", []))
 
         for key, value in state.items():
             if key in SKIP_PROPERTIES or to_camel_case(key) in SKIP_PROPERTIES:
@@ -695,6 +706,8 @@ class VtkJsTranslator:
                 input_list = value
                 if input_list and isinstance(input_list, list):
                     for port_idx, port_inputs in enumerate(input_list):
+                        if distance_to_camera.get("inputDataObjectId") and port_idx == 0:
+                            continue
                         if isinstance(port_inputs, list):
                             for input_ref in port_inputs:
                                 input_id = get_ref_id(input_ref)
@@ -723,7 +736,9 @@ class VtkJsTranslator:
                     continue
                 props[camel_key] = value
 
-        return {
+        calls.extend(distance_to_camera.get("calls", []))
+
+        result = {
             "id": str(state["Id"]),
             "type": vtkjs_type,
             "mtime": state.get("MTime", 0),
@@ -731,6 +746,8 @@ class VtkJsTranslator:
             "dependencies": dependencies,
             "calls": calls,
         }
+        dtc.update_mapper_state(result, distance_to_camera.get("state"))
+        return result
 
     def _translate_generic(self, state, vtkjs_type, relation_map=None):
         props = {}

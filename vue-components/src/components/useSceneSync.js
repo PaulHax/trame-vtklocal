@@ -15,6 +15,13 @@ import {
 } from "./pushSync";
 import { createSyncController } from "./syncController";
 import { dumpAppliedScene } from "./dumpAppliedScene";
+import {
+  createDistanceToCameraGlyphRegistry,
+  describeDistanceToCameraGlyphRegistry,
+  syncDistanceToCameraGlyphPatch,
+  syncDistanceToCameraGlyphState,
+  updateDistanceToCameraGlyphs,
+} from "./distanceToCameraGlyphs";
 
 export function useSceneSync(
   {
@@ -52,6 +59,7 @@ export function useSceneSync(
   let lastAppliedOp = null;
   let syncedRootId = null;
   let renderedCamera = null;
+  const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -232,6 +240,12 @@ export function useSceneSync(
 
         try {
           if (syncCapability(message.payload, true)) {
+            syncDistanceToCameraGlyphState(
+              message.payload,
+              managedSyncContext?.synchronizerContext,
+              distanceToCameraGlyphs,
+              { reset: true },
+            );
             synced = true;
           }
         } catch (error) {
@@ -275,6 +289,11 @@ export function useSceneSync(
         if (patchResult.failed) {
           return { status: "failed", didSync: synced };
         }
+        syncDistanceToCameraGlyphPatch(
+          message.payload,
+          resolvedSyncContext,
+          distanceToCameraGlyphs,
+        );
         noteMessageApplied(message);
         didApply = didApply || patchResult.didApply;
       } else {
@@ -287,6 +306,10 @@ export function useSceneSync(
       }
 
       message = sync?.takeNextMessage?.();
+    }
+
+    if (didApply) {
+      updateDistanceToCameraGlyphsForRender();
     }
 
     if (synced && emitUpdated) {
@@ -344,6 +367,7 @@ export function useSceneSync(
     messageAppliedCallback = null;
     lastAppliedOp = null;
     syncedRootId = null;
+    distanceToCameraGlyphs.clear();
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -419,6 +443,9 @@ export function useSceneSync(
       syncedRootId,
       pushCacheSize,
       pushCacheBytes,
+      distanceToCamera: describeDistanceToCameraGlyphRegistry(
+        distanceToCameraGlyphs,
+      ),
     };
   }
 
@@ -434,6 +461,14 @@ export function useSceneSync(
     );
   }
 
+  function updateDistanceToCameraGlyphsForRender() {
+    return updateDistanceToCameraGlyphs(distanceToCameraGlyphs, {
+      renderer: getRenderer(),
+      renderWindow: getRenderWindow?.(),
+      synchronizerContext: managedSyncContext?.synchronizerContext,
+    });
+  }
+
   return {
     initialize,
     cleanup,
@@ -447,6 +482,7 @@ export function useSceneSync(
     setRenderedCamera,
     getRenderedCamera,
     resetCamera,
+    updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,
   };

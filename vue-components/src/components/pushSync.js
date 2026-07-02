@@ -184,6 +184,15 @@ function collectStateArrayPathHashes(state, into = new Map()) {
   return into;
 }
 
+function collectDescriptorHashes(state, into = new Set()) {
+  walkArrayDescriptors(state, {
+    onDescriptor(descriptor) {
+      if (descriptor?.hash) into.add(descriptor.hash);
+    },
+  });
+  return into;
+}
+
 function hasSupportedProtocolVersion(payload) {
   return payload?.version === PUSH_PROTOCOL_VERSION;
 }
@@ -356,9 +365,13 @@ export function applyPatchUpdate(
 
   // Server lists hashes the live tree no longer references; drop them so the
   // client cache stays bounded. Run after ops apply in case any op needed
-  // them transiently.
+  // them transiently. Merged patches can retain an earlier patch's eviction for
+  // a hash that a later merged object update references again; keep anything the
+  // merged patch still describes as live.
   if (pushCache && Array.isArray(patch?.evictHashes)) {
+    const liveInPatch = collectDescriptorHashes(patch);
     for (const hash of patch.evictHashes) {
+      if (liveInPatch.has(hash)) continue;
       pushCache.delete(hash);
     }
   }

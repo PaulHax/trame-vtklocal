@@ -1,5 +1,8 @@
 from trame_client.widgets.core import AbstractElement
 from trame_vtklocal import module
+from trame_vtklocal.module.distance_to_camera import (
+    bypass_distance_to_camera_for_serialization,
+)
 
 class HtmlElement(AbstractElement):
     def __init__(self, _elem_name, children=None, **kwargs):
@@ -28,9 +31,10 @@ class VtkJsBaseView(HtmlElement):
             self._ref = f"{self._ref_prefix}_{VtkJsBaseView._next_id}"
 
         self._render_window = render_window
-        self._window_id = self.object_manager.RegisterObject(render_window)
-        render_window.Render()
-        self.object_manager.UpdateStatesFromObjects()
+        with bypass_distance_to_camera_for_serialization(render_window):
+            self._window_id = self.object_manager.RegisterObject(render_window)
+            render_window.Render()
+            self.object_manager.UpdateStatesFromObjects()
 
         self._collection_tracker = {}
         self._push_sync = None
@@ -59,20 +63,21 @@ class VtkJsBaseView(HtmlElement):
     def _get_vtkjs_state(self, version_registry=None, collection_tracker=None):
         from trame_vtklocal.module.vtkjs_translator import translate_scene
 
-        self._render_window.Render()
-        self.object_manager.UpdateStatesFromObjects()
-        tracker = (
-            self._collection_tracker
-            if collection_tracker is None
-            else collection_tracker
-        )
-        return translate_scene(
-            self.object_manager,
-            self._window_id,
-            tracker,
-            version_registry=version_registry,
-            rw_id=self._window_id,
-        )
+        with bypass_distance_to_camera_for_serialization(self._render_window):
+            self._render_window.Render()
+            self.object_manager.UpdateStatesFromObjects()
+            tracker = (
+                self._collection_tracker
+                if collection_tracker is None
+                else collection_tracker
+            )
+            return translate_scene(
+                self.object_manager,
+                self._window_id,
+                tracker,
+                version_registry=version_registry,
+                rw_id=self._window_id,
+            )
 
     def get_instance_id(self, vtk_object):
         vtk_id = self.object_manager.GetId(vtk_object)

@@ -1,6 +1,7 @@
 import copy
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -10,6 +11,7 @@ from trame_vtklocal._protocol_constants import (
     SYNTHETIC_CELL_PREFIX,
     SYNTHETIC_VERSION_PREFIX,
 )
+from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.widgets._partial_array_ledger import PartialArrayLedger
 from trame_vtklocal.widgets._push_sync_helpers import (
     JS_ARRAY_DTYPE_MAP,
@@ -151,6 +153,15 @@ class PushSync:
         object_manager = self._object_manager()
         if object_manager is not None:
             self._prune_object_manager(object_manager, include_blobs=True)
+
+    @contextmanager
+    def _suppress_dirty_events(self):
+        previous = self._consuming_dirty
+        self._consuming_dirty = True
+        try:
+            yield
+        finally:
+            self._consuming_dirty = previous
 
     def _reset_dirty_state(self):
         self._dirty_object_ids.clear()
@@ -348,6 +359,8 @@ class PushSync:
                 producer = connection.GetProducer()
                 if producer is None:
                     continue
+                if dtc.is_distance_to_camera_algorithm(producer):
+                    continue
 
                 self._observe_pipeline_producer(
                     mapper_id,
@@ -365,8 +378,11 @@ class PushSync:
             return None
 
         data_object = None
+        if port_index == 0 and connection_index == 0:
+            _input_algorithm, data_object = dtc.mapper_distance_to_camera_input(mapper)
+
         get_input_data = getattr(mapper, "GetInputDataObject", None)
-        if get_input_data is not None:
+        if data_object is None and get_input_data is not None:
             try:
                 data_object = get_input_data(port_index, connection_index)
             except (TypeError, RuntimeError):
@@ -583,15 +599,18 @@ class PushSync:
         object_manager = self._require_object_delta()
 
         render_window = object_manager.GetObjectAtId(self._rw_id_int)
-        if render_window is not None and hasattr(render_window, "Render"):
-            render_window.Render()
+        with self._suppress_dirty_events():
+            with dtc.bypass_distance_to_camera_for_serialization(render_window):
+                if render_window is not None and hasattr(render_window, "Render"):
+                    render_window.Render()
 
-        try:
-            object_manager.UpdateStatesFromObjects([self._rw_id_int])
-        except TypeError as exc:
-            raise RuntimeError(
-                "Push sync requires vtkObjectManager.UpdateStatesFromObjects(ids)"
-            ) from exc
+                try:
+                    object_manager.UpdateStatesFromObjects([self._rw_id_int])
+                except TypeError as exc:
+                    raise RuntimeError(
+                        "Push sync requires "
+                        "vtkObjectManager.UpdateStatesFromObjects(ids)"
+                    ) from exc
 
         self._prune_object_manager(object_manager)
 
@@ -604,12 +623,11 @@ class PushSync:
         }
         # UpdateStateFromObject can fire ModifiedEvent on observed VTK objects;
         # suppress those re-entrant marks so they don't dirty ids we just consumed.
-        self._consuming_dirty = True
-        try:
-            for object_id in sorted(manager_ids, key=int):
-                object_manager.UpdateStateFromObject(int(object_id))
-        finally:
-            self._consuming_dirty = False
+        render_window = object_manager.GetObjectAtId(self._rw_id_int)
+        with self._suppress_dirty_events():
+            with dtc.bypass_distance_to_camera_for_serialization(render_window):
+                for object_id in sorted(manager_ids, key=int):
+                    object_manager.UpdateStateFromObject(int(object_id))
 
         # Per-frame prune skips PruneUnusedBlobs: its sweep cost grows linearly
         # with uptime (2 ms → 50 ms in 5 min of video playback) while the other
@@ -642,9 +660,12 @@ class PushSync:
         object_manager = object_manager or self._object_manager()
         if object_manager is None:
             return set()
+        render_window = object_manager.GetObjectAtId(self._rw_id_int)
         try:
-            ids = list(object_manager.GetAllDependencies(self._rw_id_int))
-            return {str(value) for value in object_manager.GetBlobHashes(ids)}
+            with self._suppress_dirty_events():
+                with dtc.bypass_distance_to_camera_for_serialization(render_window):
+                    ids = list(object_manager.GetAllDependencies(self._rw_id_int))
+                    return {str(value) for value in object_manager.GetBlobHashes(ids)}
         except (RuntimeError, TypeError, ValueError):
             return set()
 
@@ -708,21 +729,24 @@ class PushSync:
             return
         # producer.Update() can fire ModifiedEvent on the producer or downstream,
         # which would re-add ids we just cleared via _consume_dirty_tracking().
-        self._consuming_dirty = True
-        try:
+        with self._suppress_dirty_events():
             for producer in producers.values():
+                if dtc.is_distance_to_camera_algorithm(producer):
+                    continue
                 update = getattr(producer, "Update", None)
                 if update is not None:
                     update()
-        finally:
-            self._consuming_dirty = False
 
     def _snapshot_status(self):
         object_manager = self._object_manager()
         if object_manager is None:
             return None
 
-        ids = list(object_manager.GetAllDependencies(self._rw_id_int))
+        render_window = object_manager.GetObjectAtId(self._rw_id_int)
+        with self._suppress_dirty_events():
+            with dtc.bypass_distance_to_camera_for_serialization(render_window):
+                ids = list(object_manager.GetAllDependencies(self._rw_id_int))
+                blob_hashes = set(object_manager.GetBlobHashes(ids))
         live_ids = {str(vtk_id) for vtk_id in ids}
         self._object_class_names = {
             object_id: class_name
@@ -750,7 +774,7 @@ class PushSync:
             "ids": live_ids,
             "mtimes": mtimes,
             "classes": classes,
-            "hashes": set(object_manager.GetBlobHashes(ids)),
+            "hashes": blob_hashes,
         }
 
     @staticmethod
@@ -764,12 +788,16 @@ class PushSync:
     def _translate_object_state(self, object_id):
         from trame_vtklocal.module.vtkjs_translator import translate_object
 
-        return translate_object(
-            self._object_manager(),
-            int(object_id),
-            version_registry=self._partial_arrays.version_registry,
-            rw_id=self._rw_id_int,
-        )
+        object_manager = self._object_manager()
+        render_window = object_manager.GetObjectAtId(self._rw_id_int)
+        with self._suppress_dirty_events():
+            with dtc.bypass_distance_to_camera_for_serialization(render_window):
+                return translate_object(
+                    object_manager,
+                    int(object_id),
+                    version_registry=self._partial_arrays.version_registry,
+                    rw_id=self._rw_id_int,
+                )
 
     def _candidate_ids_from_dirty(self, dirty_ids, previous_objects):
         candidate_ids = set()

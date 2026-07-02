@@ -8,6 +8,7 @@ import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRender
 
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
+import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
 
 export default {
   emits: [
@@ -38,16 +39,17 @@ export default {
 
     let sharedRenderWindow = null;
     let renderWindow = null;
-    let renderRequestedCallback = null;
+    let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
     let syncStateAtRenderFlag = false;
     let disposed = false;
 
     function renderScene() {
-      if (renderRequestedCallback) {
-        renderRequestedCallback();
+      if (renderRequestedCallbackWithDistanceToCamera) {
+        renderRequestedCallbackWithDistanceToCamera();
         return;
       }
+      scene.updateDistanceToCameraGlyphs();
       sharedRenderWindow?.renderShared?.({});
     }
 
@@ -61,8 +63,8 @@ export default {
 
     const scheduleQueuedStateApply = createRafScheduler(() => {
       scene.update().then(() => {
-        if (!disposed && renderRequestedCallback) {
-          renderRequestedCallback();
+        if (!disposed && renderRequestedCallbackWithDistanceToCamera) {
+          renderRequestedCallbackWithDistanceToCamera();
         }
       });
     });
@@ -71,7 +73,7 @@ export default {
       if (repaintCallback) {
         repaintCallback(deltaState);
       } else if (syncStateAtRenderFlag) {
-        renderRequestedCallback?.();
+        renderRequestedCallbackWithDistanceToCamera?.();
       } else {
         scheduleQueuedStateApply();
       }
@@ -83,6 +85,9 @@ export default {
       syncStateAtRenderFlag = syncStateAtRender;
 
       sharedRenderWindow = vtkSharedRenderWindow.createFromContext(canvas, gl);
+      sharedRenderWindow?.setRenderCallback?.(
+        renderRequestedCallbackWithDistanceToCamera,
+      );
 
       renderWindow = vtkRenderWindow.newInstance();
       renderWindow.addView(sharedRenderWindow);
@@ -98,7 +103,7 @@ export default {
         },
         onPartialApplied(_update, _syncCtx, applied) {
           if (applied) {
-            renderRequestedCallback?.();
+            renderRequestedCallbackWithDistanceToCamera?.();
           }
         },
         onMessageApplied(message) {
@@ -112,12 +117,21 @@ export default {
         scene.applyQueuedStateSync();
       }
 
+      scene.updateDistanceToCameraGlyphs();
       sharedRenderWindow?.renderShared?.(options);
     }
 
     function onRenderRequested(callback) {
-      renderRequestedCallback = callback;
-      sharedRenderWindow?.setRenderCallback?.(callback);
+      renderRequestedCallbackWithDistanceToCamera =
+        typeof callback === "function"
+          ? createDistanceToCameraRenderCallback(
+              () => scene.updateDistanceToCameraGlyphs(),
+              callback,
+            )
+          : null;
+      sharedRenderWindow?.setRenderCallback?.(
+        renderRequestedCallbackWithDistanceToCamera,
+      );
     }
 
     function setRepaintCallback(callback) {

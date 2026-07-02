@@ -246,6 +246,152 @@ test("useSceneSync does not emit viewStateExtra when full state has no extra", a
   );
 });
 
+test("useSceneSync computes distance-to-camera arrays after queued full state", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+
+  const pointValues = new Float32Array([0, 0, 0]);
+  const points = {
+    getData: () => pointValues,
+    getNumberOfPoints: () => 1,
+    getMTime: () => 1,
+  };
+  const arrays = [];
+  let scalars = null;
+  const pointData = {
+    getArray: (name) => arrays.find((array) => array.getName?.() === name),
+    getArrayByName: (name) => arrays.find((array) => array.getName?.() === name),
+    getNumberOfArrays: () => arrays.length,
+    getArrayByIndex: (index) => arrays[index],
+    getScalars: () => scalars,
+    setScalars(array) {
+      scalars = array;
+      if (!arrays.includes(array)) {
+        arrays.push(array);
+      }
+    },
+    addArray(array) {
+      arrays.push(array);
+    },
+    modified() {},
+  };
+  const input = {
+    getPoints: () => points,
+    getPointData: () => pointData,
+    getMTime: () => 1,
+    modified() {},
+  };
+  let mapperInput = null;
+  let scaleArray = null;
+  const mapper = {
+    getInputData: () => mapperInput,
+    setInputData(value) {
+      mapperInput = value;
+    },
+    setScaleArray(value) {
+      scaleArray = value;
+    },
+    modified() {},
+  };
+  const instances = new Map([
+    ["mapper", mapper],
+    ["input", input],
+  ]);
+  const synchronizerContext = {
+    getInstance: (id) => instances.get(String(id)),
+  };
+  const camera = {
+    getMTime: () => 1,
+    getPhysicalScale: () => 1,
+    getCompositeProjectionMatrix: () => {
+      const matrix = new Array(16).fill(0);
+      matrix[0] = 1;
+      matrix[5] = 1;
+      matrix[10] = 1;
+      matrix[15] = 1;
+      return matrix;
+    },
+  };
+  const renderer = {
+    getActiveCamera: () => camera,
+    getViewport: () => [0, 0, 1, 1],
+  };
+  const renderWindow = {
+    getRenderersByReference: () => [renderer],
+    getViews: () => [{ getSize: () => [1000, 500] }],
+  };
+  const fullState = {
+    id: "rw",
+    type: "vtkRenderWindow",
+    dependencies: [
+      {
+        id: "mapper",
+        type: "vtkGlyph3DMapper",
+        distanceToCamera: {
+          arrayName: "DistanceToCamera",
+          screenSize: 20,
+          inputDataObjectId: "input",
+        },
+      },
+    ],
+  };
+  let nextMessage = { kind: "full", payload: fullState };
+
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit() {},
+      getRenderWindow: () => renderWindow,
+      renderScene() {},
+      syncErrorLabel: "UseSceneSyncDistanceToCameraTest",
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext,
+        syncRenderWindow: { id: "sync-render-window" },
+        cleanup() {},
+      }),
+      withSyncCapability: () => () => true,
+      createPushSync() {
+        return {
+          cleanup() {},
+          requestResync() {},
+          getQueueLength() {
+            return nextMessage ? 1 : 0;
+          },
+          takeNextMessage() {
+            const message = nextMessage;
+            nextMessage = null;
+            return message;
+          },
+          markMessageApplied() {},
+        };
+      },
+      createSyncController() {
+        return {
+          async requestSync() {
+            return false;
+          },
+        };
+      },
+    },
+  );
+
+  scene.initialize({
+    contextName: "ctx",
+    renderWindowId: 1,
+    syncMode: "push",
+  });
+
+  const didSync = scene.applyQueuedStateSync();
+
+  assert.equal(didSync, true);
+  assert.equal(mapperInput, input);
+  assert.equal(scaleArray, "DistanceToCamera");
+  assert.ok(pointData.getScalars());
+  assert.equal(pointData.getScalars().getName(), "DistanceToCamera");
+  assert.ok(pointData.getScalars().getData()[0] > 0);
+});
+
 test("useSceneSync keeps partial updates buffered until the full-state queue drains", async () => {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
 

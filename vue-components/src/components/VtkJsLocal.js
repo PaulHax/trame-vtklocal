@@ -11,6 +11,7 @@ import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style
 import { extractCameraParams } from "./vtkJsSync";
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
+import { bindDistanceToCameraInteractorRenderEvent } from "./distanceToCameraGlyphs";
 
 export default {
   emits: [
@@ -49,8 +50,10 @@ export default {
     let renderWindow = null;
     let interactor = null;
     let resizeObserver = null;
+    let interactorRenderSubscription = null;
 
     function renderScene() {
+      scene.updateDistanceToCameraGlyphs();
       renderWindow?.render?.();
     }
 
@@ -113,6 +116,10 @@ export default {
       interactor.setView(openGLRenderWindow);
       interactor.initialize();
       interactor.bindEvents(container.value);
+      interactorRenderSubscription = bindDistanceToCameraInteractorRenderEvent(
+        interactor,
+        () => scene.updateDistanceToCameraGlyphs(),
+      );
 
       interactor.onEndInteraction(() => {
         const camera = scene.getRenderer()?.getActiveCamera?.();
@@ -130,6 +137,9 @@ export default {
 
     onBeforeUnmount(() => {
       scene.cleanup();
+
+      interactorRenderSubscription?.unsubscribe?.();
+      interactorRenderSubscription = null;
 
       resizeObserver?.disconnect?.();
       resizeObserver = null;

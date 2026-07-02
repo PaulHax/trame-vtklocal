@@ -6,6 +6,7 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
+from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.module.vtkjs_translator import translate_scene
 from trame_vtklocal.widgets.push_sync import PushSync
@@ -212,6 +213,15 @@ def _make_real_vtk_scene():
     return api, rw, renderer, actor, polydata, points, render_window_id
 
 
+def _make_empty_render_window():
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+
+    rw = vtkRenderWindow()
+    rw.SetOffScreenRendering(1)
+    rw.AddRenderer(vtkRenderer())
+    return rw
+
+
 def _make_real_push_sync(server, api, render_window, render_window_id):
     calls = {"full_translate": 0}
 
@@ -219,6 +229,92 @@ def _make_real_push_sync(server, api, render_window, render_window_id):
         calls["full_translate"] += 1
         render_window.Render()
         api.vtk_object_manager.UpdateStatesFromObjects()
+        return translate_scene(
+            api.vtk_object_manager,
+            render_window_id,
+            collection_tracker,
+            version_registry,
+            render_window_id,
+        )
+
+    push_sync = PushSync(
+        server,
+        get_state,
+        lambda vtk_object: str(api.vtk_object_manager.GetId(vtk_object)),
+        render_window_id=render_window_id,
+        api=api,
+    )
+    return push_sync, calls
+
+
+def _make_distance_to_camera_vtk_scene():
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkPolyData
+    from vtkmodules.vtkFiltersSources import vtkSphereSource
+    from vtkmodules.vtkRenderingCore import (
+        vtkActor,
+        vtkDistanceToCamera,
+        vtkGlyph3DMapper,
+        vtkRenderer,
+        vtkRenderWindow,
+    )
+
+    api = _ObjectManagerApiNoAttachments()
+    rw = vtkRenderWindow()
+    rw.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    rw.AddRenderer(renderer)
+
+    points = vtkPoints()
+    points.InsertNextPoint(0.0, 0.0, 0.0)
+    points.InsertNextPoint(1.0, 0.0, 0.0)
+    centers = vtkPolyData()
+    centers.SetPoints(points)
+
+    distance_to_camera = vtkDistanceToCamera()
+    distance_to_camera.SetInputData(centers)
+    distance_to_camera.SetScreenSize(36)
+
+    source = vtkSphereSource()
+    source.Update()
+
+    mapper = vtkGlyph3DMapper()
+    mapper.SetInputConnection(distance_to_camera.GetOutputPort())
+    mapper.SetSourceData(source.GetOutput())
+    mapper.SetScaleArray("DistanceToCamera")
+    mapper.SetScaleModeToScaleByMagnitude()
+    mapper.OrientOff()
+    mapper.SetScalarVisibility(False)
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    renderer.AddActor(actor)
+    renderer.ResetCamera()
+
+    render_window_id = api.vtk_object_manager.RegisterObject(rw)
+    with dtc.bypass_distance_to_camera_for_serialization(rw):
+        rw.Render()
+        api.vtk_object_manager.UpdateStatesFromObjects()
+
+    return {
+        "api": api,
+        "render_window": rw,
+        "render_window_id": render_window_id,
+    }
+
+
+def _make_distance_to_camera_push_sync(server):
+    scene = _make_distance_to_camera_vtk_scene()
+    api = scene["api"]
+    render_window = scene["render_window"]
+    render_window_id = scene["render_window_id"]
+    calls = {"full_translate": 0}
+
+    def get_state(version_registry=None, collection_tracker=None):
+        calls["full_translate"] += 1
+        with dtc.bypass_distance_to_camera_for_serialization(render_window):
+            render_window.Render()
+            api.vtk_object_manager.UpdateStatesFromObjects()
         return translate_scene(
             api.vtk_object_manager,
             render_window_id,
@@ -427,6 +523,40 @@ def _inline_descriptor_hashes(value):
     for child in value.values():
         hashes.extend(_inline_descriptor_hashes(child))
     return hashes
+
+
+def test_vtkjs_base_view_preserves_explicit_ref_and_generates_unique_refs():
+    from trame.app import get_server
+
+    previous_next_id = VtkJsBaseView._next_id
+    views = []
+    try:
+        VtkJsBaseView._next_id = 0
+        server = get_server("vtkjs_ref_regression")
+
+        first_auto = VtkJsLocalView(
+            _make_empty_render_window(),
+            trame_server=server,
+        )
+        explicit = VtkJsLocalView(
+            _make_empty_render_window(),
+            trame_server=server,
+            ref="customView",
+        )
+        second_auto = VtkJsLocalView(
+            _make_empty_render_window(),
+            trame_server=server,
+        )
+        views.extend([first_auto, explicit, second_auto])
+
+        assert explicit.ref_name == "customView"
+        assert first_auto.ref_name == "_vtkjslocalview_1"
+        assert second_auto.ref_name == "_vtkjslocalview_2"
+        assert first_auto.ref_name != second_auto.ref_name
+    finally:
+        for view in views:
+            view.cleanup()
+        VtkJsBaseView._next_id = previous_next_id
 
 
 def test_push_sync_update_requires_object_manager_delta_support():
@@ -743,6 +873,29 @@ def test_push_sync_pipeline_update_does_not_re_dirty_consumed_ids(monkeypatch):
     # A second update with no real changes must not republish anything;
     # the first update's pipeline refresh would re-dirty without the guard.
     push_sync.update()
+    assert server.protocol.messages == []
+
+
+def test_push_sync_distance_to_camera_idle_snapshots_do_not_re_dirty_mapper():
+    server = _FakeServer()
+    push_sync, calls = _make_distance_to_camera_push_sync(server)
+
+    push_sync.client_resync("client-a")
+    assert calls["full_translate"] == 1
+    server.protocol.messages.clear()
+    push_sync._reset_dirty_state()
+
+    first_status = push_sync._snapshot_status()
+    push_sync._sync_dirty_observers(first_status)
+    assert push_sync._dirty_object_ids == set()
+
+    second_status = push_sync._snapshot_status()
+    push_sync._sync_dirty_observers(second_status)
+    assert push_sync._dirty_object_ids == set()
+
+    push_sync.update()
+
+    assert calls["full_translate"] == 1
     assert server.protocol.messages == []
 
 

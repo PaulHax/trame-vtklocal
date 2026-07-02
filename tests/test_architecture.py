@@ -3,7 +3,7 @@
 These rules describe the *shape* of the codebase — what may depend on
 what — rather than runtime behavior. They run in the normal pytest pass
 with no extra tooling. Each rule names the PR or commit whose lesson it
-encodes, so failures point future readers (or agents) at the why.
+encodes, so failures point future maintainers at the why.
 """
 
 from __future__ import annotations
@@ -77,8 +77,9 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
+    "module/protocol.py": 430,           # DTC push-view bypass protects legacy RPC dependency walks; protocol GC remains the next extraction target
     "widgets/push_sync.py": 1700,        # downsplit in progress; helpers + ledger extracted; PushSync state machine vs publish dispatch is the next seam
-    "module/vtkjs_translator.py": 950,   # next candidate for the same downsplit arc as push_sync
+    "module/vtkjs_translator.py": 980,   # DTC mapper bridge added; still next candidate for the same downsplit arc as push_sync
 }
 
 

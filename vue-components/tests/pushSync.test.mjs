@@ -2360,3 +2360,96 @@ test("merging consecutive patches unions their evictHashes", async () => {
     globalThis.document = previousDocument;
   }
 });
+
+test("merged patch keeps hashes referenced by the merged object update", async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = createDocumentStub();
+
+  try {
+    const { createPushSync, applyPatchUpdate } = await loadModule(
+      "/src/components/pushSync.js",
+    );
+    const { client, emit } = createClientHarness({
+      onCall(method) {
+        if (method === "vtkjs.push.resync") {
+          return Promise.resolve(createEmptyState());
+        }
+        throw new Error(`Unexpected RPC: ${method}`);
+      },
+    });
+
+    const appliedProperties = [];
+    const pushCache = new Map([["revived", new Float32Array([0])]]);
+    const synchronizerContext = {
+      getInstance: () => ({
+        set(properties) {
+          appliedProperties.push(properties);
+        },
+        modified() {},
+      }),
+    };
+    const sync = createPushSync(
+      client,
+      { async synchronize() { return true; } },
+      synchronizerContext,
+      "rw",
+      pushCache,
+    );
+
+    await flushAsyncWork();
+    takeAllReadyMessages(sync);
+
+    const patchA = createPatchMessage({
+      baseSeq: 0,
+      seq: 1,
+      ops: [{ op: "setProperties", id: "1", properties: { frame: 1 } }],
+    });
+    patchA.evictHashes = ["revived"];
+    const patchB = createPatchMessage({
+      baseSeq: 1,
+      seq: 2,
+      ops: [
+        {
+          op: "updateObject",
+          id: "1",
+          state: {
+            id: "1",
+            type: "vtkSyntheticObject",
+            properties: {
+              points: {
+                hash: "revived",
+                dataType: "Float32Array",
+                numberOfComponents: 3,
+                size: 3,
+                name: "Points",
+                content: new Uint8Array(new Float32Array([1, 2, 3]).buffer),
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    emit("trame.vtk.patch", patchA);
+    emit("trame.vtk.patch", patchB);
+
+    const merged = sync.takeNextMessage();
+    assert.ok(merged);
+    assert.equal(merged.kind, "patch");
+    assert.deepEqual(merged.payload.evictHashes, ["revived"]);
+
+    assert.equal(
+      applyPatchUpdate(merged.payload, synchronizerContext, null, pushCache),
+      true,
+    );
+    sync.markMessageApplied(merged);
+
+    assert.equal(pushCache.has("revived"), true);
+    assert.deepEqual(Array.from(pushCache.get("revived")), [1, 2, 3]);
+    assert.equal(appliedProperties.length, 1);
+
+    sync.cleanup();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});

@@ -1,6 +1,7 @@
 import zipfile
 import json
 import logging
+from contextlib import ExitStack
 from pathlib import Path
 from wslink import register as export_rpc
 from wslink.websocket import LinkProtocol
@@ -8,6 +9,8 @@ from wslink.websocket import LinkProtocol
 # from vtkmodules.vtkCommonCore import vtkLogger
 from vtkmodules.vtkSerializationManager import vtkObjectManager
 from vtkmodules.vtkCommonCore import vtkVersion
+
+from trame_vtklocal.module import distance_to_camera as dtc
 
 try:
     import zlib  # noqa
@@ -30,6 +33,13 @@ def map_id_mtime(object_manager, vtk_id):
     if vtk_obj is None:
         return (vtk_id, 0)
     return (vtk_id, vtk_obj.GetMTime())
+
+
+def object_for_id(object_manager, obj_id):
+    try:
+        return object_manager.GetObjectAtId(int(obj_id))
+    except (RuntimeError, TypeError, ValueError):
+        return None
 
 
 class ObjectManagerAPI(LinkProtocol):
@@ -117,14 +127,32 @@ class ObjectManagerAPI(LinkProtocol):
         return hashes
 
     def _active_object_blob_hashes(self):
+        with self._bypass_distance_to_camera_for_push_views():
+            try:
+                active_ids = list(self.vtk_object_manager.GetAllDependencies(""))
+            except (RuntimeError, TypeError, ValueError):
+                return set()
+            try:
+                return {
+                    str(value)
+                    for value in self.vtk_object_manager.GetBlobHashes(active_ids)
+                }
+            except (RuntimeError, TypeError, ValueError):
+                return set()
+
+    def _bypass_distance_to_camera_for_push_views(self):
+        stack = ExitStack()
         try:
-            active_ids = list(self.vtk_object_manager.GetAllDependencies(""))
-        except (RuntimeError, TypeError, ValueError):
-            return set()
-        try:
-            return {str(value) for value in self.vtk_object_manager.GetBlobHashes(active_ids)}
-        except (RuntimeError, TypeError, ValueError):
-            return set()
+            for push_view in self._push_views.values():
+                render_window = getattr(push_view, "_render_window", None)
+                if render_window is not None:
+                    stack.enter_context(
+                        dtc.bypass_distance_to_camera_for_serialization(render_window)
+                    )
+            return stack
+        except Exception:
+            stack.close()
+            raise
 
     def get_active_client_id(self):
         core_server = getattr(self, "coreServer", None)
@@ -166,16 +194,18 @@ class ObjectManagerAPI(LinkProtocol):
     def update(self, push_camera=False, obj_to_update=None, **_):
         self._push_camera = push_camera
 
-        if API_NO_IDS_UPDATE:  # <= 9.4.2
-            self.vtk_object_manager.UpdateStatesFromObjects()
-        else:  # > 9.4.2
-            if obj_to_update is None:
+        with self._bypass_distance_to_camera_for_push_views():
+            if API_NO_IDS_UPDATE:  # <= 9.4.2
                 self.vtk_object_manager.UpdateStatesFromObjects()
-            else:
-                ids = [
-                    self.vtk_object_manager.GetId(vtk_obj) for vtk_obj in obj_to_update
-                ]
-                self.vtk_object_manager.UpdateStatesFromObjects(ids)
+            else:  # > 9.4.2
+                if obj_to_update is None:
+                    self.vtk_object_manager.UpdateStatesFromObjects()
+                else:
+                    ids = [
+                        self.vtk_object_manager.GetId(vtk_obj)
+                        for vtk_obj in obj_to_update
+                    ]
+                    self.vtk_object_manager.UpdateStatesFromObjects(ids)
 
         if self._debug_state:
             self.vtk_object_manager.Export(f"snapshot-{self._debug_state_counter}")
@@ -213,7 +243,8 @@ class ObjectManagerAPI(LinkProtocol):
 
     @property
     def active_ids(self):
-        return self.vtk_object_manager.GetAllDependencies("")
+        with self._bypass_distance_to_camera_for_push_views():
+            return self.vtk_object_manager.GetAllDependencies("")
 
     @export_rpc("vtklocal.subscribe.update")
     def update_subscription(self, obj_id, delta):
@@ -299,18 +330,20 @@ class ObjectManagerAPI(LinkProtocol):
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id):
         # print("get_status", obj_id)
-        ids = self.vtk_object_manager.GetAllDependencies(obj_id)
+        root_object = object_for_id(self.vtk_object_manager, obj_id)
+        with dtc.bypass_distance_to_camera_for_serialization(root_object):
+            ids = self.vtk_object_manager.GetAllDependencies(obj_id)
 
-        # Add widgets ids without duplicate
-        ids_width_deps = list(ids)
-        if obj_id in self._widgets:
-            for dep_id in self._widgets[obj_id]:
-                ids_width_deps += list(
-                    self.vtk_object_manager.GetAllDependencies(dep_id)
-                )
-        ids = list(set(ids_width_deps))
+            # Add widgets ids without duplicate
+            ids_width_deps = list(ids)
+            if obj_id in self._widgets:
+                for dep_id in self._widgets[obj_id]:
+                    ids_width_deps += list(
+                        self.vtk_object_manager.GetAllDependencies(dep_id)
+                    )
+            ids = list(set(ids_width_deps))
 
-        hashes = self.vtk_object_manager.GetBlobHashes(ids)
+            hashes = self.vtk_object_manager.GetBlobHashes(ids)
         renderWindow = self.vtk_object_manager.GetObjectAtId(obj_id)
         ids_mtime = [map_id_mtime(self.vtk_object_manager, v) for v in ids]
         ignore_ids = []

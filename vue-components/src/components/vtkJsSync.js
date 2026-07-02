@@ -6,6 +6,9 @@ import {
   cleanupRemovedRendererDependencies,
   isLiveInstance,
 } from "./sync/syncUpdaters";
+// Registers vtkProjectedTextureMapper with the scene graph and the state-sync
+// type mapping on import so serialized scenes can carry the type.
+import "./projectedTextureMapper";
 
 let preRenderSkippingRenderWindowUpdaterInstalled = false;
 

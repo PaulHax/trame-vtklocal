@@ -56,6 +56,7 @@ export function useSceneSync(
   let disposed = false;
   let partialAppliedCallback = null;
   let messageAppliedCallback = null;
+  const sceneAppliedCallbacks = new Set();
   let lastAppliedOp = null;
   let syncedRootId = null;
   let renderedCamera = null;
@@ -84,6 +85,17 @@ export function useSceneSync(
     recordLastAppliedOp(message);
     sync?.markMessageApplied?.(message);
     messageAppliedCallback?.(message);
+    sceneAppliedCallbacks.forEach((callback) => callback(message));
+  }
+
+  function onSceneApplied(callback) {
+    if (typeof callback !== "function") {
+      return () => {};
+    }
+    sceneAppliedCallbacks.add(callback);
+    return () => {
+      sceneAppliedCallbacks.delete(callback);
+    };
   }
 
   function requestResync(reason = "scene-sync") {
@@ -421,6 +433,7 @@ export function useSceneSync(
   function cleanup() {
     disposed = true;
     cleanupSyncContext();
+    sceneAppliedCallbacks.clear();
   }
 
   function getSyncDiagnostics() {
@@ -482,6 +495,7 @@ export function useSceneSync(
     setRenderedCamera,
     getRenderedCamera,
     resetCamera,
+    onSceneApplied,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

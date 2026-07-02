@@ -170,6 +170,7 @@ export default {
       getAppliedSceneState: scene.getAppliedSceneState,
       renderShared,
       onRenderRequested,
+      onSceneApplied: scene.onSceneApplied,
       setRepaintCallback,
     };
   },

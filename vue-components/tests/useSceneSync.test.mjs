@@ -663,3 +663,78 @@ test("useSceneSync emits full-state viewStateExtra before partial viewStateExtra
 
   assert.deepEqual(emittedExtras, [fullState.extra, partialUpdate.extra]);
 });
+
+test("useSceneSync onSceneApplied fires on applied message and unsubscribe stops it", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+
+  let nextMessage = null;
+
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit() {},
+      getRenderWindow: () => ({ id: "render-window" }),
+      renderScene() {},
+      syncErrorLabel: "UseSceneSyncOnSceneAppliedTest",
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: { name: "sync-context" },
+        syncRenderWindow: { id: "sync-render-window" },
+        cleanup() {},
+      }),
+      withSyncCapability: () => () => true,
+      createPushSync() {
+        return {
+          cleanup() {},
+          requestResync() {},
+          getQueueLength() {
+            return nextMessage ? 1 : 0;
+          },
+          takeNextMessage() {
+            const message = nextMessage;
+            nextMessage = null;
+            return message;
+          },
+          markMessageApplied() {},
+        };
+      },
+      createSyncController() {
+        return {
+          async requestSync() {
+            return false;
+          },
+        };
+      },
+    },
+  );
+
+  scene.initialize({
+    contextName: "ctx",
+    renderWindowId: 1,
+    syncMode: "push",
+  });
+
+  const appliedMessages = [];
+  const unsubscribe = scene.onSceneApplied((message) => {
+    appliedMessages.push(message);
+  });
+  assert.equal(typeof unsubscribe, "function");
+
+  nextMessage = { kind: "full", payload: { id: "rw", mtime: 1 } };
+  scene.applyQueuedStateSync();
+
+  assert.equal(appliedMessages.length, 1);
+  assert.equal(appliedMessages[0].kind, "full");
+
+  unsubscribe();
+
+  nextMessage = { kind: "full", payload: { id: "rw", mtime: 2 } };
+  scene.applyQueuedStateSync();
+
+  assert.equal(
+    appliedMessages.length,
+    1,
+    "unsubscribe should stop further onSceneApplied callbacks",
+  );
+});

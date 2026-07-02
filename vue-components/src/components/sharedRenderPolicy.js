@@ -1,29 +1,26 @@
-// Shared-context render policy: the depth-clear + triangle-winding dance a host
-// (e.g. MapLibre) needs around a vtk.js shared render. Kept as a pure helper so
-// it can be unit tested without a live WebGL context or a mounted component.
+// Shared-context render policy: the state dance a host (e.g. MapLibre) needs
+// around a vtk.js shared render. Kept as a pure helper so it can be unit
+// tested without a live WebGL context or a mounted component.
 //
-// Options (both optional, defaults preserve the historical app behavior):
-//   clearDepth: true  -> wipe the shared depth buffer to 1.0 before rendering.
+// Options:
+//   clearDepth: true -> wipe the shared depth buffer to 1.0 before rendering.
 //     MapLibre's 3D style layers leave depth in the shared WebGL buffer; VTK
 //     should overlay the map color, not inherit basemap building depth that
 //     punches holes through footprints/lines. vtk.js resetGLState sets the
 //     clearDepth value but never issues gl.clear(), so the host must clear.
-//   frontFace: "CW"   -> set the winding for the render, restoring the host's
-//     previous winding afterward. Pass "CCW" for counter-clockwise, or a falsy
-//     value to leave the winding untouched.
+//
+// vtk.js renders with its own winding (resetGLState forces CCW front faces),
+// so the host's winding cannot be applied to the vtk render; it is saved
+// before and restored after, since vtk.js leaves CCW behind.
 export function applySharedRenderPolicy(gl, render, options = {}) {
-  const { clearDepth = true, frontFace = "CW" } = options;
+  const { clearDepth = true } = options;
 
   if (!gl) {
     render();
     return;
   }
 
-  let previousFrontFace = null;
-  if (frontFace) {
-    previousFrontFace = gl.getParameter(gl.FRONT_FACE);
-    gl.frontFace(frontFace === "CCW" ? gl.CCW : gl.CW);
-  }
+  const previousFrontFace = gl.getParameter(gl.FRONT_FACE);
 
   try {
     if (clearDepth) {
@@ -33,8 +30,6 @@ export function applySharedRenderPolicy(gl, render, options = {}) {
     }
     render();
   } finally {
-    if (previousFrontFace !== null) {
-      gl.frontFace(previousFrontFace);
-    }
+    gl.frontFace(previousFrontFace);
   }
 }

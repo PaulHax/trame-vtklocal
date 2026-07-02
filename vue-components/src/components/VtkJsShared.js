@@ -61,7 +61,7 @@ export default {
         return;
       }
       scene.updateDistanceToCameraGlyphs();
-      sharedRenderWindow?.renderShared?.({});
+      sharedRenderWindow?.renderShared?.();
     }
 
     const scene = useSceneSync({
@@ -124,8 +124,8 @@ export default {
       });
     }
 
-    // options: { clearDepth = true, frontFace = "CW" } — the shared-buffer
-    // depth-clear + triangle-winding policy the host needs around the render.
+    // options: { clearDepth = true } — the shared-buffer depth-clear policy
+    // the host needs around the render (see sharedRenderPolicy.js).
     function renderShared(options = {}) {
       if (syncStateAtRenderFlag) {
         scene.applyQueuedStateSync();

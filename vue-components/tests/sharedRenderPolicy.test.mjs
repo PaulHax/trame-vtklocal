@@ -46,9 +46,9 @@ async function loadPolicy() {
   return loadModule("/src/components/sharedRenderPolicy.js");
 }
 
-test("defaults clear the depth buffer and set CW winding, then restore host winding", async () => {
+test("defaults clear the depth buffer and restore host winding", async () => {
   const { applySharedRenderPolicy } = await loadPolicy();
-  const gl = makeFakeGl(GL.CCW);
+  const gl = makeFakeGl(GL.CW);
   let rendered = false;
 
   applySharedRenderPolicy(gl, () => {
@@ -58,61 +58,35 @@ test("defaults clear the depth buffer and set CW winding, then restore host wind
   });
 
   assert.ok(rendered);
-  // Winding is set to CW before the render and restored to the host's original
-  // CCW afterward; depth is wiped to 1.0 before the render.
+  // The host's winding is saved before the render and restored afterward
+  // (vtk.js resetGLState forces CCW during the render); depth is wiped to
+  // 1.0 before the render.
   assert.deepEqual(gl._calls, [
     ["getParameter", GL.FRONT_FACE],
-    ["frontFace", GL.CW],
     ["depthMask", true],
     ["clearDepth", 1.0],
     ["clear", GL.DEPTH_BUFFER_BIT],
-    ["frontFace", GL.CCW],
+    ["frontFace", GL.CW],
   ]);
 });
 
-test("clearDepth false skips the depth wipe but still manages winding", async () => {
+test("clearDepth false skips the depth wipe but still restores winding", async () => {
   const { applySharedRenderPolicy } = await loadPolicy();
-  const gl = makeFakeGl(GL.CCW);
+  const gl = makeFakeGl(GL.CW);
   let rendered = false;
 
-  applySharedRenderPolicy(gl, () => {
-    rendered = true;
-  }, { clearDepth: false });
+  applySharedRenderPolicy(
+    gl,
+    () => {
+      rendered = true;
+    },
+    { clearDepth: false },
+  );
 
   assert.ok(rendered);
   assert.deepEqual(gl._calls, [
     ["getParameter", GL.FRONT_FACE],
     ["frontFace", GL.CW],
-    ["frontFace", GL.CCW],
-  ]);
-});
-
-test("frontFace 'CCW' sets counter-clockwise winding for the render", async () => {
-  const { applySharedRenderPolicy } = await loadPolicy();
-  const gl = makeFakeGl(GL.CW);
-
-  applySharedRenderPolicy(gl, () => {}, { frontFace: "CCW" });
-
-  assert.deepEqual(gl._calls, [
-    ["getParameter", GL.FRONT_FACE],
-    ["frontFace", GL.CCW],
-    ["depthMask", true],
-    ["clearDepth", 1.0],
-    ["clear", GL.DEPTH_BUFFER_BIT],
-    ["frontFace", GL.CW],
-  ]);
-});
-
-test("falsy frontFace leaves host winding untouched (no getParameter/frontFace)", async () => {
-  const { applySharedRenderPolicy } = await loadPolicy();
-  const gl = makeFakeGl(GL.CCW);
-
-  applySharedRenderPolicy(gl, () => {}, { frontFace: null });
-
-  assert.deepEqual(gl._calls, [
-    ["depthMask", true],
-    ["clearDepth", 1.0],
-    ["clear", GL.DEPTH_BUFFER_BIT],
   ]);
 });
 

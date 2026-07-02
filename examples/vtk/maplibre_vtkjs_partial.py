@@ -451,10 +451,10 @@ INIT_SCRIPT_JS = """
                 if (rw) {
                     const views = rw.getViews();
                     if (views.length > 0 && views[0].renderShared) {
+                        // vtk.js renders with CCW winding; restore MapLibre's after
                         const previousFrontFace = gl.getParameter(gl.FRONT_FACE);
-                        gl.frontFace(gl.CW);
                         try {
-                            views[0].renderShared({});
+                            views[0].renderShared();
                         } finally {
                             gl.frontFace(previousFrontFace);
                         }

@@ -22,6 +22,13 @@ import {
   syncDistanceToCameraGlyphState,
   updateDistanceToCameraGlyphs,
 } from "./distanceToCameraGlyphs";
+import {
+  createPickableRegistry,
+  describePickableRegistry,
+  pickAt as pickAtRegistry,
+  syncPickablePatch,
+  syncPickableState,
+} from "./pickables";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
 export function useSceneSync(
@@ -62,6 +69,7 @@ export function useSceneSync(
   let syncedRootId = null;
   let renderedCamera = null;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
+  const pickables = createPickableRegistry();
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -299,6 +307,12 @@ export function useSceneSync(
               distanceToCameraGlyphs,
               { reset: true },
             );
+            syncPickableState(
+              message.payload,
+              managedSyncContext?.synchronizerContext,
+              pickables,
+              { reset: true },
+            );
             synced = true;
           }
         } catch (error) {
@@ -347,6 +361,7 @@ export function useSceneSync(
           resolvedSyncContext,
           distanceToCameraGlyphs,
         );
+        syncPickablePatch(message.payload, resolvedSyncContext, pickables);
         noteMessageApplied(message);
         didApply = didApply || patchResult.didApply;
       } else {
@@ -421,6 +436,7 @@ export function useSceneSync(
     lastAppliedOp = null;
     syncedRootId = null;
     distanceToCameraGlyphs.clear();
+    pickables.clear();
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -503,6 +519,7 @@ export function useSceneSync(
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
         distanceToCameraGlyphs,
       ),
+      pickables: describePickableRegistry(pickables),
       externalTextures: peekExternalTextures(
         getRenderWindow?.() || null,
       )?.describe() ?? { size: 0, entries: [] },
@@ -529,6 +546,16 @@ export function useSceneSync(
     });
   }
 
+  // Answer "what pickable glyph point is under (cssX, cssY)" from what this
+  // view actually rendered. Coordinates are canvas CSS px, top-left origin.
+  function pickAt(cssX, cssY) {
+    return pickAtRegistry(pickables, cssX, cssY, {
+      renderer: getRenderer(),
+      renderWindow: getRenderWindow?.(),
+      synchronizerContext: managedSyncContext?.synchronizerContext,
+    });
+  }
+
   return {
     initialize,
     cleanup,
@@ -545,6 +572,7 @@ export function useSceneSync(
     onSceneApplied,
     getInstance,
     uploadTexture,
+    pickAt,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

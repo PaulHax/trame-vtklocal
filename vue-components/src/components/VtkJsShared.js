@@ -178,6 +178,7 @@ export default {
       onSceneApplied: scene.onSceneApplied,
       getInstance: scene.getInstance,
       uploadTexture: scene.uploadTexture,
+      pickAt: scene.pickAt,
       setRepaintCallback,
     };
 

@@ -176,6 +176,7 @@ export default {
       getRenderer: scene.getRenderer,
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
+      pickAt: scene.pickAt,
       // Diagnostics / oracle support (read-only, not general app integration).
       getSyncDiagnostics: scene.getSyncDiagnostics,
       getAppliedSceneState: scene.getAppliedSceneState,

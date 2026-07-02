@@ -29,6 +29,7 @@ from trame_vtklocal._protocol_constants import (
     SYNTHETIC_VERSION_PREFIX,
 )
 from trame_vtklocal.module import distance_to_camera as dtc
+from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
 
 _scene_mtime_counter = [0]
@@ -749,6 +750,7 @@ class VtkJsTranslator:
         }
         dtc.update_mapper_state(result, distance_to_camera.get("state"))
         ptx.update_mapper_translation(vtk_mapper, result)
+        pick.update_mapper_state(result, pick.pickable_config(vtk_mapper))
         return result
 
     def _translate_generic(self, state, vtkjs_type, relation_map=None):

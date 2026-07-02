@@ -126,12 +126,12 @@ export function syncPickablePatch(patch, synchronizerContext, registry) {
   return registry;
 }
 
-function getDevicePixelRatio() {
+export function getDevicePixelRatio() {
   const ratio = Number(globalThis.window?.devicePixelRatio);
   return isPositiveFinite(ratio) ? ratio : 1;
 }
 
-function getViewportMetrics(renderer, renderWindow) {
+export function getViewportMetrics(renderer, renderWindow) {
   const viewport = renderer?.getViewport?.() || [0, 0, 1, 1];
   const view = renderWindow?.getViews?.()?.[0] || null;
   const size = view?.getSize?.();

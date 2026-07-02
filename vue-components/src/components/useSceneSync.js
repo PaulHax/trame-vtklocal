@@ -25,10 +25,13 @@ import {
 import {
   createPickableRegistry,
   describePickableRegistry,
+  getDevicePixelRatio,
+  getViewportMetrics,
   pickAt as pickAtRegistry,
   syncPickablePatch,
   syncPickableState,
 } from "./pickables";
+import { createPickableGestures } from "./pickableGestures";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
 export function useSceneSync(
@@ -489,6 +492,9 @@ export function useSceneSync(
 
   function cleanup() {
     disposed = true;
+    // Force-end any drag in flight so its window listeners and pointer capture
+    // don't outlive the view.
+    gestures.teardown();
     // The GL context is shared across views and outlives this one, so its
     // textures must be deleted explicitly, before the render window goes away.
     peekExternalTextures(getRenderWindow?.() || null)?.clear();
@@ -556,6 +562,47 @@ export function useSceneSync(
     });
   }
 
+  // The camera matrices this view last rendered with, in the flat layout the
+  // consuming server already speaks (the same arrays setRenderedCamera stored).
+  // Null until a rendered camera has been pushed. Read at event time so a
+  // gesture payload is self-contained — it carries its own frame.
+  function readGestureCamera() {
+    const rendered = getRenderedCamera();
+    if (!rendered) return null;
+    return {
+      viewMatrix: rendered.viewMatrix,
+      projectionMatrix: rendered.projectionMatrix,
+    };
+  }
+
+  // The rendered viewport in canvas CSS px plus its device-pixel ratio, matching
+  // the space pickAt measures pointer coordinates in.
+  function readGestureViewport() {
+    const metrics = getViewportMetrics(getRenderer(), getRenderWindow?.());
+    if (!metrics) return null;
+    return {
+      width: metrics.width,
+      height: metrics.height,
+      dpr: getDevicePixelRatio(),
+    };
+  }
+
+  function getViewCanvas() {
+    const view = getRenderWindow?.()?.getViews?.()?.[0];
+    return view?.getCanvas?.() ?? null;
+  }
+
+  // The drag/click gesture state machine. It emits semantic pointer events as a
+  // Vue "pointerEvent"; each payload carries the pick, the pointer (grab-offset
+  // applied on drags), and the camera/viewport it was measured against.
+  const gestures = createPickableGestures({
+    pick: (cssX, cssY) => pickAt(cssX, cssY),
+    readCamera: readGestureCamera,
+    readViewport: readGestureViewport,
+    getCanvas: getViewCanvas,
+    emit: (payload) => emit?.("pointerEvent", payload),
+  });
+
   return {
     initialize,
     cleanup,
@@ -573,6 +620,10 @@ export function useSceneSync(
     getInstance,
     uploadTexture,
     pickAt,
+    startTargetDrag: gestures.startTargetDrag,
+    emitTargetClick: gestures.emitTargetClick,
+    setPointerContext: gestures.setPointerContext,
+    setEmitBackgroundClick: gestures.setEmitBackgroundClick,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

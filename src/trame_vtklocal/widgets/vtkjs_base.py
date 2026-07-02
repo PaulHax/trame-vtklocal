@@ -20,6 +20,7 @@ class VtkJsBaseView(HtmlElement):
         ("on_ready", "onReady"),
         ("before_scene_loaded", "beforeSceneLoaded"),
         ("after_scene_loaded", "afterSceneLoaded"),
+        ("pointer_event", "pointerEvent"),
     ]
 
     def __init__(self, _elem_name, render_window, **kwargs):
@@ -154,6 +155,15 @@ class VtkJsBaseView(HtmlElement):
 
     def set_camera(self, params):
         self.server.js_call(self._ref, "setCamera", params)
+
+    def set_pointer_context(self, context):
+        """Store an opaque blob echoed verbatim in every ``pointer_event``.
+
+        The gesture seam round-trips this back on each emitted event so the
+        server can stamp per-render app context (frame id, drawn surface, ...)
+        without the fork interpreting it.
+        """
+        self.server.js_call(self._ref, "setPointerContext", context)
 
     def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
         if self._push_sync:

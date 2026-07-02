@@ -22,6 +22,7 @@ export default {
     "beforeSceneLoaded",
     "afterSceneLoaded",
     "messageApplied",
+    "pointerEvent",
   ],
   props: {
     renderWindow: {
@@ -177,6 +178,10 @@ export default {
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
       pickAt: scene.pickAt,
+      startTargetDrag: scene.startTargetDrag,
+      emitTargetClick: scene.emitTargetClick,
+      setPointerContext: scene.setPointerContext,
+      setEmitBackgroundClick: scene.setEmitBackgroundClick,
       // Diagnostics / oracle support (read-only, not general app integration).
       getSyncDiagnostics: scene.getSyncDiagnostics,
       getAppliedSceneState: scene.getAppliedSceneState,

@@ -20,6 +20,7 @@ export default {
     "beforeSceneLoaded",
     "afterSceneLoaded",
     "messageApplied",
+    "pointerEvent",
   ],
   props: {
     renderWindow: {
@@ -179,6 +180,10 @@ export default {
       getInstance: scene.getInstance,
       uploadTexture: scene.uploadTexture,
       pickAt: scene.pickAt,
+      startTargetDrag: scene.startTargetDrag,
+      emitTargetClick: scene.emitTargetClick,
+      setPointerContext: scene.setPointerContext,
+      setEmitBackgroundClick: scene.setEmitBackgroundClick,
       setRepaintCallback,
     };
 

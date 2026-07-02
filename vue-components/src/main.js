@@ -4,6 +4,9 @@ import vtkTexture from "@kitware/vtk.js/Rendering/Core/Texture";
 import vtkImageData from "@kitware/vtk.js/Common/DataModel/ImageData";
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 
+// Publishes window.trameVtklocal.glMatrix ({ mat4, vec3 }) on load.
+import "./glMatrix";
+
 // Expose vtk.js utilities for external modules (e.g. map_video_texturing)
 if (typeof window !== "undefined") {
   window.trame = window.trame || {};

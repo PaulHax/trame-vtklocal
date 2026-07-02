@@ -94,9 +94,25 @@ This ``shared-context`` fork ships as a pinned wheel to the app repo rather than
 to PyPI. The wheel version is stamped at build time with the git short sha
 (``0.16.0+shared-context.<sha>``, computed by the ``hatch_build.py`` metadata
 hook) so ``importlib.metadata.version("trame-vtklocal")`` proves exactly which
-fork commit produced the embedded UMD bundle. The CI workflow
-``.github/workflows/build-fork-wheel.yml`` builds the same stamped wheel on every
-push to ``shared-context``.
+fork commit produced the embedded UMD bundle.
+
+The wheel is **WASM-free by construction** (~800 KB). The fork's consumers render
+only through the vtk.js WebGL shared-context path (``VtkJsSharedView`` /
+``vtk-js-shared``), which bundles all of ``@kitware/vtk.js`` into
+``serve/js/trame_vtklocal.umd.js`` at vite build time and fetches no ``.mjs`` or
+``.wasm``. The ``vtkWasmSceneManager`` / ``LocalView`` (``vtk-local``) path — and
+its ``serve/wasm/`` tree — is a separate, unused code path. The wheel packaging
+(``[tool.hatch.build]`` include) ships only ``serve/js/**``, so whatever
+``serve/wasm/`` runtime artifacts sit in the working tree are never swept into
+the wheel.
+
+**Publishing is manual, via** ``release.sh --publish`` — never CI. The CI workflow
+``.github/workflows/build-fork-wheel.yml`` is a **build-only** sanity check
+(checkout + build the vtk-js fork + vue-components + wheel, then upload the wheel
+as an artifact). It does **not** publish a release: CI independently rebuilds the
+vtk-js fork, producing a byte-divergent, untested UMD, whereas ``release.sh``
+ships the locally-built UMD you actually ran and asserts the wheel's embedded UMD
+byte-matches it.
 
 Use ``release.sh`` at the fork root. It requires the vtk-js fork to be linked
 into ``vue-components`` (see Development above).

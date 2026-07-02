@@ -126,7 +126,12 @@ export function useSceneSync(
     return copy.every((v) => Number.isFinite(v)) ? copy : null;
   }
 
-  function setRenderedCamera({ viewMatrix, projectionMatrix } = {}) {
+  function setRenderedCamera({
+    viewMatrix,
+    projectionMatrix,
+    clippingRange,
+    physicalScale,
+  } = {}) {
     const camera = getRenderer()?.getActiveCamera?.();
     const recordedViewMatrix = matrixCopy16(viewMatrix);
     const recordedProjectionMatrix = matrixCopy16(projectionMatrix);
@@ -138,6 +143,18 @@ export function useSceneSync(
     };
     camera.setViewMatrix(recordedViewMatrix.slice());
     camera.setProjectionMatrix(recordedProjectionMatrix.slice());
+    if (
+      Array.isArray(clippingRange) &&
+      clippingRange.length >= 2 &&
+      Number.isFinite(clippingRange[0]) &&
+      Number.isFinite(clippingRange[1]) &&
+      clippingRange[1] > clippingRange[0]
+    ) {
+      camera.setClippingRange?.(clippingRange[0], clippingRange[1]);
+    }
+    if (Number.isFinite(physicalScale)) {
+      camera.setPhysicalScale?.(physicalScale);
+    }
     camera.modified?.();
     return true;
   }

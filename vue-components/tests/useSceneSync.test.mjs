@@ -188,6 +188,69 @@ test("useSceneSync records rendered camera matrices before vtk camera mutation",
   assert.deepEqual(scene.getRenderedCamera().viewMatrix, viewMatrix);
 });
 
+test("useSceneSync setRenderedCamera applies clippingRange and physicalScale", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+
+  let clippingRangeArgument = null;
+  let physicalScaleArgument = null;
+  let modifiedCount = 0;
+  const camera = {
+    setViewMatrix() {},
+    setProjectionMatrix() {},
+    setClippingRange(near, far) {
+      clippingRangeArgument = [near, far];
+    },
+    setPhysicalScale(value) {
+      physicalScaleArgument = value;
+    },
+    modified() {
+      modifiedCount += 1;
+    },
+  };
+  const renderer = {
+    getActiveCamera: () => camera,
+    getViewport: () => [0, 0, 1, 1],
+  };
+  const renderWindow = {
+    getRenderersByReference: () => [renderer],
+    getViews: () => [{ getSize: () => [640, 480] }],
+  };
+  const scene = useSceneSync({
+    client: {},
+    emit() {},
+    getRenderWindow: () => renderWindow,
+    renderScene() {},
+  });
+
+  const viewMatrix = Array.from({ length: 16 }, (_value, index) => index + 1);
+  const projectionMatrix = Array.from(
+    { length: 16 },
+    (_value, index) => 101 + index,
+  );
+
+  assert.equal(
+    scene.setRenderedCamera({
+      viewMatrix,
+      projectionMatrix,
+      clippingRange: [0.5, 2500],
+      physicalScale: 1,
+    }),
+    true,
+  );
+  assert.deepEqual(clippingRangeArgument, [0.5, 2500]);
+  assert.equal(physicalScaleArgument, 1);
+  assert.equal(modifiedCount, 1);
+
+  // A payload without clippingRange/physicalScale leaves them unchanged.
+  assert.equal(
+    scene.setRenderedCamera({ viewMatrix, projectionMatrix }),
+    true,
+  );
+  assert.deepEqual(clippingRangeArgument, [0.5, 2500]);
+  assert.equal(physicalScaleArgument, 1);
+  assert.equal(modifiedCount, 2);
+});
+
 test("useSceneSync emits viewStateExtra when ready push state has stale mtime", async () => {
   const mod = await loadModule("/src/components/useSceneSync.js");
   useSceneSyncRef.useSceneSync = mod.useSceneSync;

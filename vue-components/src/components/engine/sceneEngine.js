@@ -164,7 +164,10 @@ export function createSceneEngine({
         // scratch. The blob cache stays — its content refs are still valid.
         reconciler.reset(mirror);
       }
-      const snapshot = await session.call(RESYNC_RPC, [rwId, [...cache.keys()]]);
+      const snapshot = await session.call(RESYNC_RPC, [
+        rwId,
+        [...cache.keys()],
+      ]);
       if (version !== resyncVersion || stopped) {
         return false;
       }
@@ -257,6 +260,13 @@ export function createSceneEngine({
     };
   }
 
+  // The client's applied seq. Stamped onto every upstream event (gesture,
+  // camera) so the server can run the generic staleness check
+  // `event.seq >= store.last_seq_touching(nodeId)`.
+  function getSeq() {
+    return mySeq;
+  }
+
   function getDiagnostics() {
     return {
       mySeq,
@@ -273,6 +283,7 @@ export function createSceneEngine({
     stop,
     resync,
     onCommand,
+    getSeq,
     getDiagnostics,
   };
 }

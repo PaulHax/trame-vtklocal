@@ -3,6 +3,7 @@ from trame_vtklocal import module
 from trame_vtklocal.module.distance_to_camera import (
     bypass_distance_to_camera_for_serialization,
 )
+from trame_vtklocal.module.camera_authority import validate_camera_authority
 
 class HtmlElement(AbstractElement):
     def __init__(self, _elem_name, children=None, **kwargs):
@@ -23,8 +24,14 @@ class VtkJsBaseView(HtmlElement):
         ("pointer_event", "pointerEvent"),
     ]
 
-    def __init__(self, _elem_name, render_window, **kwargs):
+    def __init__(self, _elem_name, render_window, camera_authority="server", **kwargs):
         super().__init__(_elem_name, **kwargs)
+
+        # "server": cameras are normal synced nodes. "client": the client owns
+        # the rendered camera — the translator excludes vtkCamera nodes and the
+        # renderer's activeCamera slot; the server drives the view via commands
+        # and reads camera matrices only from seq-stamped events.
+        self._camera_authority = validate_camera_authority(camera_authority)
 
         self._ref = kwargs.get("ref")
         if self._ref is None:
@@ -68,6 +75,10 @@ class VtkJsBaseView(HtmlElement):
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
 
+    @property
+    def camera_authority(self):
+        return self._camera_authority
+
     def _init_publisher(self):
         from trame_vtklocal.widgets.publisher import ScenePublisher
 
@@ -77,6 +88,7 @@ class VtkJsBaseView(HtmlElement):
             self.api,
             self._render_window,
             self._window_id,
+            camera_authority=self._camera_authority,
         )
 
     def _configure_sync_mode(self, sync_mode, extra_event_names=None):
@@ -121,6 +133,16 @@ class VtkJsBaseView(HtmlElement):
         """Server-forced resync: every client re-pulls the full snapshot."""
         if self._publisher:
             self._publisher.request_resync()
+
+    def event_is_current(self, event, node_id=None):
+        """Whether a seq-stamped client event is current for its target node.
+
+        ``node_id`` defaults to ``event["pick"]["nodeId"]``. Unknown is stale:
+        a missing/non-int seq, no node id, or an unknown/removed node -> False.
+        """
+        if not self._publisher:
+            return False
+        return self._publisher.event_is_current(event, node_id)
 
     def update(self):
         """Alias for :meth:`sync`."""

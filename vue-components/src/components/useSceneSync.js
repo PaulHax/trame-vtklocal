@@ -401,6 +401,13 @@ export function useSceneSync(
     };
   }
 
+  // The applied scene seq (the engine's cursor). Stamped onto every upstream
+  // event at build time so the server can run its generic staleness check;
+  // null (stale by construction) until the engine exists.
+  function getSeq() {
+    return engine?.getSeq?.() ?? null;
+  }
+
   // The rendered viewport in canvas CSS px plus its device-pixel ratio, matching
   // the space pickAt measures pointer coordinates in.
   function readGestureViewport() {
@@ -420,11 +427,12 @@ export function useSceneSync(
 
   // The drag/click gesture state machine. It emits semantic pointer events as a
   // Vue "pointerEvent"; each payload carries the pick, the pointer (grab-offset
-  // applied on drags), and the camera/viewport it was measured against.
+  // applied on drags), and the camera/viewport/seq it was measured against.
   const gestures = createPickableGestures({
     pick: (cssX, cssY) => pickAt(cssX, cssY),
     readCamera: readGestureCamera,
     readViewport: readGestureViewport,
+    readSeq: getSeq,
     getCanvas: getViewCanvas,
     emit: (payload) => emit?.("pointerEvent", payload),
   });
@@ -444,6 +452,7 @@ export function useSceneSync(
     onSceneApplied,
     onCommand,
     getInstance,
+    getSeq,
     uploadTexture,
     pickAt,
     startTargetDrag: gestures.startTargetDrag,

@@ -118,7 +118,12 @@ export default {
       interactor.onEndInteraction(() => {
         const camera = scene.getRenderer()?.getActiveCamera?.();
         if (camera) {
-          emit("camera", extractCameraParams(camera));
+          // seq-stamped like gesture payloads, so the server can run the
+          // same staleness check on camera events.
+          emit("camera", {
+            ...extractCameraParams(camera),
+            seq: scene.getSeq(),
+          });
         }
       });
 
@@ -170,6 +175,7 @@ export default {
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
       onCommand: scene.onCommand,
+      getSeq: scene.getSeq,
       pickAt: scene.pickAt,
       startTargetDrag: scene.startTargetDrag,
       emitTargetClick: scene.emitTargetClick,

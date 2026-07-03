@@ -1,4 +1,5 @@
-"""ScenePublisher behavior: hot arrays, batching, commands, resync, blob GC."""
+"""ScenePublisher behavior: hot arrays, batching, commands, resync, blob GC,
+camera authority, and seq-stamped event staleness."""
 
 from __future__ import annotations
 
@@ -17,7 +18,11 @@ from push_oracle.scenes import (
     make_line_polydata,
 )
 from trame_vtklocal.store import ref_manager_hashes
-from trame_vtklocal.widgets.publisher import OPS_TOPIC, ScenePublisher
+from trame_vtklocal.widgets.publisher import (
+    OPS_TOPIC,
+    ScenePublisher,
+    event_is_current,
+)
 
 
 class _FakeProtocol:
@@ -384,6 +389,182 @@ def test_scene_resync_rpc_routes_to_registered_publisher():
 
         with pytest.raises(RuntimeError, match="No registered publisher"):
             api.scene_resync(99999)
+    finally:
+        publisher.cleanup()
+
+
+# ----------------------------------------------------------------------
+# Camera authority
+# ----------------------------------------------------------------------
+
+
+def make_publisher(scene, **kwargs):
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id, **kwargs
+    )
+    return publisher, server
+
+
+def _camera_id(scene):
+    camera = scene.handles["renderer"].GetActiveCamera()
+    return str(scene.api.vtk_object_manager.GetId(camera))
+
+
+@pytest.mark.parametrize(
+    ("camera_authority", "camera_synced"),
+    [("server", True), ("client", False)],
+)
+def test_camera_authority_gates_camera_upserts(camera_authority, camera_synced):
+    scene = make_basic_scene()
+    publisher, server = make_publisher(scene, camera_authority=camera_authority)
+    try:
+        camera_id = _camera_id(scene)
+        assert publisher.camera_authority == camera_authority
+        assert (camera_id in publisher.store.node_ids()) == camera_synced
+
+        scene.handles["renderer"].GetActiveCamera().SetPosition(1.0, 2.0, 9.0)
+        publisher.sync()
+
+        messages = server.protocol.drain()
+        camera_upserts = [
+            op
+            for _topic, message in messages
+            for op in message["ops"]
+            if op["op"] == "upsert" and op["id"] == camera_id
+        ]
+        assert bool(camera_upserts) == camera_synced
+        if camera_synced:
+            assert camera_upserts[0]["node"]["props"]["position"] == [1.0, 2.0, 9.0]
+        else:
+            # The camera mutation produced nothing to broadcast at all, and a
+            # non-camera mutation still publishes normally afterwards.
+            assert messages == []
+            scene.handles["actor"].SetVisibility(False)
+            publisher.sync()
+            ((_topic, message),) = server.protocol.drain()
+            assert {op["id"] for op in message["ops"]} == {
+                str(scene.api.vtk_object_manager.GetId(scene.handles["actor"]))
+            }
+    finally:
+        publisher.cleanup()
+
+
+def test_client_camera_authority_resync_snapshot_has_no_camera():
+    scene = make_basic_scene()
+    publisher, _server = make_publisher(scene, camera_authority="client")
+    try:
+        payload = publisher.resync([])
+        assert _camera_id(scene) not in payload["nodes"]
+        assert all(
+            "activeCamera" not in node.get("refs", {})
+            for node in payload["nodes"].values()
+        )
+    finally:
+        publisher.cleanup()
+
+
+def test_commands_and_request_resync_ignore_camera_authority():
+    scene = make_basic_scene()
+    publisher, server = make_publisher(scene, camera_authority="client")
+    try:
+        publisher.send_command("mapCamera", {"frame": 3})
+        publisher.sync()
+        ((_topic, message),) = server.protocol.drain()
+        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}}]
+        assert message["ops"] == []
+
+        seq_before = publisher.store.seq
+        publisher.request_resync()
+        ((_topic, message),) = server.protocol.drain()
+        assert message["baseSeq"] == -1
+        assert message["ops"] == []
+        assert message["seq"] == seq_before + 1
+    finally:
+        publisher.cleanup()
+
+
+def test_unknown_camera_authority_is_rejected_at_construction():
+    scene = make_basic_scene()
+    with pytest.raises(ValueError, match="camera_authority"):
+        ScenePublisher(
+            _FakeServer(),
+            scene.api,
+            scene.render_window,
+            scene.render_window_id,
+            camera_authority="nobody",
+        )
+
+
+# ----------------------------------------------------------------------
+# Seq-stamped event staleness
+# ----------------------------------------------------------------------
+
+
+def test_event_is_current_truth_table():
+    scene = make_basic_scene()
+    publisher, _server = make_publisher(scene)
+    try:
+        mapper_id = str(scene.api.vtk_object_manager.GetId(scene.handles["mapper"]))
+        seq = publisher.store.last_seq_touching(mapper_id)
+        assert isinstance(seq, int)
+
+        cases = [
+            # (event, node_id, expected)
+            ({"seq": seq, "pick": {"nodeId": mapper_id}}, None, True),
+            ({"seq": seq + 5, "pick": {"nodeId": mapper_id}}, None, True),
+            ({"seq": seq}, mapper_id, True),  # explicit node id, no pick
+            ({"seq": seq - 1, "pick": {"nodeId": mapper_id}}, None, False),
+            ({"pick": {"nodeId": mapper_id}}, None, False),  # missing seq
+            ({"seq": None, "pick": {"nodeId": mapper_id}}, None, False),
+            ({"seq": float(seq), "pick": {"nodeId": mapper_id}}, None, False),
+            ({"seq": True, "pick": {"nodeId": mapper_id}}, None, False),
+            ({"seq": seq}, None, False),  # no node id anywhere
+            ({"seq": seq, "pick": None}, None, False),
+            ({"seq": seq, "pick": {"nodeId": "999999"}}, None, False),  # unknown
+            ({"seq": seq, "pick": {"nodeId": mapper_id}}, "999999", False),
+            (None, mapper_id, False),  # not an event mapping
+        ]
+        for event, node_id, expected in cases:
+            assert publisher.event_is_current(event, node_id) is expected, (
+                event,
+                node_id,
+            )
+            assert event_is_current(publisher.store, event, node_id) is expected
+    finally:
+        publisher.cleanup()
+
+
+def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
+    scene = make_basic_scene()
+    publisher, _server = make_publisher(scene)
+    try:
+        object_manager = scene.api.vtk_object_manager
+        actor_id = str(object_manager.GetId(scene.handles["actor"]))
+        event = {"seq": publisher.store.seq, "pick": {"nodeId": actor_id}}
+        assert publisher.event_is_current(event)
+
+        # Any op touching the node bumps its last-touched seq past the event.
+        scene.handles["actor"].SetVisibility(False)
+        publisher.sync()
+        assert not publisher.event_is_current(event)
+        assert publisher.event_is_current(
+            {**event, "seq": publisher.store.seq}
+        )
+
+        # A removed node is unknown -> stale, however fresh the seq claims.
+        polydata, _points = make_line_polydata()
+        actor2, _mapper2 = add_actor(scene.handles["renderer"], polydata)
+        publisher.sync()
+        actor2_id = str(object_manager.GetId(actor2))
+        assert publisher.event_is_current(
+            {"seq": publisher.store.seq, "pick": {"nodeId": actor2_id}}
+        )
+        scene.handles["renderer"].RemoveActor(actor2)
+        publisher.sync()
+        assert not publisher.event_is_current(
+            {"seq": publisher.store.seq + 100, "pick": {"nodeId": actor2_id}}
+        )
     finally:
         publisher.cleanup()
 

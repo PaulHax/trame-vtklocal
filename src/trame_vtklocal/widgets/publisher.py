@@ -23,66 +23,26 @@ Wire protocol v2 (see ``docs/DESIGN-scene-store.md``):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import contextmanager
 
 import numpy as np
 
 from trame_vtklocal.module import distance_to_camera as dtc
+from trame_vtklocal.module.camera_authority import validate_camera_authority
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
-from trame_vtklocal.store import (
-    REF_CELLS_PREFIX,
-    REF_CONTENT_PREFIX,
-    REF_VERSION_PREFIX,
-    SceneStore,
+from trame_vtklocal.store import SceneStore
+from trame_vtklocal.widgets.blob_payloads import (
+    attach_binary,
+    numpy_array_from_vtk_data,
+    resolve_ref_payload,
 )
 from trame_vtklocal.widgets.dirty_tracker import DirtyTracker
-from trame_vtklocal.widgets.hot_arrays import HOT_ARRAY_KEY, HotArrayDiffer
-
-try:
-    from vtkmodules.util.numpy_support import vtk_to_numpy
-except ImportError:  # pragma: no cover - VTK is an optional dependency
-    vtk_to_numpy = None
+from trame_vtklocal.widgets.hot_arrays import HotArrayDiffer
 
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
 RESYNC_BASE_SEQ = -1
-
-
-# ---------------------------------------------------------------------------
-# Pure helpers (moved from v1 ``_push_sync_helpers``)
-# ---------------------------------------------------------------------------
-
-
-def _numpy_array_from_vtk_data(data):
-    if vtk_to_numpy is not None and hasattr(data, "GetDataType"):
-        try:
-            return vtk_to_numpy(data)
-        except Exception:
-            pass
-    return np.asarray(data)
-
-
-def _pack_cell_array_payload(vtk_object_manager, cells_ref):
-    """Packed vtk.js Uint32 cell-array bytes for a ``c2:<conn>:<off>`` ref."""
-    parts = cells_ref.split(":")
-    conn_hash = parts[1]
-    off_hash = parts[2]
-
-    conn_blob = vtk_object_manager.GetBlob(conn_hash)
-    off_blob = vtk_object_manager.GetBlob(off_hash)
-
-    connectivity = np.frombuffer(memoryview(conn_blob), dtype=np.int64)
-    offsets = np.frombuffer(memoryview(off_blob), dtype=np.int64)
-
-    sizes = np.diff(offsets).astype(np.uint32)
-    conn_uint32 = connectivity.astype(np.uint32)
-    result = np.empty(len(sizes) + len(conn_uint32), dtype=np.uint32)
-    cell_starts = np.arange(len(sizes), dtype=np.int64) + offsets[:-1]
-    result[cell_starts] = sizes
-    mask = np.ones(len(result), dtype=bool)
-    mask[cell_starts] = False
-    result[mask] = conn_uint32
-    return result.tobytes()
 
 
 def _node_ref_ids(node):
@@ -91,6 +51,31 @@ def _node_ref_ids(node):
             yield value
         else:
             yield from value
+
+
+def event_is_current(store, event, node_id=None):
+    """Whether a seq-stamped client event is current for the node it targets.
+
+    The event's ``seq`` (the client's applied cursor when it built the event)
+    must be an int at or above the last seq that touched the node. ``node_id``
+    defaults to the picked node id inside ``event["pick"]``. Anything unknown
+    is stale: missing/non-int seq, no node id, or a node the store never saw
+    (or has removed) all return False.
+    """
+    if not isinstance(event, Mapping):
+        return False
+    seq = event.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        return False
+    if node_id is None:
+        pick = event.get("pick")
+        node_id = pick.get("nodeId") if isinstance(pick, Mapping) else None
+    if node_id is None:
+        return False
+    last_seq = store.last_seq_touching(node_id)
+    if last_seq is None:
+        return False
+    return seq >= last_seq
 
 
 _REQUIRED_MANAGER_METHODS = (
@@ -106,12 +91,20 @@ _REQUIRED_MANAGER_METHODS = (
 class ScenePublisher:
     """Server-authoritative broadcast publisher for one render window."""
 
-    def __init__(self, server, object_manager_api, render_window, rw_id):
+    def __init__(
+        self,
+        server,
+        object_manager_api,
+        render_window,
+        rw_id,
+        camera_authority="server",
+    ):
         self._server = server
         self._api = object_manager_api
         self._render_window = render_window
         self._rw_id = int(rw_id)
         self._rw_str = str(rw_id)
+        self._camera_authority = validate_camera_authority(camera_authority)
         self._store = SceneStore(self._rw_str)
 
         self._hot_arrays = HotArrayDiffer(self._live_hot_array)
@@ -242,6 +235,14 @@ class ScenePublisher:
 
     def last_seq_touching(self, node_id):
         return self._store.last_seq_touching(node_id)
+
+    def event_is_current(self, event, node_id=None):
+        """Whether a seq-stamped client event is current (see module helper)."""
+        return event_is_current(self._store, event, node_id)
+
+    @property
+    def camera_authority(self):
+        return self._camera_authority
 
     @property
     def store(self):
@@ -426,7 +427,11 @@ class ScenePublisher:
     def _translate_full_scene(self):
         with self._tracker_suppress():
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                return translate_scene(self._object_manager, self._rw_id)
+                return translate_scene(
+                    self._object_manager,
+                    self._rw_id,
+                    camera_authority=self._camera_authority,
+                )
 
     def _translate_candidates(self, candidate_ids):
         """Candidates plus transitively referenced ids missing from the store."""
@@ -442,7 +447,11 @@ class ScenePublisher:
                         continue
                     if object_manager.GetObjectAtId(int(node_id)) is None:
                         continue
-                    node = translate_object(object_manager, int(node_id))
+                    node = translate_object(
+                        object_manager,
+                        int(node_id),
+                        camera_authority=self._camera_authority,
+                    )
                     if node is None:
                         continue
                     nodes[node_id] = node
@@ -464,44 +473,17 @@ class ScenePublisher:
         data = points.GetData()
         if data is None:
             return None
-        return np.asarray(_numpy_array_from_vtk_data(data)).reshape(-1)
+        return np.asarray(numpy_array_from_vtk_data(data)).reshape(-1)
 
     # ------------------------------------------------------------------
-    # Blob payloads
+    # Blob payloads (see widgets/blob_payloads.py)
     # ------------------------------------------------------------------
 
     def _resolve_ref_payload(self, ref):
-        object_manager = self._object_manager
-        if ref.startswith(REF_CONTENT_PREFIX):
-            blob = object_manager.GetBlob(ref[len(REF_CONTENT_PREFIX):])
-            if blob is None:
-                raise RuntimeError(f"missing object-manager blob for {ref!r}")
-            return bytes(memoryview(blob))
-        if ref.startswith(REF_CELLS_PREFIX):
-            return _pack_cell_array_payload(object_manager, ref)
-        if ref.startswith(REF_VERSION_PREFIX):
-            # v:<id>:<key>:<n> — versioned identity, content lives in the
-            # live VTK array (only points arrays receive region patches).
-            _prefix, node_id, key, _version = ref.split(":")
-            if key != HOT_ARRAY_KEY:
-                raise RuntimeError(f"unsupported versioned array ref {ref!r}")
-            current = self._live_hot_array(node_id)
-            if current is None:
-                raise RuntimeError(f"cannot resolve {ref!r} from live objects")
-            return current.tobytes()
-        raise RuntimeError(f"unresolvable array ref {ref!r}")
+        return resolve_ref_payload(self._object_manager, ref, self._live_hot_array)
 
     def _attach_binary(self, message):
-        attach = getattr(self._api, "addAttachment", None)
-        if attach is None:
-            return
-        for op in message.get("ops", ()):
-            if op.get("op") == "patchArray":
-                op["data"] = attach(memoryview(op["data"]))
-        blobs = message.get("blobs")
-        if blobs:
-            for ref, payload in blobs.items():
-                blobs[ref] = attach(memoryview(payload))
+        attach_binary(self._api, message)
 
     def _notify_blob_registry(self, refs_leaving):
         update = getattr(self._api, "update_push_view_refs", None)

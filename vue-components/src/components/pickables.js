@@ -307,7 +307,7 @@ export function pickAt(
       order: declarationOrder,
       priority: entry.priority,
       distSq: near.distSq,
-      instanceId: id,
+      nodeId: id,
       pointIndex: near.pointIndex,
       pointId: entry.ids?.[near.pointIndex] ?? near.pointIndex,
       tags: entry.tags,
@@ -322,8 +322,10 @@ export function pickAt(
   if (!best) {
     return null;
   }
+  // nodeId is the picked mapper's scene-store node id; it rides every gesture
+  // payload's `pick` so the server's event_is_current can default to it.
   return {
-    instanceId: best.instanceId,
+    nodeId: best.nodeId,
     pointIndex: best.pointIndex,
     pointId: best.pointId,
     tags: best.tags,

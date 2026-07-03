@@ -12,6 +12,9 @@ field-array bridging, cell packing shape, userMatrix) lives in the shared
 ``vtkjs_translator`` tables. Callers own the render-window ``Render()`` /
 ``UpdateStatesFromObjects()`` / dtc-bypass choreography (as the publisher
 does); the translator only reads object-manager state plus live objects.
+
+Under ``camera_authority="client"`` (see :mod:`.camera_authority`), cameras
+never become nodes and no ref slot points at one — no dangling refs either way.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import json
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
+from trame_vtklocal.module.camera_authority import validate_camera_authority
 from trame_vtklocal.module.node_arrays import polydata_array_entries
 from trame_vtklocal.module.vtkjs_translator import (
     CAMERA_PROPERTIES,
@@ -83,12 +87,13 @@ _NON_NODE_CLASS_NAMES = COLLECTION_TYPES | {
     "vtkFieldData",
 }
 
-
-def is_node_class(class_name):
+def is_node_class(class_name, camera_authority="server"):
     """Whether objects of this VTK class become scene-store nodes."""
     if not class_name:
         return False
     if class_name in SKIP_TYPES or class_name in _NON_NODE_CLASS_NAMES:
+        return False
+    if camera_authority == "client" and map_class_name(class_name) == "vtkCamera":
         return False
     return "Array" not in class_name
 
@@ -123,8 +128,9 @@ def _node_ref_ids(node):
 class _Reader:
     """Cached read access to object-manager states and live objects."""
 
-    def __init__(self, object_manager):
+    def __init__(self, object_manager, camera_authority="server"):
         self.object_manager = object_manager
+        self.camera_authority = validate_camera_authority(camera_authority)
         self._states = {}
 
     def state(self, obj_id):
@@ -170,7 +176,8 @@ def _ref_node_ids(reader, value):
     """Resolve a state ref (or list of refs) into node ids.
 
     Collections dissolve into their items; SKIP_TYPES and other non-node
-    classes drop out entirely so emitted ref slots can never dangle.
+    classes (cameras under client authority included) drop out entirely so
+    emitted ref slots can never dangle.
     """
     if isinstance(value, list):
         return [
@@ -187,7 +194,7 @@ def _ref_node_ids(reader, value):
             for item_id in _collection_item_ids(reader, ref_id)
             for node_id in _ref_node_ids(reader, {"Id": item_id})
         ]
-    if not is_node_class(class_name):
+    if not is_node_class(class_name, reader.camera_authority):
         return []
     return [ref_id]
 
@@ -348,7 +355,7 @@ def _translate_generic(reader, state, vtkjs_type):
 def _translate_node(reader, obj_id):
     state = reader.state(obj_id)
     class_name = state.get("ClassName", "")
-    if not is_node_class(class_name):
+    if not is_node_class(class_name, reader.camera_authority):
         return None
 
     vtkjs_type = map_class_name(class_name)
@@ -359,23 +366,23 @@ def _translate_node(reader, obj_id):
     return _translate_generic(reader, state, vtkjs_type)
 
 
-def translate_object(object_manager, obj_id):
+def translate_object(object_manager, obj_id, camera_authority="server"):
     """Translate one object into its flat node.
 
     Returns ``None`` for objects that never become nodes (SKIP_TYPES,
-    collections, arrays and other data containers).
+    collections, data containers, client-authority cameras).
     """
-    return _translate_node(_Reader(object_manager), int(obj_id))
+    return _translate_node(_Reader(object_manager, camera_authority), int(obj_id))
 
 
-def translate_scene(object_manager, root_id):
+def translate_scene(object_manager, root_id, camera_authority="server"):
     """Translate every node reachable from ``root_id`` into ``{id: node}``.
 
     Every id a node's ``refs`` mention is present in the result, so the map
     upserts into a :class:`~trame_vtklocal.store.SceneStore` without dangling
     refs.
     """
-    reader = _Reader(object_manager)
+    reader = _Reader(object_manager, camera_authority)
     nodes = {}
     pending = [int(root_id)]
     while pending:

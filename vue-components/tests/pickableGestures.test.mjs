@@ -88,15 +88,15 @@ function makeHarness(overrides = {}) {
   const canvas = makeCanvas(overrides.rect);
   const events = [];
   const pickResult = overrides.pickResult ?? {
-    instanceId: "m",
+    nodeId: "m",
     pointIndex: 0,
     pointId: "landmark-0",
-    tags: { owner_id: "landmarks", target_revision: 3 },
+    tags: { owner_id: "landmarks" },
     distancePx: 4,
     world: [1, 2, 3],
     grabOffset: { x: 5, y: -3 },
   };
-  return { windowRef, canvas, events, pickResult };
+  return { windowRef, canvas, events, pickResult, seq: { value: 7 } };
 }
 
 async function createGestures(harness, overrides = {}) {
@@ -105,6 +105,7 @@ async function createGestures(harness, overrides = {}) {
     pick: overrides.pick ?? (() => harness.pickResult),
     readCamera: () => CAMERA,
     readViewport: () => VIEWPORT,
+    readSeq: () => harness.seq.value,
     getCanvas: () => harness.canvas,
     emit: (payload) => harness.events.push(payload),
     windowRef: harness.windowRef,
@@ -130,6 +131,7 @@ test("startTargetDrag runs the full lifecycle in order with a self-contained pay
   assert.deepEqual(start.pointer, { x: 105, y: 47 });
   assert.deepEqual(start.camera, CAMERA);
   assert.deepEqual(start.viewport, VIEWPORT);
+  assert.equal(start.seq, 7);
   assert.deepEqual(start.pick, h.pickResult);
 
   // A move is rAF-coalesced: nothing emits until the frame runs.
@@ -262,10 +264,57 @@ test("emitTargetClick emits background.click on a miss, and can be disabled", as
   assert.equal(h.events.length, 1); // nothing new emitted
 });
 
+test("every gesture payload carries the seq read at event build time", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h);
+
+  g.startTargetDrag(pointerEvent(100, 50)); // built at seq 7
+  h.seq.value = 8;
+  h.windowRef.dispatch("pointermove", pointerEvent(120, 60)); // built at 8
+  h.seq.value = 9; // the rAF flush must not rebuild the queued payload
+  h.windowRef.flushRaf();
+  h.windowRef.dispatch("pointerup", pointerEvent(140, 70)); // built at 9
+
+  h.seq.value = 10;
+  g.emitTargetClick(pointerEvent(200, 100)); // built at 10
+
+  assert.deepEqual(
+    h.events.map((e) => [e.type, e.seq]),
+    [
+      ["target.drag.start", 7],
+      ["target.drag.move", 8],
+      ["target.drag.end", 9],
+      ["target.click", 10],
+    ],
+  );
+});
+
+test("background.click carries seq too; the default readSeq yields null", async () => {
+  const h = makeHarness();
+  h.seq.value = 42;
+  const g = await createGestures(h, { pick: () => null });
+  g.emitTargetClick(pointerEvent(10, 10));
+  assert.equal(h.events[0].type, "background.click");
+  assert.equal(h.events[0].seq, 42);
+
+  const bare = makeHarness();
+  const withoutReadSeq = await createGestures(bare, {
+    pick: () => null,
+    factory: { readSeq: undefined },
+  });
+  withoutReadSeq.emitTargetClick(pointerEvent(10, 10));
+  assert.equal(bare.events[0].seq, null);
+});
+
 test("the pointer context blob round-trips verbatim on every event", async () => {
   const h = makeHarness();
   const g = await createGestures(h);
-  const blob = { frame_id: "f9", frame_seq: 42, surface: "ground", nested: [1, 2] };
+  const blob = {
+    frame_id: "f9",
+    frame_seq: 42,
+    surface: "ground",
+    nested: [1, 2],
+  };
   g.setPointerContext(blob);
 
   g.startTargetDrag(pointerEvent(100, 50));

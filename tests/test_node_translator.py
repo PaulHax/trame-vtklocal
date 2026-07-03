@@ -31,7 +31,7 @@ from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
 from trame_vtklocal.store import SceneStore
-from trame_vtklocal.widgets.publisher import _pack_cell_array_payload
+from trame_vtklocal.widgets.blob_payloads import pack_cell_array_payload
 
 
 # ----------------------------------------------------------------------
@@ -251,7 +251,7 @@ def test_scene_commits_to_store_without_dangling_refs(scene_factory):
     object_manager = scene.api.vtk_object_manager
     for ref in emitted_array_refs(nodes):
         if ref.startswith("c2:"):
-            assert _pack_cell_array_payload(object_manager, ref)
+            assert pack_cell_array_payload(object_manager, ref)
         else:
             assert ref.startswith("c:")
             assert object_manager.GetBlob(ref[len("c:"):]) is not None
@@ -435,6 +435,81 @@ def test_projected_texture_mapper_translates_as_a_block():
 
 
 # ----------------------------------------------------------------------
+# Camera authority
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scene_factory", [make_basic_scene, make_tsw_like_scene])
+def test_client_camera_authority_excludes_cameras_and_the_active_camera_slot(
+    scene_factory,
+):
+    scene = scene_factory()
+    server_nodes = translate(scene)
+    client_nodes = translate_scene(
+        scene.api.vtk_object_manager,
+        scene.render_window_id,
+        camera_authority="client",
+    )
+
+    camera_ids = {
+        node_id
+        for node_id, node in server_nodes.items()
+        if node["type"] == "vtkCamera"
+    }
+    renderer_ids = {
+        node_id
+        for node_id, node in server_nodes.items()
+        if node["type"] == "vtkRenderer"
+    }
+    assert camera_ids
+
+    # No camera node and no activeCamera slot anywhere.
+    assert not camera_ids & set(client_nodes)
+    assert all(node["type"] != "vtkCamera" for node in client_nodes.values())
+    for renderer_id in renderer_ids:
+        assert "activeCamera" not in client_nodes[renderer_id].get("refs", {})
+
+    # Renderer nodes are otherwise identical; every other node is untouched.
+    for renderer_id in renderer_ids:
+        expected_refs = dict(server_nodes[renderer_id]["refs"])
+        expected_refs.pop("activeCamera")
+        assert client_nodes[renderer_id] == {
+            **server_nodes[renderer_id],
+            "refs": expected_refs,
+        }
+    unchanged_ids = set(server_nodes) - camera_ids - renderer_ids
+    assert set(client_nodes) == unchanged_ids | renderer_ids
+    for node_id in unchanged_ids:
+        assert client_nodes[node_id] == server_nodes[node_id]
+
+    # The emitted node set commits without dangling refs.
+    store, _ = commit_scene(scene, client_nodes)
+    assert store.snapshot()["nodes"] == client_nodes
+
+
+def test_client_camera_authority_translate_object_skips_the_camera():
+    scene = make_basic_scene()
+    camera_id = oid(scene, scene.handles["renderer"].GetActiveCamera())
+    object_manager = scene.api.vtk_object_manager
+
+    assert translate_object(object_manager, camera_id) is not None
+    assert (
+        translate_object(object_manager, camera_id, camera_authority="client")
+        is None
+    )
+
+
+def test_unknown_camera_authority_is_rejected():
+    scene = make_basic_scene()
+    with pytest.raises(ValueError, match="camera_authority"):
+        translate_scene(
+            scene.api.vtk_object_manager,
+            scene.render_window_id,
+            camera_authority="nobody",
+        )
+
+
+# ----------------------------------------------------------------------
 # Refs shapes
 # ----------------------------------------------------------------------
 
@@ -563,5 +638,5 @@ def test_cell_arrays_pack_to_the_vtkjs_layout(scene_factory, key, expected_packe
     other_cell_keys = {"verts", "lines", "polys", "strips"} - {key}
     assert not other_cell_keys & set(arrays)
 
-    packed = _pack_cell_array_payload(scene.api.vtk_object_manager, entry["ref"])
+    packed = pack_cell_array_payload(scene.api.vtk_object_manager, entry["ref"])
     assert np.frombuffer(packed, dtype=np.uint32).tolist() == expected_packed

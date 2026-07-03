@@ -157,6 +157,7 @@ export default {
       onSceneApplied: scene.onSceneApplied,
       onCommand: scene.onCommand,
       getInstance: scene.getInstance,
+      getSeq: scene.getSeq,
       uploadTexture: scene.uploadTexture,
       pickAt: scene.pickAt,
       startTargetDrag: scene.startTargetDrag,

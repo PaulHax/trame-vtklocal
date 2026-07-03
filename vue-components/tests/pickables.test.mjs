@@ -125,7 +125,7 @@ test("pickAt returns the nearest point within the grab radius", async () => {
   });
 
   assert.ok(hit);
-  assert.equal(hit.instanceId, "mapperA");
+  assert.equal(hit.nodeId, "mapperA");
   assert.equal(hit.pointIndex, 0);
   assert.equal(hit.pointId, "alpha");
   assert.deepEqual(hit.tags, { group: "A" });
@@ -198,7 +198,7 @@ test("pickAt breaks ties by priority then declaration order", async () => {
     b.mapper,
   );
   const priorityHit = pickables.pickAt(byPriority, 400, 200, opts);
-  assert.equal(priorityHit.instanceId, "b");
+  assert.equal(priorityHit.nodeId, "b");
   assert.deepEqual(priorityHit.tags, { n: "b" });
 
   // Equal priority + equal distance -> earlier declared (registry order) wins.
@@ -216,7 +216,7 @@ test("pickAt breaks ties by priority then declaration order", async () => {
     b.mapper,
   );
   const orderHit = pickables.pickAt(byOrder, 400, 200, opts);
-  assert.equal(orderHit.instanceId, "a");
+  assert.equal(orderHit.nodeId, "a");
 });
 
 test("pickAt rejects points behind the camera", async () => {

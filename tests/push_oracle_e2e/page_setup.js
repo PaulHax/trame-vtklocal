@@ -1,5 +1,5 @@
 /* eslint-disable */
-// Push-sync e2e oracle page setup.
+// Push-sync v2 e2e oracle page setup.
 //
 // The trame app loads this script alongside the widget mount. It wires
 // `window.__pushOracle__` to forward `waitForSeq` / `dump` / `diagnostics`
@@ -39,7 +39,7 @@
     return new Promise(function (resolve, reject) {
       function tick() {
         const diag = diagnostics(refName);
-        if (diag && diag.lastSeq >= target) {
+        if (diag && diag.mySeq >= target) {
           resolve(diag);
           return;
         }
@@ -64,8 +64,10 @@
     diagnostics: diagnostics,
     dump: dump,
     waitForSeq: waitForSeq,
+    // Ready means the engine applied its initial snapshot (live cursor).
     isReady: function (refName) {
-      return !!getView(refName) && diagnostics(refName) !== null;
+      const diag = diagnostics(refName);
+      return !!diag && diag.live === true;
     },
   };
 

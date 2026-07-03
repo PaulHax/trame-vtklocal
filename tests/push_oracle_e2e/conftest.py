@@ -64,8 +64,8 @@ def oracle_local_pair(e2e_app_local, browser):
     """Two independent ``JsOracle`` instances against one trame app.
 
     Each oracle has its own browser context — the trame app sees them as two
-    distinct wslink ``client_id`` values, exercises per-client ledgers, and
-    publishes patches to both. Used for two-client convergence coverage.
+    distinct wslink clients receiving the same ``scene.ops`` broadcasts. Used
+    for two-client convergence coverage.
     """
     base_url = f"http://127.0.0.1:{e2e_app_local.port}/"
     contexts = []

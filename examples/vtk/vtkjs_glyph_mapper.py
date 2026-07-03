@@ -110,8 +110,7 @@ async def animate():
     index = 1
     while True:
         update_centers(centers_polydata, POSITIONS[index])
-        view.mark_modified(centers_polydata, "points", 0, len(POSITIONS[index]))
-        view.flush()
+        view.sync()
         state.flush()
         index = (index + 1) % len(POSITIONS)
         await asyncio.sleep(STEP_SECONDS)

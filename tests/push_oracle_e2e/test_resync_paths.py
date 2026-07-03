@@ -1,12 +1,12 @@
-"""Coverage for resync code paths beyond the per-step matrix.
+"""Coverage for v2 resync code paths beyond the per-step matrix.
 
-The matrix proves the patch / arrayPartial dispatch path is correct. These
-tests cover the *recovery* paths the production stack exercises when wire
-state diverges:
+The matrix proves the broadcast apply path is correct. These tests cover the
+*recovery* paths the production stack exercises when wire state diverges:
 
 - mid-stream server-initiated ``request_resync`` (no scene change)
-- automatic gap recovery via ``createPushSync``'s ``gapResyncDelayMs`` timer
-  when a patch is dropped on the wire
+- automatic gap recovery: a dropped broadcast makes the next delivered
+  message's ``baseSeq`` miss the client cursor, and the engine resyncs
+  immediately (no timers in v2)
 """
 
 from __future__ import annotations
@@ -21,16 +21,17 @@ pytestmark = pytest.mark.js_oracle
 
 def _mid_stream_resync(oracle: JsOracle):
     oracle.reset("basic")
-    oracle.run_step("hide-actor", publish="update")
+    oracle.run_step("hide-actor")
     oracle.compare(step_name="hide-actor")
 
-    # Server-initiated resync without dropping clients or changing the scene.
-    # Existing client receives a fresh full state at a new seq and converges.
+    # Server-initiated resync without changing the scene: the broadcast's
+    # baseSeq=-1 can match no cursor, so the existing client re-pulls the
+    # snapshot at a fresh seq and converges.
     oracle.request_resync()
     oracle.compare(step_name="<after-mid-stream-resync>")
 
-    # Subsequent patches keep working after the resync.
-    oracle.run_step("set-pickable", publish="update")
+    # Subsequent ops keep working after the resync.
+    oracle.run_step("set-pickable")
     oracle.compare(step_name="set-pickable")
 
 
@@ -43,24 +44,20 @@ def test_mid_stream_resync_shared(oracle_shared: JsOracle):
 
 
 def _gap_recovery(oracle: JsOracle):
-    """Drop one patch; the next patch is `blocked` on the client; the
-    ``gapResyncDelayMs`` timer fires and the client auto-resyncs."""
+    """Drop one broadcast; the next delivered message exposes the seq gap and
+    the client resyncs to the authoritative state on the spot."""
     oracle.reset("basic")
-    oracle.run_step("hide-actor", publish="update")
+    oracle.run_step("hide-actor")
     oracle.compare(step_name="hide-actor")
 
-    # Drop the next outgoing message (one patch). The patch after that will
-    # have ``baseSeq`` referring to the dropped seq, so the client's
-    # ``validateMessageEnvelope`` returns "blocked" and ``scheduleGapResync``
-    # arms the recovery timer.
+    # Drop the next outgoing broadcast. The message after that carries a
+    # baseSeq the client cursor never reached, so the engine's consistency
+    # rule lands on "resync" and re-pulls the snapshot.
     oracle.suppress_next_publish(count=1)
-    oracle.run_step("show-actor", publish="update", wait=False)
-    next_result = oracle.run_step("set-pickable", publish="update", wait=False)
+    oracle.run_step("show-actor", wait=False)
+    next_result = oracle.run_step("set-pickable", wait=False)
 
-    # Wait for the production gap-resync timer (default 1000ms in
-    # ``createPushSync``) plus headroom for the resync RPC round trip and
-    # full-state apply. After recovery the client's ``lastSeq`` advances to
-    # the server's authoritative seq.
+    # Headroom covers the resync RPC round trip plus snapshot apply.
     oracle.wait_for_seq(next_result["seq"], timeout_ms=4000)
     oracle.compare(step_name="set-pickable-after-gap-recovery")
 

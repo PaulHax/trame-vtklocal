@@ -4,8 +4,8 @@ The matrix proves push-sync correctness per view; this smoke proves the two
 views co-exist without cross-view interference. Each step mutates only one
 view's render window and asserts:
 
-- the mutated view's JS dump matches its own server shadow,
-- the *other* view's JS dump still matches its own server shadow (no
+- the mutated view's JS dump matches its own server store,
+- the *other* view's JS dump still matches its own server store (no
   cross-view sync collateral).
 """
 
@@ -20,8 +20,8 @@ from trame_client.utils.testing import FixtureHelper
 
 from tests.push_oracle.normalize import (
     first_difference,
-    inline_resolver,
-    normalize,
+    normalize_client_dump,
+    normalize_server_shadow,
 )
 from tests.push_oracle_e2e.runner import (
     JsOracleMismatch,
@@ -82,8 +82,8 @@ class TwoViewClient:
         self.rw_ids[view] = result["rw_id"]
         return result
 
-    def run_step(self, view: str, step: str, publish: str = "update"):
-        result = self.trigger("oracle.run_step", view, step, publish, None)
+    def run_step(self, view: str, step: str):
+        result = self.trigger("oracle.run_step", view, step)
         self.wait_for_seq(view, result["seq"])
         return result
 
@@ -104,8 +104,8 @@ class TwoViewClient:
                 view=view, scene=scene, step=step,
                 report={"actual": "JS dump returned None"},
             )
-        js_norm = normalize(js_dump, inline_resolver)
-        sh_norm = normalize(srv_shadow, inline_resolver)
+        js_norm = normalize_client_dump(js_dump)
+        sh_norm = normalize_server_shadow(srv_shadow)
         if js_norm != sh_norm:
             raise JsOracleMismatch(
                 view=view, scene=scene, step=step,
@@ -124,33 +124,19 @@ def two_view(two_view_app, page: Page) -> TwoViewClient:
     return client
 
 
-def _reset_then_reload(client: TwoViewClient, view: str, scene: str):
-    """Server prepares the scene + drops clients; reload picks up clean."""
-    result = client.trigger("oracle.reset", view, scene)
-    client.rw_ids[view] = result["rw_id"]
-    return result
-
-
 def test_two_view_smoke_basic(two_view: TwoViewClient):
-    # Reset both views server-side (no clients attached yet, so just sets
-    # up scene state); then reload to produce a fresh client that resyncs
-    # against the now-prepared state on both views.
-    _reset_then_reload(two_view, "shared", "basic")
-    _reset_then_reload(two_view, "local", "basic")
+    # Reset both views server-side, then reload to produce a fresh client
+    # that resyncs against the now-prepared state on both views.
+    reset_shared = two_view.reset("shared", "basic")
+    reset_local = two_view.reset("local", "basic")
     two_view.page.reload()
     two_view.wait_ready()
 
-    for view in VIEWS:
-        diag = two_view.page.evaluate(
-            "(ref) => window.__pushOracle__.diagnostics(ref)",
-            REF_NAMES[view],
-        )
-        assert diag is not None, f"diagnostics for {view} should be set"
-        if diag["lastSeq"]:
-            two_view.wait_for_seq(view, diag["lastSeq"])
+    two_view.wait_for_seq("shared", reset_shared["baseline_seq"])
+    two_view.wait_for_seq("local", reset_local["baseline_seq"])
 
     # Mutate only the shared view; the local view should remain unchanged
-    # and its dump should still match its own shadow.
+    # and its dump should still match its own store.
     two_view.run_step("shared", "hide-actor")
     two_view.compare("shared", "basic", "hide-actor")
     two_view.compare("local", "basic", "<no-step>")

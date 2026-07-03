@@ -1,4 +1,4 @@
-"""Trame test app for the push-sync end-to-end oracle.
+"""Trame test app for the push-sync v2 end-to-end oracle.
 
 Run with::
 
@@ -7,26 +7,23 @@ Run with::
 
 The app mounts a single widget (``VtkJsSharedView`` or ``VtkJsLocalView``) at
 module scope with a persistent render window. The widget owns its
-``_push_sync``; the app uses *that* push_sync — it does not construct a
-second one. Scene "reset" means clearing the widget render window's
-contents and repopulating via a named factory from
-``tests/push_oracle/scenes.py``.
+``ScenePublisher``; the app drives *that* publisher through the widget API.
+Scene "reset" means clearing the widget render window's contents and
+repopulating via a named factory from ``tests/push_oracle/scenes.py`` — the
+publisher's dirty tracking turns that into ordinary scene ops.
 
 Server-side RPC triggers (registered via ``server.trigger``):
 
-- ``oracle.identify_client()`` → return active wslink client id
-- ``oracle.reset(scene_name)`` → clear+populate, request_resync, return seq
-- ``oracle.run_step(step_name, publish, extra)`` → mutate, update/flush, seq
-- ``oracle.shadow()`` → take_shadow_snapshot, return JSON-able dict
-- ``oracle.client_state(client_id)`` → return ledger for that client
-- ``oracle.drop_client(client_id)`` → proxy push_sync.drop_client
+- ``oracle.reset(scene_name)`` → clear+populate+sync, return the store seq
+- ``oracle.run_step(step_name)`` → mutate + ``view.sync()``, return seq
+- ``oracle.shadow()`` → ``store.snapshot()`` plus inlined blob bytes
 - ``oracle.request_resync()`` → server-initiated mid-stream resync
-- ``oracle.suppress_next_publish(client_id, count)`` → drop next ``count``
-  outgoing messages destined for this client (test-app protocol wrapper;
-  websocket stays alive for the gap-recovery path)
+- ``oracle.suppress_next_publish(count)`` → drop the next ``count`` outgoing
+  ``scene.ops`` broadcasts (test-app protocol wrapper; the websocket stays
+  alive so the *next* delivered message exposes the seq gap)
 
-The protocol wrapper lives entirely in this module — production
-``PushSync`` is unchanged.
+The protocol wrapper lives entirely in this module — the production
+``ScenePublisher`` is unchanged.
 """
 
 from __future__ import annotations
@@ -34,7 +31,6 @@ from __future__ import annotations
 import argparse
 import base64
 import sys
-from copy import deepcopy
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
@@ -48,81 +44,65 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tests.push_oracle.harness import take_shadow_snapshot  # noqa: E402
-from tests.push_oracle.scenes import SCENE_POPULATORS  # noqa: E402
+from tests.push_oracle.scenes import OracleScene, SCENE_POPULATORS  # noqa: E402
 from tests.push_oracle.steps import known_scenes, lookup_step  # noqa: E402
 
 
 PAGE_SETUP_PATH = Path(__file__).with_name("page_setup.js")
+OPS_TOPIC = "scene.ops"
 
 
 def _b64(payload):
-    """Recursively base64-encode any ``bytes`` / ``memoryview`` ``content``."""
+    """Recursively base64-encode any ``bytes`` / ``memoryview`` values."""
     if isinstance(payload, dict):
         return {k: _b64(v) for k, v in payload.items()}
     if isinstance(payload, list):
         return [_b64(v) for v in payload]
-    if isinstance(payload, (bytes, bytearray)):
-        return {"__b64__": base64.b64encode(bytes(payload)).decode("ascii")}
-    if isinstance(payload, memoryview):
+    if isinstance(payload, (bytes, bytearray, memoryview)):
         return {"__b64__": base64.b64encode(bytes(payload)).decode("ascii")}
     return payload
 
 
-def _shadow_to_json(shadow_dict):
-    return _b64(shadow_dict)
-
-
-def _is_array_descriptor(value):
-    return (
-        isinstance(value, dict)
-        and "hash" in value
-        and "dataType" in value
+def shadow_payload(publisher):
+    """The server-truth counterpart of the client dump: snapshot + blob bytes."""
+    snapshot = publisher.store.snapshot()
+    blobs = {
+        ref: publisher._resolve_ref_payload(ref)
+        for ref in sorted(publisher.store.live_refs())
+    }
+    return _b64(
+        {
+            "root": snapshot["root"],
+            "seq": snapshot["seq"],
+            "nodes": snapshot["nodes"],
+            "blobs": blobs,
+        }
     )
 
 
-def _inline_array_bytes(node, resolver):
-    """Walk ``node`` and stamp each array descriptor with inline ``content``
-    bytes (resolved via ``v:`` / ``cell:`` / blob registry on the server)."""
-    if isinstance(node, dict):
-        if _is_array_descriptor(node):
-            content = resolver(node)
-            if content is not None and "content" not in node:
-                node["content"] = bytes(content)
-            return
-        for value in node.values():
-            _inline_array_bytes(value, resolver)
-    elif isinstance(node, list):
-        for item in node:
-            _inline_array_bytes(item, resolver)
-
-
 class ProtocolPublishWrapper:
-    """Wrap a wslink protocol's ``publish`` to drop messages on demand.
+    """Wrap a wslink protocol's ``publish`` to drop broadcasts on demand.
 
-    ``oracle.suppress_next_publish(client_id, count)`` increments the
-    suppression counter for that client; the next ``count`` outgoing publish
-    calls destined for that client are skipped, producing a clean seq gap
-    visible to ``createPushSync`` while the websocket stays alive.
+    ``oracle.suppress_next_publish(count)`` arms the counter; the next
+    ``count`` outgoing ``scene.ops`` broadcasts are skipped, producing a
+    clean seq gap while the websocket stays alive.
     """
 
     def __init__(self, protocol):
         self._protocol = protocol
         self._original_publish = protocol.publish
-        self._suppress_remaining: dict[str, int] = {}
-        # monkey-patch in place so push_sync.publish calls go through us
+        self._suppress_remaining = 0
+        # monkey-patch in place so publisher broadcasts go through us
         protocol.publish = self._publish
 
-    def _publish(self, topic, payload, client_id=None, **kwargs):
-        if client_id is not None and self._suppress_remaining.get(client_id, 0) > 0:
-            self._suppress_remaining[client_id] -= 1
+    def _publish(self, topic, payload, *args, **kwargs):
+        if topic == OPS_TOPIC and self._suppress_remaining > 0:
+            self._suppress_remaining -= 1
             return None
-        return self._original_publish(topic, payload, client_id=client_id, **kwargs)
+        return self._original_publish(topic, payload, *args, **kwargs)
 
-    def suppress_next(self, client_id: str, count: int):
-        self._suppress_remaining[client_id] = (
-            self._suppress_remaining.get(client_id, 0) + int(count)
-        )
+    def suppress_next(self, count):
+        self._suppress_remaining += int(count)
 
     def restore(self):
         self._protocol.publish = self._original_publish
@@ -190,15 +170,10 @@ class OracleApp:
         self.current_scene: str | None = None
         self.current_handles: dict | None = None
         self._publish_wrapper: ProtocolPublishWrapper | None = None
-        self._fallback_records: list[dict] = []
 
         self._setup_render_window()
         self._build_ui()
         self._register_triggers()
-
-        # Hook fallback recording on the widget's push_sync. We can't do this
-        # until widget mounting kicks _init_push_sync.
-        self._wrap_fallback_recorder()
 
     # ------------------------------------------------------------------
     # Construction
@@ -245,21 +220,9 @@ class OracleApp:
                     ref="vtkView",
                 )
 
-    def _wrap_fallback_recorder(self):
-        push_sync = self.view_widget._push_sync
-        if push_sync is None:
-            return
-        original = push_sync._publish_full_fallback
-        records = self._fallback_records
-
-        def record(client_id, seq, *args, **kwargs):
-            reason = kwargs.get("reason")
-            if reason is None and len(args) >= 2:
-                reason = args[1]
-            records.append({"client_id": client_id, "reason": reason})
-            return original(client_id, seq, *args, **kwargs)
-
-        push_sync._publish_full_fallback = record
+    @property
+    def publisher(self):
+        return self.view_widget._publisher
 
     def _ensure_publish_wrapper(self):
         if self._publish_wrapper is not None:
@@ -276,48 +239,32 @@ class OracleApp:
     def _register_triggers(self):
         server = self.server
 
-        @server.trigger("oracle.identify_client")
-        def identify_client():
-            return {"client_id": self._active_client_id()}
-
         @server.trigger("oracle.reset")
         def reset(scene_name):
             return self.reset(scene_name)
 
         @server.trigger("oracle.run_step")
-        def run_step(step_name, publish="update", extra=None):
-            return self.run_step(step_name, publish, extra)
+        def run_step(step_name):
+            return self.run_step(step_name)
 
         @server.trigger("oracle.shadow")
         def shadow():
             return self.shadow()
-
-        @server.trigger("oracle.client_state")
-        def client_state(client_id):
-            return self.client_state(client_id)
-
-        @server.trigger("oracle.drop_client")
-        def drop_client(client_id):
-            return self.drop_client(client_id)
 
         @server.trigger("oracle.request_resync")
         def request_resync():
             return self.request_resync()
 
         @server.trigger("oracle.suppress_next_publish")
-        def suppress_next_publish(client_id, count=1):
+        def suppress_next_publish(count=1):
             self._ensure_publish_wrapper()
             if self._publish_wrapper is not None:
-                self._publish_wrapper.suppress_next(client_id, count)
-            return {"client_id": client_id, "count": int(count)}
+                self._publish_wrapper.suppress_next(count)
+            return {"count": int(count)}
 
     # ------------------------------------------------------------------
     # RPC implementations
     # ------------------------------------------------------------------
-
-    def _active_client_id(self):
-        api = self.view_widget.api
-        return api.get_active_client_id()
 
     def reset(self, scene_name: str):
         if scene_name not in known_scenes():
@@ -325,24 +272,19 @@ class OracleApp:
                 f"unknown scene {scene_name!r}; known: {known_scenes()}"
             )
 
-        push_sync = self.view_widget._push_sync
         api = self.view_widget.api
 
         _clear_render_window(self.render_window)
-        # Refresh the object-manager view of the (now empty) render window so
-        # subsequent populate calls don't see ghost dependencies.
-        api.vtk_object_manager.UpdateStatesFromObjects()
-
         populate = SCENE_POPULATORS[scene_name]
-        from tests.push_oracle.scenes import OracleScene
-
         handles = populate(api, self.render_window)
-        self.render_window.Render()
-        api.vtk_object_manager.UpdateStatesFromObjects()
+
+        # The publisher's collection observers saw the clear+populate; one
+        # sync turns it into remove/upsert ops and re-syncs observers over
+        # the new subtree.
+        self.view_widget.sync()
 
         self.current_scene = scene_name
         self.current_handles = handles
-        # Build a thin OracleScene so step mutators can use it unchanged.
         self.current_oracle_scene = OracleScene(
             name=scene_name,
             api=api,
@@ -351,87 +293,29 @@ class OracleApp:
             handles=handles,
         )
 
-        self._fallback_records.clear()
-        # Drop every currently-attached client so the runner's page reload
-        # comes back as a fresh client and resyncs from the new scene state
-        # instead of incrementally applying after the prior scene's state.
-        for client_id in list(push_sync._view_clients):
-            push_sync.drop_client(client_id)
-        # Bump the authoritative seq so the next published full state has a
-        # higher seq than anything an existing client could have observed.
-        # request_resync would do this AND publish; we skip the publish.
-        push_sync._sequence += 1
-        # Clear dirty-tracking state queued by the clear+populate VTK
-        # mutations above. Without this, the next client's first ``update()``
-        # consumes a pending structural-dirty flag and falls back to a full
-        # publish — masking real on-patch-path regressions in the matrix.
-        push_sync._dirty_object_ids.clear()
-        push_sync._dirty_structure_pending = False
-
+        # The runner reloads the page so the browser client starts from a
+        # fresh resync against the new scene instead of a cross-scene diff.
         return {
             "rw_id": int(self.view_widget._window_id),
             "scene_name": scene_name,
-            "baseline_seq": int(push_sync._sequence),
+            "baseline_seq": int(self.publisher.store.seq),
             "needs_reload": True,
         }
 
-    def run_step(self, step_name: str, publish: str = "update", extra=None):
+    def run_step(self, step_name: str):
         if self.current_scene is None:
             raise RuntimeError("oracle.reset must be called before run_step")
-        push_sync = self.view_widget._push_sync
         step = lookup_step(self.current_scene, step_name)
-
-        self._fallback_records.clear()
         step.mutate(self.current_oracle_scene)
-
-        # Steps that exercise the partial-array path declare their
-        # ``mark_modified`` calls on the step; the test app dispatches them
-        # before flush() so the mutator stays a pure VTK-object mutation.
-        for handle_name, array_path, start, count in step.mark_modified:
-            handle = self.current_handles[handle_name]
-            push_sync.mark_modified(handle, array_path, start, count)
-
-        action = publish or step.publish
-        if action == "update":
-            push_sync.update(extra=extra or step.extra)
-        elif action == "flush":
-            push_sync.flush(extra=extra or step.extra)
-        else:
-            raise ValueError(f"unknown publish action {action!r}")
-
-        return {
-            "seq": int(push_sync._sequence),
-            "fallback_records": list(self._fallback_records),
-        }
+        self.view_widget.sync()
+        return {"seq": int(self.publisher.store.seq)}
 
     def shadow(self):
-        from tests.push_oracle.normalize import make_resolver
-        from trame_vtklocal.widgets.push_sync import _state_for_ledger
-
-        push_sync = self.view_widget._push_sync
-        snap = take_shadow_snapshot(push_sync)
-        ledger_state = _state_for_ledger(snap)
-        # Resolve every array descriptor's bytes inline so the JS-side
-        # comparator can use a single resolver.
-        resolver = make_resolver(push_sync, push_sync._api.vtk_object_manager)
-        _inline_array_bytes(ledger_state, resolver)
-        return _shadow_to_json(ledger_state)
-
-    def client_state(self, client_id: str):
-        push_sync = self.view_widget._push_sync
-        ledger = push_sync._client_states.get(client_id)
-        if ledger is None:
-            return None
-        return _shadow_to_json(deepcopy(ledger))
-
-    def drop_client(self, client_id: str):
-        self.view_widget._push_sync.drop_client(client_id)
-        return {"client_id": client_id}
+        return shadow_payload(self.publisher)
 
     def request_resync(self):
-        push_sync = self.view_widget._push_sync
-        push_sync.request_resync()
-        return {"baseline_seq": int(push_sync._sequence)}
+        self.view_widget.request_resync()
+        return {"baseline_seq": int(self.publisher.store.seq)}
 
 
 def main():

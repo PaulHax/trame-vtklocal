@@ -112,13 +112,9 @@ JS_INIT = """
             type: 'custom',
             renderingMode: '3d',
             onAdd(m, gl) {
-                vtkView.initializeForSharedContext(m.getCanvas(), gl, {
-                    syncStateAtRender: true,
-                });
+                vtkView.initializeForSharedContext(m.getCanvas(), gl);
             },
             render(gl, args) {
-                vtkView.applyQueuedStateSync();
-
                 const projData = map.transform.getProjectionDataForCustomLayer?.() || args.defaultProjectionData;
                 const projMatrix = projData.mainMatrix;
 

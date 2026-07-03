@@ -1,8 +1,10 @@
 """
-Simple test for partial array updates.
+Simple test for automatic array-region updates (push sync v2).
 A line grows by adding points, then shrinks by removing them, forever.
 Points are pre-allocated; grow reveals them at their sine-wave position,
-shrink collapses all hidden points onto the last visible one.
+shrink collapses all hidden points onto the last visible one. Each frame is
+published with ``view.sync()`` — the publisher's hot-array differ turns the
+in-place point moves into small ``patchArray`` region ops automatically.
 """
 
 import asyncio
@@ -10,10 +12,8 @@ import math
 import argparse
 from urllib.parse import quote as url_quote
 
-import numpy as np
-
 from trame.app import get_server
-from trame.widgets import html, vuetify3
+from trame.widgets import html
 from trame.ui.vuetify3 import SinglePageLayout
 
 from trame_vtklocal.widgets import VtkJsSharedView
@@ -35,7 +35,6 @@ state, ctrl = server.state, server.controller
 state.trame__title = "Simple Partial Update Test"
 state.current_points = 0
 state.growing = True
-state.update_mode = "partial_simple"  # "full_sync", "partial_simple", "partial_fast"
 
 renderer = vtkRenderer()
 renderer.SetBackground(0.1, 0.1, 0.2)
@@ -136,60 +135,20 @@ async def animate():
         if growing:
             result = grow_one()
             if result:
-                (x, y, z), idx = result
-                send_grow_update(x, y, z, idx)
+                ctrl.view_sync()
             if visible_count >= MAX_POINTS:
                 growing = False
                 state.growing = False
         else:
             result = shrink_one()
             if result:
-                (px, py, pz), start_idx = result
-                send_shrink_update(px, py, pz, start_idx)
+                ctrl.view_sync()
             if visible_count <= 1:
                 growing = True
                 state.growing = True
 
         state.flush()
         await asyncio.sleep(1.0 / 30)
-
-
-def send_grow_update(x, y, z, idx):
-    """Growing: point idx revealed, all points from idx onward set to (x,y,z)."""
-    count = MAX_POINTS - idx
-    if state.update_mode == "full_sync":
-        ctrl.view_update()
-    elif state.update_mode == "partial_simple":
-        ctrl.mark_modified(polydata, "points", start=idx, count=count)
-        ctrl.view_flush()
-    elif state.update_mode == "partial_fast":
-        point_bytes = np.tile(
-            np.array([x, y, z], dtype=np.float32), count
-        ).tobytes()
-        ctrl.mark_modified(
-            polydata, "points", start=idx,
-            data=point_bytes, data_type="Float32Array"
-        )
-        ctrl.view_flush()
-
-
-def send_shrink_update(px, py, pz, start_idx):
-    """Shrinking: all points from start_idx onward collapsed to (px, py, pz)."""
-    count = MAX_POINTS - start_idx
-    if state.update_mode == "full_sync":
-        ctrl.view_update()
-    elif state.update_mode == "partial_simple":
-        ctrl.mark_modified(polydata, "points", start=start_idx, count=count)
-        ctrl.view_flush()
-    elif state.update_mode == "partial_fast":
-        point_bytes = np.tile(
-            np.array([px, py, pz], dtype=np.float32), count
-        ).tobytes()
-        ctrl.mark_modified(
-            polydata, "points", start=start_idx,
-            data=point_bytes, data_type="Float32Array"
-        )
-        ctrl.view_flush()
 
 
 animation_task = None
@@ -205,16 +164,6 @@ def start_animation(**kwargs):
 with SinglePageLayout(server) as layout:
     layout.title.set_text("Simple Partial Update Test")
 
-    with layout.toolbar:
-        vuetify3.VSelect(
-            v_model=("update_mode",),
-            items=("[{title: 'Full Sync', value: 'full_sync'}, {title: 'Partial (Simple)', value: 'partial_simple'}, {title: 'Partial (Fast)', value: 'partial_fast'}]",),
-            label="Mode",
-            density="compact",
-            hide_details=True,
-            style="max-width: 200px;",
-        )
-
     with layout.content:
         with html.Div(
             style="position: relative; width: 100%; height: 100%; overflow: hidden;",
@@ -224,7 +173,6 @@ with SinglePageLayout(server) as layout:
                 "background: rgba(0,0,0,0.7); color: white; padding: 10px; "
                 "border-radius: 5px; font-family: monospace;",
             ):
-                html.Div("Mode: {{ update_mode }}")
                 html.Div("Points: {{ current_points }} / 100")
                 html.Div("{{ growing ? 'Growing...' : 'Shrinking...' }}")
 
@@ -238,9 +186,7 @@ with SinglePageLayout(server) as layout:
                     style="width: 100%; height: 100%;",
                     on_ready="window.initVtkView && window.initVtkView()",
                 )
-                ctrl.view_update = view.update
-                ctrl.view_flush = view.flush
-                ctrl.mark_modified = view.mark_modified
+                ctrl.view_sync = view.sync
 
 
 INIT_SCRIPT_JS = """
@@ -283,9 +229,7 @@ INIT_SCRIPT_JS = """
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
 
-        vtkView.initializeForSharedContext(canvas, gl, {
-            syncStateAtRender: true,
-        });
+        vtkView.initializeForSharedContext(canvas, gl);
 
         vtkView.onRenderRequested(() => {
             requestAnimationFrame(() => {

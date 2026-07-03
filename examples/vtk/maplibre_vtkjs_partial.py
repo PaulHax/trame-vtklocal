@@ -246,8 +246,9 @@ async def animate():
                 "pitch": 0,
             }
 
-        ctrl.mark_modified(trail_polydata, "points", start=start, count=count)
-        ctrl.view_flush(extra={"orbitCamera": orbit_camera})
+        if orbit_camera:
+            ctrl.view_send_command("orbitCamera", orbit_camera)
+        ctrl.view_sync()
 
         elapsed = (time.perf_counter() - start_time) * 1000
         update_times.append(elapsed)
@@ -301,13 +302,13 @@ INIT_SCRIPT_JS = """
         return up;
     }
 
-    window.onVtkViewStateExtra = (extra) => {
+    function onOrbitCameraCommand(payload) {
         if (Date.now() < ignoreOrbitCameraUntil) {
             pendingOrbitCamera = null;
             return;
         }
-        pendingOrbitCamera = extra?.orbitCamera || null;
-    };
+        pendingOrbitCamera = payload || null;
+    }
 
     window.trame = window.trame || {};
     window.trame.refs = window.trame.refs || {};
@@ -349,6 +350,7 @@ INIT_SCRIPT_JS = """
 
         initialized = true;
         ({ mat4, vec3 } = glMatrix);
+        vtkView.onCommand?.('orbitCamera', onOrbitCameraCommand);
 
         map = new maplibregl.Map({
             container: 'map-container',
@@ -372,13 +374,9 @@ INIT_SCRIPT_JS = """
             renderingMode: '3d',
             onAdd: function(mapInstance, gl) {
                 const canvas = mapInstance.getCanvas();
-                vtkView.initializeForSharedContext(canvas, gl, {
-                    syncStateAtRender: true,
-                });
+                vtkView.initializeForSharedContext(canvas, gl);
             },
             render: function(gl, args) {
-                vtkView.applyQueuedStateSync();
-
                 if (pendingOrbitCamera) {
                     map.jumpTo({
                         center: pendingOrbitCamera.center,
@@ -534,11 +532,10 @@ with SinglePageLayout(server) as layout:
                 ref="vtkView",
                 style="display: none;",
                 on_ready="window.initMapLibreVTK && window.initMapLibreVTK()",
-                view_state_extra="window.onVtkViewStateExtra && window.onVtkViewStateExtra($event)",
             )
             ctrl.view_update = view.update
-            ctrl.view_flush = view.flush
-            ctrl.mark_modified = view.mark_modified
+            ctrl.view_sync = view.sync
+            ctrl.view_send_command = view.send_command
 
 
 if __name__ == "__main__":

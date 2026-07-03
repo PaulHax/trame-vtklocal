@@ -1,17 +1,22 @@
-"""Canonical e2e oracle step registry.
+"""Canonical e2e oracle step registry (push sync v2).
 
-The end-to-end Playwright oracle and the in-process Python harness both
-dispatch by ``(scene_name, step_name)``; the registry below is the single
-source of truth so the JS oracle test cases stay aligned with the Python
-ones. Mutators take an :class:`OracleScene` and mutate live VTK objects in
-place; the harness then calls ``view._push_sync.update()`` / ``flush()``
-based on each step's ``publish`` field.
+The end-to-end Playwright oracle dispatches by ``(scene_name, step_name)``;
+the registry below is the single source of truth so the JS oracle test cases
+stay aligned across test modules. Mutators take an :class:`OracleScene` and
+mutate live VTK objects in place; the test app then publishes via the view's
+``sync()`` — there is no per-step publish mode in v2 (the publisher decides
+between upserts and automatic ``patchArray`` region diffs itself).
+
+``expect_op`` optionally pins the op kind the client must see last for the
+step (e.g. ``"patchArray"`` for an in-place point nudge after retention has
+started), so a regression that silently degrades the hot-array path to full
+resends fails loudly even though the final state still converges.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Callable
 
 from .scenes import (
     OracleScene,
@@ -23,27 +28,11 @@ from .scenes import (
 
 @dataclass(frozen=True)
 class E2EStep:
-    """One e2e step: mutator + how the server should publish it.
-
-    ``expected_fallback`` lets the test matrix assert the dispatch path stayed
-    on patch / arrayPartial. A regression that silently falls back to full
-    sync every step would still produce a converged final state and pass the
-    comparator, but would also emit a fallback record per step. Steps that
-    legitimately need a full fallback (e.g., structural changes adding or
-    removing actors) set ``expected_fallback=True``.
-
-    ``mark_modified`` is a list of ``(handle_name, array_path, start, count)``
-    tuples the test app calls ``push_sync.mark_modified`` for after the
-    mutator runs and before ``flush()``. Pair with ``publish="flush"`` to
-    exercise the ``trame.vtk.array.partial`` wire path.
-    """
+    """One e2e step: a mutator plus an optional expected last-applied op."""
 
     name: str
     mutate: Callable[[OracleScene], None]
-    publish: Literal["update", "flush"] = "update"
-    extra: dict | None = None
-    expected_fallback: bool = False
-    mark_modified: tuple[tuple[str, str, int, int], ...] = ()
+    expect_op: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -146,14 +135,12 @@ def _polyline_move_points(scene: OracleScene):
     scene.handles["polydata"].Modified()
 
 
-def _polyline_partial_move_points(scene: OracleScene):
-    # Same point movements as ``_polyline_move_points`` but published via
-    # ``mark_modified`` + ``flush`` to exercise the ``trame.vtk.array.partial``
-    # wire path. The test app dispatches the ``mark_modified`` calls itself
-    # using the step's ``mark_modified`` field.
+def _polyline_nudge_one_point(scene: OracleScene):
+    # A single-point nudge after ``move-points`` (which started hot-array
+    # retention) must ride the wire as a ``patchArray`` region op.
     pts = scene.handles["points"]
-    for i in range(pts.GetNumberOfPoints()):
-        pts.SetPoint(i, 0.25 + float(i) * 0.3, 0.1 + float(i) * 0.2, 0.0)
+    x, y, z = pts.GetPoint(1)
+    pts.SetPoint(1, x + 0.125, y, z)
     pts.Modified()
     scene.handles["polydata"].Modified()
 
@@ -187,11 +174,10 @@ REGISTRY: dict[str, dict[str, E2EStep]] = {
     },
     "polyline": {
         "move-points": E2EStep("move-points", _polyline_move_points),
-        "partial-move-points": E2EStep(
-            "partial-move-points",
-            _polyline_partial_move_points,
-            publish="flush",
-            mark_modified=(("polydata", "points", 0, 3),),
+        "nudge-one-point": E2EStep(
+            "nudge-one-point",
+            _polyline_nudge_one_point,
+            expect_op="patchArray",
         ),
     },
 }

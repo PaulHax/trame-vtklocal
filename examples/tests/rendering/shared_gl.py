@@ -1,12 +1,13 @@
-"""Shared GL context — sync state at render time test server.
+"""Shared GL context — push sync v2 test server.
 
-Creates a VTK scene (red cone) with VtkJsSharedView in syncStateAtRender mode.
-Exposes JS helpers for Playwright to verify state is applied during renderShared().
+Creates a VTK scene (red cone) with VtkJsSharedView on the scene-ops
+protocol. Exposes JS helpers for Playwright to verify broadcast state
+reaches the client engine (including the automatic patchArray region path)
+and that the common scene API stays intact.
 
     pytest tests/test_shared_gl_context.py -v --headed
 """
 
-import numpy as np
 import vtk
 from urllib.parse import quote as url_quote
 
@@ -64,40 +65,80 @@ JS_CODE = r"""
             antialias: false
         });
 
-        vtkView.initializeForSharedContext(canvas, gl, { syncStateAtRender: true });
+        vtkView.initializeForSharedContext(canvas, gl);
         vtkView.onRenderRequested(function() {
             vtkView.renderShared({});
         });
-        window.trame.trigger('sync');
     };
 
-    window.testDisableAutoRender = function() {
-        vtkView.onRenderRequested(function() {});
+    window.testGetDiagnostics = function() {
+        return vtkView?.getSyncDiagnostics?.() || null;
     };
 
-    window.testRenderSharedDrainsQueue = function() {
-        vtkView.renderShared({});
-        return !vtkView.applyQueuedStateSync();
+    window.testWaitForSeq = function(target, timeoutMs) {
+        const deadline = Date.now() + (timeoutMs || 5000);
+        return new Promise(function (resolve, reject) {
+            function tick() {
+                const diag = window.testGetDiagnostics();
+                if (diag && diag.mySeq >= target) {
+                    resolve(diag);
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    reject(new Error(
+                        'waitForSeq(' + target + ') timed out; diagnostics=' +
+                        JSON.stringify(diag)));
+                    return;
+                }
+                setTimeout(tick, 16);
+            }
+            tick();
+        });
     };
 
-    window.testGetDeltaQueueLength = function() {
-        return vtkView.getQueueLength();
+    // Color-bearing props of every applied vtkProperty node, so the test can
+    // assert a server-side SetColor reached the client's live instances.
+    window.testGetAppliedPropertyColors = function() {
+        const state = vtkView?.getAppliedSceneState?.();
+        if (!state) return null;
+        const colors = [];
+        for (const node of Object.values(state.nodes || {})) {
+            if (node.type === 'vtkProperty' && node.props) {
+                colors.push({
+                    color: node.props.color || null,
+                    diffuseColor: node.props.diffuseColor || null,
+                });
+            }
+        }
+        return colors;
     };
 
-    window.testApplyQueuedStateSync = function() {
-        return vtkView.applyQueuedStateSync();
+    // Flat content of every applied polydata "points" array (base64), so the
+    // test can assert in-place point moves reached the bound vtk.js arrays.
+    window.testGetAppliedPointsContent = function() {
+        const state = vtkView?.getAppliedSceneState?.();
+        if (!state) return null;
+        const contents = [];
+        for (const node of Object.values(state.nodes || {})) {
+            const entry = node.arrays && node.arrays.points;
+            if (entry && entry.content) {
+                contents.push(entry.content);
+            }
+        }
+        return contents;
     };
 
     window.testCommonSceneApi = function() {
         const methods = [
             "update",
             "requestResync",
-            "applyQueuedStateSync",
             "getQueueLength",
             "getRenderWindow",
             "getRenderer",
             "setCamera",
             "resetCamera",
+            "getSyncDiagnostics",
+            "getAppliedSceneState",
         ];
         const missing = methods.filter((name) => typeof vtkView?.[name] !== "function");
         const renderer = vtkView?.getRenderer?.();
@@ -121,7 +162,6 @@ JS_CODE = r"""
             hasRenderer: !!renderer,
             cameraChanged,
             cameraReset,
-            idleQueueDrained: !vtkView?.applyQueuedStateSync?.(),
         };
     };
 
@@ -219,9 +259,7 @@ class SharedGLTest:
 
     def _build_ui(self):
         server = self.server
-        ctrl = server.controller
         server.state.rendering_ready = 0
-        server.state.mark_then_update_error = ""
 
         server.enable_module(
             {"scripts": [f"data:text/javascript,{url_quote(JS_CODE)}"]}
@@ -229,11 +267,9 @@ class SharedGLTest:
 
         with DivLayout(server):
             html.Div("{{ rendering_ready }}", classes="readyCount")
-            html.Div("{{ mark_then_update_error }}", classes="markThenUpdateError")
             client.Style(
                 "body { margin: 0; } "
                 ".readyCount { z-index: 10; position: absolute; left: 0; top: 0; }"
-                ".markThenUpdateError { display: none; }"
             )
             html.Canvas(
                 id="shared-canvas",
@@ -247,53 +283,28 @@ class SharedGLTest:
                 on_ready="window.initSharedGLTest?.()",
                 updated="rendering_ready++",
             )
-
-        ctrl.view_update = view.update
-        ctrl.view_flush = view.flush
-        ctrl.mark_modified = view.mark_modified
-
-        @server.trigger("sync")
-        def sync():
-            self.render_window.Render()
-            view.update()
+        self.view = view
 
         @server.trigger("change_color")
         def change_color():
             self.actor.GetProperty().SetColor(0, 1, 0)
-            self.render_window.Render()
-            view.update()
+            view.sync()
+            return {"seq": int(view._publisher.store.seq)}
 
-        @server.trigger("partial_move")
-        def partial_move():
+        @server.trigger("nudge_point")
+        def nudge_point():
+            # In-place single-point move: the first call pays the full array
+            # send that starts hot-array retention; subsequent calls must ride
+            # the wire as patchArray region ops.
             self.cone.Update()
             polydata = self.cone.GetOutput()
             pts = polydata.GetPoints()
-            arr = np.array(pts.GetData())
-            arr += 0.5
-            for i in range(len(arr)):
-                pts.SetPoint(i, *arr[i])
+            x, y, z = pts.GetPoint(0)
+            pts.SetPoint(0, x + 0.1, y, z)
             pts.Modified()
             polydata.Modified()
-            view.mark_modified(polydata, "points", start=0, count=len(arr))
-            view.flush()
-
-        @server.trigger("mark_then_update")
-        def mark_then_update():
-            server.state.mark_then_update_error = ""
-            self.cone.Update()
-            polydata = self.cone.GetOutput()
-            pts = polydata.GetPoints()
-            arr = np.array(pts.GetData())
-            arr -= 0.5
-            for i in range(len(arr)):
-                pts.SetPoint(i, *arr[i])
-            pts.Modified()
-            polydata.Modified()
-            view.mark_modified(polydata, "points", start=0, count=len(arr))
-            try:
-                view.update()
-            except RuntimeError as exc:
-                server.state.mark_then_update_error = str(exc)
+            view.sync()
+            return {"seq": int(view._publisher.store.seq)}
 
 
 def main():

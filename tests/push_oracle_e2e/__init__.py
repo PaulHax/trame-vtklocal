@@ -1,9 +1,9 @@
-"""End-to-end Playwright oracle for push-sync.
+"""End-to-end Playwright oracle for push sync v2.
 
-The companion in-process oracle (``tests/push_oracle/``) verifies that
-``PushSync``'s server-side patch generation is internally consistent. This
-package drives the full production stack — real wslink, real
-``createPushSync``, real ``synchronizePreparedStateSync`` — and compares the
-client's reconstructed scene against a fresh server shadow snapshot after
-each oracle step.
+The companion in-process oracle (``tests/test_v2_oracle.py``) proves the
+``ScenePublisher`` protocol against a normative Python mirror client. This
+package drives the full production stack — real wslink broadcasts, the real
+client engine (mirror store + reconcile applier) — and compares the
+client's reconstructed scene against the server's scene-store snapshot
+after each oracle step.
 """

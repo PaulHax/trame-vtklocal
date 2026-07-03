@@ -41,6 +41,25 @@ class _FakeServer:
 POINT_COUNT = 10_000
 
 
+def run_coroutine(coro):
+    """``asyncio.run`` that tolerates playwright's parked sync-API loop.
+
+    Playwright's sync API (used by the e2e oracle earlier in the same pytest
+    session) drives its event loop with greenlets: while control sits in the
+    test greenlet, that loop stays registered as the main thread's running
+    loop, so a plain ``asyncio.run`` raises "cannot be called from a running
+    event loop". The loop is parked (not executing) here, so clearing the
+    marker for the duration of the scenario is safe; VTK stays on the main
+    thread.
+    """
+    previous = asyncio.events._get_running_loop()
+    asyncio.events._set_running_loop(None)
+    try:
+        return asyncio.run(coro)
+    finally:
+        asyncio.events._set_running_loop(previous)
+
+
 def make_points_cloud_scene(point_count=POINT_COUNT, name="points_cloud"):
     """One actor over a large float32 point cloud (hot-array workloads)."""
     from vtkmodules.vtkCommonCore import vtkPoints
@@ -285,7 +304,7 @@ def test_dirty_marks_auto_publish_on_next_loop_tick():
         finally:
             publisher.cleanup()
 
-    asyncio.run(scenario())
+    run_coroutine(scenario())
     messages = server.protocol.drain()
     assert len(messages) == 1  # coalesced into one tick
     assert messages[0][0] == OPS_TOPIC
@@ -305,7 +324,7 @@ def test_settled_flushes_queued_commands():
         finally:
             publisher.cleanup()
 
-    asyncio.run(scenario())
+    run_coroutine(scenario())
     ((_topic, message),) = server.protocol.drain()
     assert message["commands"] == [{"name": "ping", "payload": None}]
     assert message["ops"] == []

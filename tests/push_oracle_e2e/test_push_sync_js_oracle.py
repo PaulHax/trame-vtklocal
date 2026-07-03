@@ -52,7 +52,7 @@ ARRAY_FIXTURES = [
 ]
 
 STRUCTURAL_FIXTURES = [
-    ("tsw_like", ["frame-0", "frame-1", "frame-2"]),
+    ("map_drape", ["frame-0", "frame-1", "frame-2"]),
 ]
 
 POLYLINE_FIXTURES = [

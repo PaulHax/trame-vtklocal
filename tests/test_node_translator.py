@@ -22,7 +22,7 @@ from push_oracle.scenes import (
     make_quad_polydata,
     make_quad_scene,
     make_scalars_scene,
-    make_tsw_like_scene,
+    make_map_drape_scene,
     make_two_stage_pipeline_scene,
 )
 from trame_vtklocal.module import distance_to_camera as dtc
@@ -179,7 +179,7 @@ def make_verts_scene(name="verts"):
 SCENE_FACTORIES = [
     make_basic_scene,
     make_quad_scene,
-    make_tsw_like_scene,
+    make_map_drape_scene,
     make_scalars_scene,
     make_polyline_scene,
     make_pipeline_cone_scene,
@@ -439,7 +439,7 @@ def test_projected_texture_mapper_translates_as_a_block():
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("scene_factory", [make_basic_scene, make_tsw_like_scene])
+@pytest.mark.parametrize("scene_factory", [make_basic_scene, make_map_drape_scene])
 def test_client_camera_authority_excludes_cameras_and_the_active_camera_slot(
     scene_factory,
 ):

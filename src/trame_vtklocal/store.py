@@ -5,7 +5,7 @@ flat ``id -> node`` map plus one global monotonic sequence number. Publishers
 write translated nodes through a transaction; the transaction computes
 generic, schema-agnostic ops (``upsert`` / ``remove`` / ``patchArray``) plus
 the blob-ref deltas the publisher needs for payload inlining and server-side
-blob GC. See ``docs/DESIGN-scene-store.md``.
+blob GC.
 
 Key properties:
 

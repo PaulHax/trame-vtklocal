@@ -28,9 +28,9 @@ from push_oracle.scenes import (
     make_polyline_scene,
     make_quad_scene,
     make_scalars_scene,
-    make_tsw_like_scene,
+    make_map_drape_scene,
     make_two_stage_pipeline_scene,
-    mutate_tsw_like_frame,
+    mutate_map_drape_frame,
     set_float_array_values,
 )
 from test_scene_store import apply_ops
@@ -325,15 +325,15 @@ def test_oracle_two_stage_pipeline_mutation():
     )
 
 
-def test_oracle_tsw_like_frame_loop():
+def test_oracle_map_drape_frame_loop():
     mutators = [
-        (f"frame-{index}", lambda scene, index=index: mutate_tsw_like_frame(scene, index))
+        (f"frame-{index}", lambda scene, index=index: mutate_map_drape_frame(scene, index))
         for index in range(1, 5)
     ]
     mutators.append(
         ("visibility-only", lambda scene: scene.handles["actors"][0].SetVisibility(False))
     )
-    run_v2_oracle(make_tsw_like_scene, mutators)
+    run_v2_oracle(make_map_drape_scene, mutators)
 
 
 # ----------------------------------------------------------------------

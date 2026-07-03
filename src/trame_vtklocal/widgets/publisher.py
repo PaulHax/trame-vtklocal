@@ -8,7 +8,7 @@ hot-array auto region diff, commits through ``store.transact()``, and
 broadcasts one ``scene.ops`` message to every client (wslink publish, no
 per-client state, no client targeting).
 
-Wire protocol v2 (see ``docs/DESIGN-scene-store.md``):
+Wire protocol v2:
 
 - broadcast topic ``scene.ops``:
   ``{"v": 2, "rw", "baseSeq", "seq", "ops", "blobs", "commands"?}``

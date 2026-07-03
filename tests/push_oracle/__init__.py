@@ -11,9 +11,9 @@ from .scenes import (
     make_quad_polydata,
     make_quad_scene,
     make_scalars_scene,
-    make_tsw_like_scene,
+    make_map_drape_scene,
     make_two_stage_pipeline_scene,
-    mutate_tsw_like_frame,
+    mutate_map_drape_frame,
     set_float_array_values,
 )
 
@@ -28,8 +28,8 @@ __all__ = [
     "make_quad_polydata",
     "make_quad_scene",
     "make_scalars_scene",
-    "make_tsw_like_scene",
+    "make_map_drape_scene",
     "make_two_stage_pipeline_scene",
-    "mutate_tsw_like_frame",
+    "mutate_map_drape_frame",
     "set_float_array_values",
 ]

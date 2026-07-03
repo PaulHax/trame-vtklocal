@@ -2,7 +2,7 @@
 // lifecycle, the seq consistency rule, apply-on-arrival, blob-cache
 // ownership, and command dispatch.
 //
-// Wire contract (see docs/DESIGN-scene-store.md):
+// Wire contract:
 // - broadcast topic "scene.ops": { v: 2, rw, baseSeq, seq, ops, blobs?,
 //   commands? } — every client gets every message.
 // - RPC "scene.resync"(rw, knownRefs) -> { v: 2, rw, seq, root, nodes,

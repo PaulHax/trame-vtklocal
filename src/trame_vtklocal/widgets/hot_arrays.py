@@ -5,7 +5,7 @@ Replaces v1's explicit ``mark_modified``/``flush`` partial-array API: mutate
 ``patchArray`` op automatically by comparing the live array against a
 retained last-sent copy.
 
-Policy per candidate dataset (see ``docs/DESIGN-scene-store.md``):
+Policy per candidate dataset:
 
 - no retained copy yet → the fresh ``c:`` ref flows (one full send) and
   retention starts; arrays above the retention cap are never retained;

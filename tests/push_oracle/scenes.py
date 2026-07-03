@@ -143,6 +143,7 @@ def add_actor(renderer, polydata, visible=True):
 
 
 def _register_and_warmup(api, render_window):
+    render_window.SetOffScreenRendering(1)
     render_window_id = api.vtk_object_manager.RegisterObject(render_window)
     render_window.Render()
     api.vtk_object_manager.UpdateStatesFromObjects()
@@ -243,7 +244,7 @@ def make_quad_scene(name="quad"):
     )
 
 
-def populate_tsw_like(api, render_window):
+def populate_map_drape(api, render_window):
     from vtkmodules.vtkRenderingCore import vtkRenderer
 
     renderer = vtkRenderer()
@@ -280,13 +281,13 @@ def populate_tsw_like(api, render_window):
     }
 
 
-def make_tsw_like_scene(name="tsw_like"):
-    """A four-actor scene close to what telesculptor-web pushes per frame."""
+def make_map_drape_scene(name="map_drape"):
+    """A four-actor scene close to what a downstream map-drape app pushes per frame."""
     from vtkmodules.vtkRenderingCore import vtkRenderWindow
 
     api = _ObjectManagerApiNoAttachments()
     rw = vtkRenderWindow()
-    handles = populate_tsw_like(api, rw)
+    handles = populate_map_drape(api, rw)
     rw_id = _register_and_warmup(api, rw)
     return OracleScene(
         name=name,
@@ -473,7 +474,7 @@ def make_two_stage_pipeline_scene(name="two_stage_pipeline"):
 SCENE_POPULATORS = {
     "basic": populate_basic,
     "quad": populate_quad,
-    "tsw_like": populate_tsw_like,
+    "map_drape": populate_map_drape,
     "scalars": populate_scalars,
     "polyline": populate_polyline,
     "pipeline_cone": populate_pipeline_cone,
@@ -481,7 +482,7 @@ SCENE_POPULATORS = {
 }
 
 
-def mutate_tsw_like_frame(scene: OracleScene, frame_index: int):
+def mutate_map_drape_frame(scene: OracleScene, frame_index: int):
     handles = scene.handles
     offset = frame_index * 0.1
     for index in range(4):

@@ -21,7 +21,7 @@ from typing import Callable
 from .scenes import (
     OracleScene,
     SCENE_POPULATORS,
-    mutate_tsw_like_frame,
+    mutate_map_drape_frame,
     set_float_array_values,
 )
 
@@ -91,19 +91,19 @@ def _quad_change_homography(scene: OracleScene):
 
 
 # ---------------------------------------------------------------------------
-# tsw_like scene
+# map_drape scene
 # ---------------------------------------------------------------------------
 
-def _tsw_frame_0(scene: OracleScene):
-    mutate_tsw_like_frame(scene, 0)
+def _map_drape_frame_0(scene: OracleScene):
+    mutate_map_drape_frame(scene, 0)
 
 
-def _tsw_frame_1(scene: OracleScene):
-    mutate_tsw_like_frame(scene, 1)
+def _map_drape_frame_1(scene: OracleScene):
+    mutate_map_drape_frame(scene, 1)
 
 
-def _tsw_frame_2(scene: OracleScene):
-    mutate_tsw_like_frame(scene, 2)
+def _map_drape_frame_2(scene: OracleScene):
+    mutate_map_drape_frame(scene, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +159,10 @@ REGISTRY: dict[str, dict[str, E2EStep]] = {
             "change-homography", _quad_change_homography
         ),
     },
-    "tsw_like": {
-        "frame-0": E2EStep("frame-0", _tsw_frame_0),
-        "frame-1": E2EStep("frame-1", _tsw_frame_1),
-        "frame-2": E2EStep("frame-2", _tsw_frame_2),
+    "map_drape": {
+        "frame-0": E2EStep("frame-0", _map_drape_frame_0),
+        "frame-1": E2EStep("frame-1", _map_drape_frame_1),
+        "frame-2": E2EStep("frame-2", _map_drape_frame_2),
     },
     "scalars": {
         "change-point-data": E2EStep(

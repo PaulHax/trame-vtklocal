@@ -1,7 +1,7 @@
 name: Publish Fork Wheel
 
 # On every push to the fork's `shared-context` branch, build the wheel and
-# publish it as a GitHub prerelease so the TeleSculptor-Web app can pin it by
+# publish it as a GitHub prerelease so a downstream app can pin it by
 # URL (`releases/download/<tag>/…whl`).
 #
 # The wheel embeds a UMD bundle built against the fork's vtk-js `shared-context`

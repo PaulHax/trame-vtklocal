@@ -1,0 +1,567 @@
+"""Flat-node translator tests (push sync v2 Phase 2).
+
+Every scene runs the same caller choreography as ``vtkjs_base``: register the
+render window, ``Render()`` under the dtc bypass, ``UpdateStatesFromObjects()``.
+Mutation steps refresh states *without* re-rendering so camera/light state
+stays inert and node diffs isolate exactly the mutated objects.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from push_oracle.scenes import (
+    OracleScene,
+    _ObjectManagerApiNoAttachments,
+    add_actor,
+    make_basic_scene,
+    make_line_polydata,
+    make_pipeline_cone_scene,
+    make_polyline_scene,
+    make_quad_polydata,
+    make_quad_scene,
+    make_scalars_scene,
+    make_tsw_like_scene,
+    make_two_stage_pipeline_scene,
+)
+from trame_vtklocal.module import distance_to_camera as dtc
+from trame_vtklocal.module import interaction as pick
+from trame_vtklocal.module import projected_texture as ptx
+from trame_vtklocal.module.node_translator import translate_object, translate_scene
+from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
+from trame_vtklocal.store import SceneStore
+from trame_vtklocal.widgets._push_sync_helpers import _pack_cell_array_payload
+
+
+# ----------------------------------------------------------------------
+# Scene builders beyond the shared oracle set
+# ----------------------------------------------------------------------
+
+
+def _wrap_scene(name, api, render_window, handles):
+    render_window_id = api.vtk_object_manager.RegisterObject(render_window)
+    with dtc.bypass_distance_to_camera_for_serialization(render_window):
+        render_window.Render()
+        api.vtk_object_manager.UpdateStatesFromObjects()
+    return OracleScene(
+        name=name,
+        api=api,
+        render_window=render_window,
+        render_window_id=render_window_id,
+        handles=handles,
+    )
+
+
+def make_glyph_scene(name="glyph_dtc"):
+    """Glyph mapper fed by a vtkDistanceToCamera filter (screen-size glyphs)."""
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkPolyData
+    from vtkmodules.vtkFiltersSources import vtkSphereSource
+    from vtkmodules.vtkRenderingCore import (
+        vtkActor,
+        vtkDistanceToCamera,
+        vtkGlyph3DMapper,
+        vtkRenderer,
+        vtkRenderWindow,
+    )
+
+    api = _ObjectManagerApiNoAttachments()
+    render_window = vtkRenderWindow()
+    render_window.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    render_window.AddRenderer(renderer)
+
+    points = vtkPoints()
+    points.InsertNextPoint(0.0, 0.0, 0.0)
+    points.InsertNextPoint(1.0, 0.0, 0.0)
+    centers = vtkPolyData()
+    centers.SetPoints(points)
+
+    distance_filter = vtkDistanceToCamera()
+    distance_filter.SetInputData(centers)
+    distance_filter.SetScreenSize(36)
+
+    source = vtkSphereSource()
+    source.Update()
+
+    mapper = vtkGlyph3DMapper()
+    mapper.SetInputConnection(distance_filter.GetOutputPort())
+    mapper.SetSourceData(source.GetOutput())
+    mapper.SetScaleArray("DistanceToCamera")
+    mapper.SetScaleModeToScaleByMagnitude()
+    mapper.OrientOff()
+    mapper.SetScalarVisibility(False)
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    renderer.AddActor(actor)
+    renderer.ResetCamera()
+
+    handles = {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "centers": centers,
+        "centers_points": points,
+        "filter": distance_filter,
+        "source_output": source.GetOutput(),
+    }
+    return _wrap_scene(name, api, render_window, handles)
+
+
+def make_textured_scene(name="textured"):
+    """Quad actor with a vtkTexture (its image pipeline never becomes a node)."""
+    from vtkmodules.vtkImagingSources import vtkImageEllipsoidSource
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow, vtkTexture
+
+    api = _ObjectManagerApiNoAttachments()
+    render_window = vtkRenderWindow()
+    render_window.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    render_window.AddRenderer(renderer)
+
+    image = vtkImageEllipsoidSource()
+    image.SetWholeExtent(0, 7, 0, 7, 0, 0)
+    texture = vtkTexture()
+    texture.SetInputConnection(image.GetOutputPort())
+
+    polydata, points, tcoords, homography = make_quad_polydata()
+    actor, mapper = add_actor(renderer, polydata)
+    actor.SetTexture(texture)
+
+    handles = {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "texture": texture,
+        "image_source": image,
+    }
+    return _wrap_scene(name, api, render_window, handles)
+
+
+def make_verts_scene(name="verts"):
+    """Polydata whose only cells are two single-point vertices."""
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    render_window = vtkRenderWindow()
+    render_window.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    render_window.AddRenderer(renderer)
+
+    points = vtkPoints()
+    points.InsertNextPoint(0.0, 0.0, 0.0)
+    points.InsertNextPoint(1.0, 1.0, 0.0)
+    verts = vtkCellArray()
+    for point_id in range(2):
+        verts.InsertNextCell(1)
+        verts.InsertCellPoint(point_id)
+
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetVerts(verts)
+    actor, mapper = add_actor(renderer, polydata)
+
+    handles = {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "points": points,
+    }
+    return _wrap_scene(name, api, render_window, handles)
+
+
+SCENE_FACTORIES = [
+    make_basic_scene,
+    make_quad_scene,
+    make_tsw_like_scene,
+    make_scalars_scene,
+    make_polyline_scene,
+    make_pipeline_cone_scene,
+    make_two_stage_pipeline_scene,
+    make_glyph_scene,
+    make_textured_scene,
+    make_verts_scene,
+]
+
+
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+
+
+def refresh(scene):
+    """Caller choreography for a re-translate after mutations (no Render)."""
+    with dtc.bypass_distance_to_camera_for_serialization(scene.render_window):
+        scene.api.vtk_object_manager.UpdateStatesFromObjects()
+
+
+def translate(scene):
+    return translate_scene(scene.api.vtk_object_manager, scene.render_window_id)
+
+
+def oid(scene, vtk_object):
+    return str(scene.api.vtk_object_manager.GetId(vtk_object))
+
+
+def emitted_array_refs(nodes):
+    return {
+        entry["ref"]
+        for node in nodes.values()
+        for entry in node.get("arrays", {}).values()
+    }
+
+
+def changed_ids(before, after):
+    return {
+        node_id
+        for node_id in set(before) | set(after)
+        if before.get(node_id) != after.get(node_id)
+    }
+
+
+def commit_scene(scene, nodes):
+    store = SceneStore(str(scene.render_window_id))
+    result = store.transact().upsert_nodes(nodes).commit()
+    return store, result
+
+
+# ----------------------------------------------------------------------
+# Core invariants over every scene
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scene_factory", SCENE_FACTORIES)
+def test_scene_commits_to_store_without_dangling_refs(scene_factory):
+    scene = scene_factory()
+    nodes = translate(scene)
+
+    store, result = commit_scene(scene, nodes)
+
+    assert result["blob_refs_entering"] == emitted_array_refs(nodes)
+    # Canonicalization kept every node intact and reachable from the root.
+    assert store.snapshot()["nodes"] == nodes
+
+    # Every emitted ref is resolvable by the publisher.
+    object_manager = scene.api.vtk_object_manager
+    for ref in emitted_array_refs(nodes):
+        if ref.startswith("c2:"):
+            assert _pack_cell_array_payload(object_manager, ref)
+        else:
+            assert ref.startswith("c:")
+            assert object_manager.GetBlob(ref[len("c:"):]) is not None
+
+
+@pytest.mark.parametrize("scene_factory", SCENE_FACTORIES)
+def test_translate_object_matches_translate_scene(scene_factory):
+    scene = scene_factory()
+    nodes = translate(scene)
+
+    for node_id, node in nodes.items():
+        assert translate_object(scene.api.vtk_object_manager, node_id) == node
+
+
+@pytest.mark.parametrize("scene_factory", SCENE_FACTORIES)
+def test_translation_is_deterministic(scene_factory):
+    scene = scene_factory()
+
+    assert translate(scene) == translate(scene)
+
+
+# ----------------------------------------------------------------------
+# Mutations map to exactly the expected node diffs
+# ----------------------------------------------------------------------
+
+
+def test_visibility_change_touches_only_the_actor_node():
+    scene = make_basic_scene()
+    before = translate(scene)
+
+    scene.handles["actor"].SetVisibility(0)
+    refresh(scene)
+    after = translate(scene)
+
+    actor_id = oid(scene, scene.handles["actor"])
+    assert changed_ids(before, after) == {actor_id}
+    assert before[actor_id]["props"]["visibility"] == 1
+    assert after[actor_id]["props"]["visibility"] == 0
+
+
+def test_property_color_change_touches_only_the_property_node():
+    scene = make_basic_scene()
+    vtk_property = scene.handles["actor"].GetProperty()
+    before = translate(scene)
+
+    vtk_property.SetColor(0.9, 0.1, 0.2)
+    refresh(scene)
+    after = translate(scene)
+
+    property_id = oid(scene, vtk_property)
+    assert changed_ids(before, after) == {property_id}
+    assert after[property_id]["props"]["color"] == [0.9, 0.1, 0.2]
+
+
+def test_points_mutation_changes_only_the_dataset_array_ref():
+    scene = make_basic_scene()
+    before = translate(scene)
+
+    scene.handles["points"].SetPoint(0, 0.25, 0.5, 0.0)
+    scene.handles["points"].Modified()
+    refresh(scene)
+    after = translate(scene)
+
+    polydata_id = oid(scene, scene.handles["polydata"])
+    assert changed_ids(before, after) == {polydata_id}
+    before_points = before[polydata_id]["arrays"]["points"]
+    after_points = after[polydata_id]["arrays"]["points"]
+    assert before_points["ref"] != after_points["ref"]
+    assert after_points["ref"].startswith("c:")
+    assert {**before_points, "ref": None} == {**after_points, "ref": None}
+
+
+def test_pickable_retag_changes_only_the_mapper_pickable_block():
+    scene = make_basic_scene()
+    mapper = scene.handles["mapper"]
+    pick.make_pickable(mapper, tags={"kind": "landmark"}, ids=[7, 9], grab_px=8)
+    refresh(scene)
+    before = translate(scene)
+
+    pick.make_pickable(
+        mapper, tags={"kind": "landmark", "rev": 2}, ids=[7, 9], grab_px=8
+    )
+    refresh(scene)
+    after = translate(scene)
+
+    mapper_id = oid(scene, mapper)
+    assert changed_ids(before, after) == {mapper_id}
+
+    before_node = dict(before[mapper_id])
+    after_node = dict(after[mapper_id])
+    before_blocks = before_node.pop("blocks")
+    after_blocks = after_node.pop("blocks")
+    assert before_node == after_node
+    assert set(before_blocks) == set(after_blocks) == {"pickable"}
+    assert after_blocks["pickable"]["tags"] == {"kind": "landmark", "rev": 2}
+    assert before_blocks["pickable"]["tags"] == {"kind": "landmark"}
+
+
+def test_add_then_remove_actor_round_trips_through_the_store():
+    scene = make_basic_scene()
+    renderer = scene.handles["renderer"]
+    renderer_id = oid(scene, renderer)
+    before = translate(scene)
+    store, _ = commit_scene(scene, before)
+
+    polydata, _points = make_line_polydata()
+    actor2, mapper2 = add_actor(renderer, polydata)
+    refresh(scene)
+    added = translate(scene)
+
+    new_ids = set(added) - set(before)
+    assert {oid(scene, actor2), oid(scene, mapper2)} <= new_ids
+    assert changed_ids(before, added) == new_ids | {renderer_id}
+    assert oid(scene, actor2) in added[renderer_id]["refs"]["viewProps"]
+    store.transact().upsert_nodes(added).commit()
+    assert store.snapshot()["nodes"] == added
+
+    renderer.RemoveActor(actor2)
+    refresh(scene)
+    after = translate(scene)
+
+    assert after == before
+    result = store.transact().upsert_nodes(after).commit()
+    removed = {op["id"] for op in result["ops"] if op["op"] == "remove"}
+    assert removed == new_ids
+    assert store.snapshot()["nodes"] == after
+
+
+# ----------------------------------------------------------------------
+# Feature blocks
+# ----------------------------------------------------------------------
+
+
+def test_distance_to_camera_glyph_mapper_bypasses_the_filter():
+    scene = make_glyph_scene()
+    nodes = translate(scene)
+
+    mapper_id = oid(scene, scene.handles["mapper"])
+    centers_id = oid(scene, scene.handles["centers"])
+    source_id = oid(scene, scene.handles["source_output"])
+    node = nodes[mapper_id]
+
+    assert node["type"] == "vtkGlyph3DMapper"
+    assert node["refs"]["inputs"][0] == centers_id
+    assert node["refs"]["inputs"][1] == source_id
+    assert node["props"]["scaleArray"] == "DistanceToCamera"
+    assert node["blocks"]["distanceToCamera"] == {
+        "arrayName": "DistanceToCamera",
+        "screenSize": 36.0,
+        "inputDataObjectId": centers_id,
+    }
+
+    # The algorithm itself never becomes a node.
+    assert all(n["type"] != "vtkDistanceToCamera" for n in nodes.values())
+    filter_id = scene.api.vtk_object_manager.GetId(scene.handles["filter"])
+    assert str(filter_id) not in nodes
+
+    # The pre-filter dataset is a normal dataset node with its points array.
+    assert nodes[centers_id]["type"] == "vtkPolyData"
+    assert nodes[centers_id]["arrays"]["points"]["ref"].startswith("c:")
+
+
+def test_projected_texture_mapper_translates_as_a_block():
+    scene = make_quad_scene()
+    mapper = scene.handles["mapper"]
+    ptx.mark_projected_texture(mapper, "video-frame", mode="homography")
+    ptx.set_projected_texture_matrix(
+        mapper, homography=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    )
+    refresh(scene)
+    nodes = translate(scene)
+
+    node = nodes[oid(scene, mapper)]
+    assert node["type"] == "vtkProjectedTextureMapper"
+    assert node["blocks"]["projectedTexture"] == {
+        "textureKey": "video-frame",
+        "mode": "homography",
+        "homography": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    }
+    assert "textureKey" not in node.get("props", {})
+
+
+# ----------------------------------------------------------------------
+# Refs shapes
+# ----------------------------------------------------------------------
+
+
+def test_camera_node_uses_the_property_whitelist():
+    scene = make_basic_scene()
+    nodes = translate(scene)
+
+    camera = scene.handles["renderer"].GetActiveCamera()
+    camera_id = oid(scene, camera)
+    renderer_id = oid(scene, scene.handles["renderer"])
+
+    assert nodes[renderer_id]["refs"]["activeCamera"] == camera_id
+    camera_node = nodes[camera_id]
+    assert camera_node["type"] == "vtkCamera"
+    assert set(camera_node["props"]) <= CAMERA_PROPERTIES
+    assert {"position", "focalPoint", "viewUp", "viewAngle"} <= set(
+        camera_node["props"]
+    )
+    assert "refs" not in camera_node
+
+
+def test_renderer_lights_dissolve_into_a_ref_list():
+    scene = make_basic_scene()
+    nodes = translate(scene)
+
+    renderer = scene.handles["renderer"]
+    renderer_id = oid(scene, renderer)
+    lights = renderer.GetLights()
+    light_ids = [
+        oid(scene, lights.GetItemAsObject(index))
+        for index in range(lights.GetNumberOfItems())
+    ]
+
+    assert nodes[renderer_id]["refs"]["lights"] == light_ids
+    for light_id in light_ids:
+        assert nodes[light_id]["type"] == "vtkLight"
+        assert nodes[light_id]["props"]["lightType"] in (
+            "HeadLight",
+            "CameraLight",
+            "SceneLight",
+        )
+
+
+def test_actor_texture_ref_and_no_texture_pipeline_nodes():
+    scene = make_textured_scene()
+    nodes = translate(scene)
+
+    actor_id = oid(scene, scene.handles["actor"])
+    texture_id = oid(scene, scene.handles["texture"])
+    image_id = scene.api.vtk_object_manager.GetId(
+        scene.handles["image_source"].GetOutput()
+    )
+
+    assert nodes[actor_id]["refs"]["textures"] == [texture_id]
+    texture_node = nodes[texture_id]
+    assert texture_node["type"] == "vtkTexture"
+    assert "inputDataObjects" not in texture_node.get("props", {})
+    lookup_table_id = texture_node["refs"]["lookupTable"]
+    assert lookup_table_id in nodes
+    # The texture's image pipeline stays out of the node graph.
+    assert str(image_id) not in nodes
+
+
+# ----------------------------------------------------------------------
+# Arrays shapes
+# ----------------------------------------------------------------------
+
+
+def test_points_and_field_arrays_use_content_refs():
+    scene = make_quad_scene()
+    nodes = translate(scene)
+    arrays = nodes[oid(scene, scene.handles["polydata"])]["arrays"]
+
+    points = arrays["points"]
+    assert points["ref"].startswith("c:")
+    assert points["dataType"] == "Float32Array"
+    assert points["size"] == 12
+    assert points["numberOfComponents"] == 3
+    assert points["registration"] == "setPoints"
+    assert points["vtkClass"] == "vtkPoints"
+
+    tcoords = arrays["field:pointData:TextureCoordinates"]
+    assert tcoords["ref"].startswith("c:")
+    assert tcoords["registration"] == "setTCoords"
+    assert tcoords["location"] == "pointData"
+    assert tcoords["name"] == "TextureCoordinates"
+    assert tcoords["size"] == 8
+
+    homography = arrays["field:fieldData:HomographyInverse"]
+    assert homography["location"] == "fieldData"
+    assert "registration" not in homography
+
+
+def test_named_attribute_arrays_carry_registrations():
+    scene = make_scalars_scene()
+    nodes = translate(scene)
+    arrays = nodes[oid(scene, scene.handles["polydata"])]["arrays"]
+
+    assert arrays["field:pointData:PointScalars"]["registration"] == "setScalars"
+    assert arrays["field:cellData:CellScalars"]["registration"] == "setScalars"
+
+
+@pytest.mark.parametrize(
+    ("scene_factory", "key", "expected_packed"),
+    [
+        (make_quad_scene, "polys", [4, 0, 1, 2, 3]),
+        (make_polyline_scene, "lines", [3, 0, 1, 2]),
+        (make_verts_scene, "verts", [1, 0, 1, 1]),
+    ],
+)
+def test_cell_arrays_pack_to_the_vtkjs_layout(scene_factory, key, expected_packed):
+    scene = scene_factory()
+    nodes = translate(scene)
+    arrays = nodes[oid(scene, scene.handles["polydata"])]["arrays"]
+
+    entry = arrays[key]
+    assert entry["ref"].startswith("c2:")
+    assert entry["dataType"] == "Uint32Array"
+    assert entry["numberOfComponents"] == 1
+    assert entry["size"] == len(expected_packed)
+    assert entry["registration"] == f"set{key.capitalize()}"
+    assert entry["vtkClass"] == "vtkCellArray"
+
+    # Only the cell arrays actually present are emitted.
+    other_cell_keys = {"verts", "lines", "polys", "strips"} - {key}
+    assert not other_cell_keys & set(arrays)
+
+    packed = _pack_cell_array_payload(scene.api.vtk_object_manager, entry["ref"])
+    assert np.frombuffer(packed, dtype=np.uint32).tolist() == expected_packed

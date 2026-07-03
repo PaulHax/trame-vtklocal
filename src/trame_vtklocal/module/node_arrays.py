@@ -1,0 +1,157 @@
+"""Dataset array entries for the flat-node translator (push sync v2).
+
+Builds the ``arrays`` section of a dataset node: polydata topology
+(points/verts/lines/polys/strips) and field-data arrays, each carrying a blob
+ref instead of content — ``c:<hash>`` for content-addressed blobs,
+``c2:<connHash>:<offHash>`` for packed vtk.js cell arrays. Same bridging
+knowledge as the v1 translator (md5 field-array blobs, cell packing shape),
+new output shape.
+"""
+
+from __future__ import annotations
+
+import hashlib
+
+import numpy as np
+from vtkmodules.util.numpy_support import numpy_to_vtk
+
+from trame_vtklocal.module.vtkjs_translator import (
+    ATTRIBUTE_REGISTRATIONS,
+    CLASS_TO_DATATYPE,
+    FIELD_DATA_GETTERS,
+    POLYDATA_ARRAYS,
+    VTK_DATATYPE_MAP,
+    get_ref_id,
+    to_camel_case,
+)
+from trame_vtklocal.store import REF_CELLS_PREFIX, REF_CONTENT_PREFIX
+
+
+def _data_array_entry(data_state):
+    hash_value = data_state.get("Hash")
+    if not hash_value:
+        return None
+
+    class_name = data_state.get("ClassName", "")
+    js_type = CLASS_TO_DATATYPE.get(class_name) or VTK_DATATYPE_MAP.get(
+        data_state.get("DataType", 10), "Float32Array"
+    )
+    components = data_state.get("NumberOfComponents", 1)
+    entry = {
+        "ref": REF_CONTENT_PREFIX + hash_value,
+        "dataType": js_type,
+        "size": data_state.get("NumberOfTuples", 0) * components,
+        "numberOfComponents": components,
+    }
+    name = data_state.get("Name") or ""
+    if name:
+        entry["name"] = name
+    return entry
+
+
+def _cell_array_entry(reader, container_state):
+    number_of_cells = container_state.get("NumberOfCells", 0)
+    if number_of_cells <= 0:
+        return None
+    connectivity_id = get_ref_id(container_state.get("Connectivity"))
+    offsets_id = get_ref_id(container_state.get("Offsets"))
+    if not connectivity_id or not offsets_id:
+        return None
+    connectivity_state = reader.state(connectivity_id)
+    connectivity_hash = connectivity_state.get("Hash")
+    offsets_hash = reader.state(offsets_id).get("Hash")
+    if not connectivity_hash or not offsets_hash:
+        return None
+    return {
+        # The publisher derives the packed vtk.js single-array Uint32 layout
+        # (cell size followed by point ids, per cell) from these two blobs.
+        "ref": f"{REF_CELLS_PREFIX}{connectivity_hash}:{offsets_hash}",
+        "dataType": "Uint32Array",
+        "size": connectivity_state.get("NumberOfTuples", 0) + number_of_cells,
+        "numberOfComponents": 1,
+    }
+
+
+def _topology_entry(reader, ref_value, spec):
+    ref_id = get_ref_id(ref_value)
+    if not ref_id:
+        return None
+    container_state = reader.state(ref_id)
+    container_class = container_state.get("ClassName", "")
+    if container_class == "vtkPoints":
+        data_id = get_ref_id(container_state.get("Data"))
+        entry = _data_array_entry(reader.state(data_id)) if data_id else None
+    elif container_class == "vtkCellArray":
+        entry = _cell_array_entry(reader, container_state)
+    else:
+        entry = None
+    if entry:
+        entry["registration"] = spec["registration"]
+        entry["vtkClass"] = spec["vtkClass"]
+    return entry
+
+
+def _register_field_array_blob(object_manager, array, location):
+    # vtkObjectManager doesn't serialize vtkDataSetAttributes arrays, so
+    # bridge them by hand: md5-address the raw bytes and register the blob
+    # under that hash (same gap-bridging as v1).
+    flat = np.array(array).ravel()
+    raw_bytes = flat.view(np.uint8)
+    content_hash = hashlib.md5(raw_bytes).hexdigest()
+    # RegisterBlob requires a vtkTypeUInt8Array (= vtkUnsignedCharArray).
+    object_manager.RegisterBlob(content_hash, numpy_to_vtk(raw_bytes, deep=True))
+
+    components = array.GetNumberOfComponents()
+    return {
+        "ref": REF_CONTENT_PREFIX + content_hash,
+        "dataType": VTK_DATATYPE_MAP.get(array.GetDataType(), "Float32Array"),
+        "size": array.GetNumberOfTuples() * components,
+        "numberOfComponents": components,
+        "name": array.GetName() or "",
+        "location": location,
+    }
+
+
+def _field_data_arrays(reader, dataset_id):
+    vtk_dataset = reader.vtk_object(dataset_id)
+    if vtk_dataset is None:
+        return {}
+
+    arrays = {}
+    for field_key, getter_name in FIELD_DATA_GETTERS.items():
+        getter = getattr(vtk_dataset, getter_name, None)
+        field_data = getter() if getter is not None else None
+        if not field_data or field_data.GetNumberOfArrays() == 0:
+            continue
+
+        location = to_camel_case(field_key)
+        attribute_registrations = {}
+        for vtk_attribute, registration in ATTRIBUTE_REGISTRATIONS.items():
+            get_attribute = getattr(field_data, f"Get{vtk_attribute}", None)
+            attribute_array = get_attribute() if get_attribute is not None else None
+            if attribute_array is not None:
+                attribute_registrations[attribute_array.GetName()] = registration
+
+        for index in range(field_data.GetNumberOfArrays()):
+            array = field_data.GetArray(index)
+            if array is None or array.GetNumberOfTuples() == 0:
+                continue
+            entry = _register_field_array_blob(
+                reader.object_manager, array, location
+            )
+            registration = attribute_registrations.get(entry["name"])
+            if registration:
+                entry["registration"] = registration
+            arrays[f"field:{location}:{entry['name']}"] = entry
+    return arrays
+
+
+def polydata_array_entries(reader, state):
+    """The full ``arrays`` section for a polydata node."""
+    arrays = {}
+    for state_key, spec in POLYDATA_ARRAYS.items():
+        entry = _topology_entry(reader, state.get(state_key), spec)
+        if entry:
+            arrays[state_key.lower()] = entry
+    arrays.update(_field_data_arrays(reader, state["Id"]))
+    return arrays

@@ -1,21 +1,29 @@
-name: Build Fork Wheel
+name: Publish Fork Wheel
 
-# Build-only sanity check. This workflow does NOT publish a release.
+# On every push to the fork's `shared-context` branch, build the wheel and
+# publish it as a GitHub prerelease so the TeleSculptor-Web app can pin it by
+# URL (`releases/download/<tag>/…whl`).
 #
-# Releases are cut locally with `./release.sh --publish`, which ships the
-# locally-built, tested UMD bundle (and asserts the wheel's embedded UMD
-# byte-matches that build). CI does not publish because it independently
-# rebuilds the vtk-js fork, yielding a byte-divergent, untested UMD; publishing
-# that would ship an artifact no one has run. The uploaded artifact below is a
-# build check only — proof the wheel still builds — never a release.
+# The wheel embeds a UMD bundle built against the fork's vtk-js `shared-context`
+# branch (PaulHax/vtk-js), so CI and the app agree on exactly which vtk-js the
+# wheel carries. Because CI clones that same tested branch, the UMD it builds
+# matches what was validated locally — the old "CI rebuild is byte-divergent and
+# untested, so never publish from CI" caveat no longer applies.
+#
+# This reuses `./release.sh --publish` — the same script devs run locally — so
+# version stamping, the UMD byte-assert, the tag scheme
+# (`v<base>-shared-context.<sha>`), and release creation live in ONE place.
 
 on:
   push:
     branches: [shared-context]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,25 +38,30 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Clone and build vtk-js fork
+      - name: Build the vtk-js fork (shared-context) and expose it via npm link
         run: |
           git clone --depth 1 --branch shared-context https://github.com/PaulHax/vtk-js.git
           cd vtk-js && npm ci && npm run build:esm
           cd dist/esm && npm link
 
-      - name: Build vue-components
+      - name: Install vue-components deps and link the fork vtk-js
         working-directory: trame-vtklocal/vue-components
-        run: npm ci && npm link @kitware/vtk.js && npm run build
+        # `npm ci` wipes node_modules but keeps the global link, so link after it.
+        # release.sh runs the actual `npm run build` against this link.
+        run: npm ci && npm link @kitware/vtk.js
 
-      - name: Build wheel
+      - name: Build + publish the fork wheel release
         working-directory: trame-vtklocal
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Stamp the same <base>+shared-context.<sha> version the local
-          # release.sh produces (read by hatch_build.py at build time).
-          export TRAME_VTKLOCAL_SHA=$(git rev-parse --short HEAD)
-          pip install build && python -m build --wheel
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: trame-vtklocal-fork-wheel
-          path: trame-vtklocal/dist/*.whl
+          pip install build
+          ./release.sh --publish | tee /tmp/release.out
+          {
+            echo '### Fork wheel published :package:'
+            echo
+            echo 'Pin in the app `pyproject.toml`:'
+            echo '```toml'
+            grep -m1 'trame-vtklocal = {' /tmp/release.out || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

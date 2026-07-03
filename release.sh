@@ -9,6 +9,11 @@
 #   ./release.sh --publish    build + verify, then create/refresh the GitHub
 #                             prerelease and print the exact app pin (URL + sha256)
 #
+# The `.github/workflows/build-fork-wheel.yml` CI job runs `./release.sh
+# --publish` on every push to `shared-context`, so this is the single source of
+# truth for both local and CI releases. In CI, `GH_TOKEN`/`GITHUB_TOKEN`
+# supplies gh auth (no interactive `gh auth login` needed).
+#
 # Env overrides:
 #   PYTHON   python interpreter used for the build (default: python3;
 #            must have `build` + `hatchling` available for isolated builds)
@@ -121,7 +126,11 @@ fi
 # --- publish ---------------------------------------------------------------
 step "Publishing GitHub prerelease ${TAG}"
 command -v gh >/dev/null 2>&1 || die "gh CLI not found"
-gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
+# In CI, GH_TOKEN/GITHUB_TOKEN authenticates gh non-interactively; only fall
+# back to the interactive-login check when no token is present.
+if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+  gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login, or set GH_TOKEN)"
+fi
 
 if gh release view "$TAG" >/dev/null 2>&1; then
   echo "release ${TAG} exists — uploading wheel with --clobber"

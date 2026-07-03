@@ -247,6 +247,13 @@ def _object_patch_signature(obj):
         "arrays": obj.get("arrays") or {},
         "dependencies": _dependency_signature(obj),
         "distanceToCamera": obj.get("distanceToCamera"),
+        # The pickable block rides at the node top level (like distanceToCamera),
+        # not under ``properties``, so a change to it (glyph ids or the picking
+        # revision) is invisible to the property-level diff. Without it in the
+        # signature, a live pickable retag emits no patch op and the client keeps
+        # stale ids/revision until a full resync — landmark picking (drag) breaks
+        # until the page reloads.
+        "pickable": obj.get("pickable"),
     }
 
 

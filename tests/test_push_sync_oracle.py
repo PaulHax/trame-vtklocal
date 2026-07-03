@@ -19,6 +19,7 @@ from push_oracle.scenes import (
     mutate_tsw_like_frame,
     set_float_array_values,
 )
+from trame_vtklocal.module import interaction as pick
 
 
 # ----------------------------------------------------------------------
@@ -59,6 +60,65 @@ def test_oracle_actor_visibility_property_color_stay_on_patch_path():
             OracleStep(name="hide-actor", mutate=_toggle_visibility),
             OracleStep(name="set-opacity", mutate=_set_opacity),
             OracleStep(name="set-color", mutate=_set_color),
+        ],
+    )
+
+
+def _mark_pickable(scene: OracleScene):
+    pick.make_pickable(
+        scene.handles["mapper"],
+        tags={"owner_id": "landmarks", "target_revision": 1},
+        ids=["lm-1"],
+        grab_px=36.0,
+        priority=2,
+    )
+
+
+def _retag_pickable_ids(scene: OracleScene):
+    pick.make_pickable(
+        scene.handles["mapper"],
+        tags={"owner_id": "landmarks", "target_revision": 2},
+        ids=["lm-1", "lm-2"],
+        grab_px=36.0,
+        priority=2,
+    )
+
+
+def _pickable_ids_in_ops(payload):
+    for op in payload.get("ops") or []:
+        state = op.get("state") if op.get("op") == "updateObject" else None
+        block = state.get("pickable") if isinstance(state, dict) else None
+        if isinstance(block, dict):
+            return block.get("ids")
+    return None
+
+
+def test_oracle_pickable_retag_reaches_the_client_on_patch_path():
+    """A pickable-block change (glyph ids / picking revision) must ride a patch.
+
+    The pickable block sits at the node top level, not under ``properties``, so
+    the property-level diff never sees it. If it is also absent from the patch
+    signature, a live retag emits no op: the client keeps stale ids/revision
+    until a full resync, so landmark picking (drag) is dead until the page
+    reloads. The oracle catches the miss as a stale ledger — the server would
+    think the client is current while nothing was published.
+    """
+
+    def assert_marked(payload):
+        assert _pickable_ids_in_ops(payload) == ["lm-1"]
+
+    def assert_retagged(payload):
+        assert _pickable_ids_in_ops(payload) == ["lm-1", "lm-2"]
+
+    run_oracle_steps(
+        make_basic_scene,
+        [
+            OracleStep(name="mark-pickable", mutate=_mark_pickable, assert_message=assert_marked),
+            OracleStep(
+                name="retag-pickable-ids",
+                mutate=_retag_pickable_ids,
+                assert_message=assert_retagged,
+            ),
         ],
     )
 

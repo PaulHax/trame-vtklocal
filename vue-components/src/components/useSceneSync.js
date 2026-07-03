@@ -5,70 +5,54 @@ import {
   getPrimaryRenderer,
   applyCameraParams,
 } from "./vtkJsSync";
-import { withSyncCapability } from "./sync/syncCapability";
-import {
-  createPushSync,
-  applyPartialArrayUpdate,
-  applyPatchUpdate,
-  bindPartialResultToCache as bindPartialResultToCacheDefault,
-  getPartialUpdates,
-} from "./pushSync";
-import { createSyncController } from "./syncController";
+import { createMirrorStore } from "./engine/mirrorStore";
+import { createReconciler } from "./engine/reconcile";
+import { createSceneEngine } from "./engine/sceneEngine";
 import { dumpAppliedScene } from "./dumpAppliedScene";
 import {
+  applyDistanceToCameraBlock,
   createDistanceToCameraGlyphRegistry,
   describeDistanceToCameraGlyphRegistry,
-  syncDistanceToCameraGlyphPatch,
-  syncDistanceToCameraGlyphState,
   updateDistanceToCameraGlyphs,
+  DISTANCE_TO_CAMERA_BLOCK_KEY,
 } from "./distanceToCameraGlyphs";
 import {
+  applyPickableBlock,
   createPickableRegistry,
   describePickableRegistry,
   getDevicePixelRatio,
   getViewportMetrics,
   pickAt as pickAtRegistry,
-  syncPickablePatch,
-  syncPickableState,
+  PICKABLE_BLOCK_KEY,
 } from "./pickables";
 import { createPickableGestures } from "./pickableGestures";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
+const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
+
 export function useSceneSync(
-  {
-    client,
-    emit,
-    getRenderWindow,
-    renderScene,
-    beforeSync,
-    finalizeSync,
-    syncErrorLabel = "SceneSync",
-  },
+  { client, emit, getRenderWindow, renderScene },
   dependencies = {},
 ) {
   const {
-    applyPartialArrayUpdate:
-      applyPartialArrayUpdateImpl = applyPartialArrayUpdate,
-    applyPatchUpdate: applyPatchUpdateImpl = applyPatchUpdate,
-    bindPartialResultToCache:
-      bindPartialResultToCacheImpl = bindPartialResultToCacheDefault,
     createManagedSyncContext:
       createManagedSyncContextImpl = createManagedSyncContext,
-    createPushSync: createPushSyncImpl = createPushSync,
-    createSyncController: createSyncControllerImpl = createSyncController,
+    createMirrorStore: createMirrorStoreImpl = createMirrorStore,
+    createReconciler: createReconcilerImpl = createReconciler,
+    createSceneEngine: createSceneEngineImpl = createSceneEngine,
     vtkObjectManager: vtkObjectManagerImpl = vtkObjectManager,
-    withSyncCapability: withSyncCapabilityImpl = withSyncCapability,
   } = dependencies;
 
   let managedSyncContext = null;
-  let sync = null;
-  let syncCapability = null;
-  let pushCache = null;
+  let engine = null;
+  let reconciler = null;
+  let mirror = null;
+  let blobCache = null;
   let disposed = false;
-  let partialAppliedCallback = null;
   let messageAppliedCallback = null;
+  let renderRequestCallback = null;
   const sceneAppliedCallbacks = new Set();
-  let lastAppliedOp = null;
+  const commandRegistrations = new Set(); // { name, callback } — survive re-init
   let syncedRootId = null;
   let renderedCamera = null;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
@@ -78,24 +62,8 @@ export function useSceneSync(
     return getPrimaryRenderer(getRenderWindow?.() || null);
   }
 
-  function recordLastAppliedOp(message) {
-    if (!message) return;
-    const { kind, payload } = message;
-    if (kind === "patch" && Array.isArray(payload?.ops) && payload.ops.length) {
-      const lastOp = payload.ops[payload.ops.length - 1];
-      lastAppliedOp = { kind: lastOp?.op || "patch" };
-      if (lastOp?.id !== undefined) {
-        lastAppliedOp.id = String(lastOp.id);
-      }
-      return;
-    }
-    lastAppliedOp = { kind: kind || "unknown" };
-  }
-
   function noteMessageApplied(message) {
     if (!message) return;
-    recordLastAppliedOp(message);
-    sync?.markMessageApplied?.(message);
     messageAppliedCallback?.(message);
     sceneAppliedCallbacks.forEach((callback) => callback(message));
   }
@@ -107,6 +75,24 @@ export function useSceneSync(
     sceneAppliedCallbacks.add(callback);
     return () => {
       sceneAppliedCallbacks.delete(callback);
+    };
+  }
+
+  // Register a handler for server commands riding scene.ops broadcasts.
+  // Registrations survive re-initialization of the underlying engine.
+  function onCommand(name, callback) {
+    if (typeof callback !== "function") {
+      return () => {};
+    }
+    const registration = { name, callback, detach: null };
+    commandRegistrations.add(registration);
+    if (engine) {
+      registration.detach = engine.onCommand(name, callback);
+    }
+    return () => {
+      commandRegistrations.delete(registration);
+      registration.detach?.();
+      registration.detach = null;
     };
   }
 
@@ -131,11 +117,18 @@ export function useSceneSync(
   }
 
   function requestResync(reason = "scene-sync") {
-    sync?.requestResync?.(reason);
+    engine?.resync?.(reason);
   }
 
   function getQueueLength() {
-    return sync?.getQueueLength?.() ?? 0;
+    return engine?.getDiagnostics?.().bufferLength ?? 0;
+  }
+
+  // State applies on message arrival; update() survives as a render request
+  // for callers that used it to flush the v1 queue.
+  function update() {
+    renderRequestCallback?.();
+    return Promise.resolve(false);
   }
 
   function setCamera(params) {
@@ -208,235 +201,15 @@ export function useSceneSync(
     renderScene?.();
   }
 
-  function bindPartialResultToCache(partialUpdate, syncCtx) {
-    bindPartialResultToCacheImpl(partialUpdate, syncCtx, pushCache);
-  }
-
-  function applyArrayPartialMessage(message, syncCtx) {
-    const payload = message?.payload || message;
-    const updates = getPartialUpdates(payload);
-    const appliedUpdates = [];
-
-    for (const update of updates) {
-      if (sync?.validatePartialUpdate && !sync.validatePartialUpdate(update)) {
-        return { didApply: appliedUpdates.length > 0, failed: true };
-      }
-
-      const applied = applyPartialArrayUpdateImpl(update, syncCtx);
-      if (!applied) {
-        requestResync("partial-message-apply-failed");
-        partialAppliedCallback?.(update, syncCtx, false);
-        return { didApply: appliedUpdates.length > 0, failed: true };
-      }
-
-      bindPartialResultToCache(update, syncCtx);
-      appliedUpdates.push(update);
-    }
-
-    const extra =
-      payload?.extra ?? (updates.length === 1 ? updates[0]?.extra : undefined);
-    if (extra) {
-      emit?.("viewStateExtra", extra);
-    }
-
-    appliedUpdates.forEach((update) => {
-      partialAppliedCallback?.(update, syncCtx, true);
-    });
-
-    return { didApply: appliedUpdates.length > 0, failed: false };
-  }
-
-  function applyPatchMessage(message, syncCtx) {
-    const payload = message?.payload || message;
-    const applied = applyPatchUpdateImpl(
-      payload,
-      syncCtx,
-      vtkObjectManagerImpl,
-      pushCache,
-    );
-    if (!applied) {
-      requestResync("patch-apply-failed");
-      return { didApply: false, failed: true };
-    }
-
-    if (payload?.extra) {
-      emit?.("viewStateExtra", payload.extra);
-    }
-
-    return {
-      didApply: true,
-      failed: false,
-    };
-  }
-
-  function applyQueuedStateSyncResult({
-    emitLifecycle = true,
-    emitUpdated = true,
-  } = {}) {
-    if (!syncCapability) {
-      return { status: "idle", didSync: false };
-    }
-    return applyQueuedOrderedMessages({ emitLifecycle, emitUpdated });
-  }
-
-  function applyQueuedOrderedMessages({
-    emitLifecycle = true,
-    emitUpdated = true,
-  } = {}) {
-    let synced = false;
-    let didApply = false;
-    let emittedLifecycleStart = false;
-    let message = sync?.takeNextMessage?.();
-
-    if (!message) {
-      return {
-        status: getQueueLength() > 0 ? "blocked" : "idle",
-        didSync: false,
-      };
-    }
-
-    while (message) {
-      if (message.kind === "full") {
-        if (emitLifecycle && !emittedLifecycleStart) {
-          emit?.("beforeSceneLoaded");
-          emittedLifecycleStart = true;
-        }
-
-        try {
-          if (syncCapability(message.payload, true)) {
-            syncDistanceToCameraGlyphState(
-              message.payload,
-              managedSyncContext?.synchronizerContext,
-              distanceToCameraGlyphs,
-              { reset: true },
-            );
-            syncPickableState(
-              message.payload,
-              managedSyncContext?.synchronizerContext,
-              pickables,
-              { reset: true },
-            );
-            synced = true;
-          }
-        } catch (error) {
-          console.warn(`[${syncErrorLabel}] Resync needed:`, error.message);
-          requestResync("full-state-apply-exception");
-          if (emitLifecycle && emittedLifecycleStart) {
-            emit?.("afterSceneLoaded");
-          }
-          return { status: "failed", didSync: false };
-        }
-
-        if (message.payload?.extra) {
-          emit?.("viewStateExtra", message.payload.extra);
-        }
-        noteMessageApplied(message);
-        didApply = true;
-      } else if (message.kind === "arrayPartial") {
-        const resolvedSyncContext = managedSyncContext?.synchronizerContext;
-        if (!resolvedSyncContext) {
-          requestResync("missing-sync-context-for-partial");
-          return { status: "failed", didSync: false };
-        }
-
-        const partialResult = applyArrayPartialMessage(
-          message,
-          resolvedSyncContext,
-        );
-        if (partialResult.failed) {
-          return { status: "failed", didSync: synced };
-        }
-        noteMessageApplied(message);
-        didApply = didApply || partialResult.didApply;
-      } else if (message.kind === "patch") {
-        const resolvedSyncContext = managedSyncContext?.synchronizerContext;
-        if (!resolvedSyncContext) {
-          requestResync("missing-sync-context-for-patch");
-          return { status: "failed", didSync: false };
-        }
-
-        const patchResult = applyPatchMessage(message, resolvedSyncContext);
-        if (patchResult.failed) {
-          return { status: "failed", didSync: synced };
-        }
-        syncDistanceToCameraGlyphPatch(
-          message.payload,
-          resolvedSyncContext,
-          distanceToCameraGlyphs,
-        );
-        syncPickablePatch(message.payload, resolvedSyncContext, pickables);
-        noteMessageApplied(message);
-        didApply = didApply || patchResult.didApply;
-      } else {
-        console.warn(
-          `[${syncErrorLabel}] Unknown push message kind`,
-          message.kind,
-        );
-        requestResync("unknown-message-kind");
-        return { status: "failed", didSync: synced };
-      }
-
-      message = sync?.takeNextMessage?.();
-    }
-
-    if (didApply) {
-      updateDistanceToCameraGlyphsForRender();
-    }
-
-    if (synced && emitUpdated) {
-      emit?.("updated");
-    }
-
-    if (emitLifecycle && emittedLifecycleStart) {
-      emit?.("afterSceneLoaded");
-    }
-
-    return {
-      status: getQueueLength() > 0 ? "blocked" : didApply ? "applied" : "idle",
-      didSync: synced,
-    };
-  }
-
-  function applyQueuedStateSync(options = {}) {
-    return applyQueuedStateSyncResult(options).didSync;
-  }
-
-  const updateController = createSyncControllerImpl({
-    canSync: () => !disposed && !!sync && !!getRenderWindow?.(),
-    synchronize() {
-      return applyQueuedStateSync({ emitLifecycle: false, emitUpdated: false });
-    },
-    beforeSync() {
-      emit?.("beforeSceneLoaded");
-      return beforeSync?.();
-    },
-    onSynced() {
-      emit?.("updated");
-    },
-    afterSync() {
-      emit?.("afterSceneLoaded");
-    },
-    onError(error) {
-      console.error(`${syncErrorLabel}: synchronize error`, error);
-      requestResync("sync-controller-failed");
-    },
-    finalizeSync(syncContext) {
-      finalizeSync?.(syncContext);
-    },
-  });
-
-  function update() {
-    return updateController.requestSync();
-  }
-
   function cleanupSyncContext() {
-    sync?.cleanup?.();
-    sync = null;
-    syncCapability = null;
-    pushCache = null;
-    partialAppliedCallback = null;
+    engine?.stop?.();
+    engine = null;
+    reconciler?.teardown?.();
+    reconciler = null;
+    mirror = null;
+    blobCache = null;
     messageAppliedCallback = null;
-    lastAppliedOp = null;
+    renderRequestCallback = null;
     syncedRootId = null;
     distanceToCameraGlyphs.clear();
     pickables.clear();
@@ -447,47 +220,95 @@ export function useSceneSync(
   function initialize({
     contextName,
     renderWindowId,
-    onStateReceived,
-    onQueueReady,
-    onPartialApplied,
+    onRenderNeeded,
     onMessageApplied,
   }) {
     disposed = false;
     cleanupSyncContext();
-    partialAppliedCallback = onPartialApplied || null;
     messageAppliedCallback = onMessageApplied || null;
+    renderRequestCallback = onRenderNeeded || null;
     syncedRootId = renderWindowId !== undefined ? String(renderWindowId) : null;
 
     managedSyncContext = createManagedSyncContextImpl(
       contextName,
       getRenderWindow(),
     );
-
     const { synchronizerContext, syncRenderWindow } = managedSyncContext;
-    const rwId = String(renderWindowId);
-    pushCache = new Map();
 
-    syncCapability = withSyncCapabilityImpl(
-      syncRenderWindow,
+    mirror = createMirrorStoreImpl();
+    blobCache = new Map();
+    reconciler = createReconcilerImpl({
       synchronizerContext,
-      vtkObjectManagerImpl,
-      pushCache,
+      objectManager: vtkObjectManagerImpl,
+      rootId: syncedRootId,
+      rootInstance: syncRenderWindow,
+    });
+
+    reconciler.registerBlockHandler(
+      PICKABLE_BLOCK_KEY,
+      (nodeId, block, instance) =>
+        applyPickableBlock(pickables, nodeId, block, instance),
     );
-    sync = createPushSyncImpl(
-      client,
-      syncRenderWindow,
-      synchronizerContext,
-      rwId,
-      pushCache,
-      {
-        onStateReceived(deltaState) {
-          onStateReceived?.(deltaState);
-        },
-        onQueueReady() {
-          onQueueReady?.();
-        },
+    reconciler.registerBlockHandler(
+      DISTANCE_TO_CAMERA_BLOCK_KEY,
+      (nodeId, block, instance) =>
+        applyDistanceToCameraBlock(
+          distanceToCameraGlyphs,
+          nodeId,
+          block,
+          instance,
+          synchronizerContext,
+        ),
+    );
+    // Projected-texture props ride the block; the instance is already the
+    // fork's mapper subclass (the node's type selects it).
+    reconciler.registerBlockHandler(
+      PROJECTED_TEXTURE_BLOCK_KEY,
+      (nodeId, block, instance) => {
+        if (block && typeof instance?.set === "function") {
+          instance.set(block);
+        }
       },
     );
+
+    engine = createSceneEngineImpl({
+      client,
+      rwId: syncedRootId,
+      reconciler,
+      mirror,
+      cache: blobCache,
+      callbacks: {
+        beforeSnapshot() {
+          if (!disposed) emit?.("beforeSceneLoaded");
+        },
+        afterSnapshot() {
+          if (!disposed) emit?.("afterSceneLoaded");
+        },
+        onSnapshotApplied(snapshot) {
+          if (disposed) return;
+          updateDistanceToCameraGlyphsForRender();
+          emit?.("updated");
+          noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
+          renderRequestCallback?.();
+        },
+        onApplied(message) {
+          if (disposed) return;
+          updateDistanceToCameraGlyphsForRender();
+          noteMessageApplied(message);
+          renderRequestCallback?.();
+        },
+        onCommand(name, payload) {
+          if (!disposed) emit?.("command", { name, payload });
+        },
+      },
+    });
+    for (const registration of commandRegistrations) {
+      registration.detach = engine.onCommand(
+        registration.name,
+        registration.callback,
+      );
+    }
+    engine.start();
   }
 
   function cleanup() {
@@ -503,25 +324,31 @@ export function useSceneSync(
   }
 
   function getSyncDiagnostics() {
-    const { epoch = null, lastSeq = 0 } = sync?.getDiagnostics?.() ?? {};
-    let pushCacheSize = 0;
-    let pushCacheBytes = 0;
-    if (pushCache) {
-      pushCacheSize = pushCache.size;
-      for (const value of pushCache.values()) {
+    const {
+      mySeq = -1,
+      live = false,
+      cacheSize = 0,
+      mirrorSize = 0,
+      lastAppliedOp = null,
+      bufferLength = 0,
+    } = engine?.getDiagnostics?.() ?? {};
+    let cacheBytes = 0;
+    if (blobCache) {
+      for (const value of blobCache.values()) {
         if (value && typeof value.byteLength === "number") {
-          pushCacheBytes += value.byteLength;
+          cacheBytes += value.byteLength;
         }
       }
     }
     return {
-      lastSeq,
-      lastEpoch: epoch,
-      queueLength: getQueueLength(),
+      mySeq,
+      live,
+      cacheSize,
+      cacheBytes,
+      mirrorSize,
       lastAppliedOp,
+      queueLength: bufferLength,
       syncedRootId,
-      pushCacheSize,
-      pushCacheBytes,
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
         distanceToCameraGlyphs,
       ),
@@ -534,13 +361,12 @@ export function useSceneSync(
 
   function getAppliedSceneState(rwId) {
     const id = rwId !== undefined ? String(rwId) : syncedRootId;
-    if (!id || !managedSyncContext?.synchronizerContext) return null;
-    const rootInstance = getRenderWindow?.();
-    if (!rootInstance) return null;
+    if (!id || !mirror || !managedSyncContext?.synchronizerContext) return null;
     return dumpAppliedScene(
       id,
-      rootInstance,
+      mirror,
       managedSyncContext.synchronizerContext,
+      reconciler?.getBoundArray,
     );
   }
 
@@ -608,7 +434,6 @@ export function useSceneSync(
     cleanup,
     update,
     requestResync,
-    applyQueuedStateSync,
     getQueueLength,
     getRenderWindow,
     getRenderer,
@@ -617,6 +442,7 @@ export function useSceneSync(
     getRenderedCamera,
     resetCamera,
     onSceneApplied,
+    onCommand,
     getInstance,
     uploadTexture,
     pickAt,

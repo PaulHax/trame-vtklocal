@@ -17,7 +17,7 @@ export default {
   emits: [
     "updated",
     "camera",
-    "viewStateExtra",
+    "command",
     "onReady",
     "beforeSceneLoaded",
     "afterSceneLoaded",
@@ -63,14 +63,12 @@ export default {
       emit,
       getRenderWindow: () => renderWindow,
       renderScene,
-      syncErrorLabel: "VtkJsLocal",
-      finalizeSync() {
-        renderScene();
-      },
     });
 
-    const scheduleUpdate = createRafScheduler(() => {
-      scene.update();
+    // State applies in the websocket handler; only rendering rides rAF (a
+    // hidden tab stays current and repaints on the next visible frame).
+    const scheduleRender = createRafScheduler(() => {
+      renderScene();
     });
 
     function resize() {
@@ -97,13 +95,8 @@ export default {
       scene.initialize({
         contextName: `vtkjs-local-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
-        onQueueReady() {
-          scheduleUpdate();
-        },
-        onPartialApplied(_partialUpdate, _syncCtx, applied) {
-          if (applied) {
-            renderScene();
-          }
+        onRenderNeeded() {
+          scheduleRender();
         },
         onMessageApplied(message) {
           emit("messageApplied", message);
@@ -171,12 +164,12 @@ export default {
       container,
       update: scene.update,
       requestResync: scene.requestResync,
-      applyQueuedStateSync: scene.applyQueuedStateSync,
       getQueueLength: scene.getQueueLength,
       getRenderWindow: scene.getRenderWindow,
       getRenderer: scene.getRenderer,
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
+      onCommand: scene.onCommand,
       pickAt: scene.pickAt,
       startTargetDrag: scene.startTargetDrag,
       emitTargetClick: scene.emitTargetClick,

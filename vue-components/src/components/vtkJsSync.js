@@ -1,44 +1,16 @@
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
-import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
-import BehaviorManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/BehaviorManager";
-import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
-import {
-  cleanupRemovedRendererDependencies,
-  isLiveInstance,
-} from "./sync/syncUpdaters";
 // Registers vtkProjectedTextureMapper with the scene graph and the state-sync
 // type mapping on import so serialized scenes can carry the type.
 import "./projectedTextureMapper";
 
-let preRenderSkippingRenderWindowUpdaterInstalled = false;
-
-function installRenderWindowUpdaterSkippingPreRender() {
-  if (preRenderSkippingRenderWindowUpdaterInstalled) {
-    return;
-  }
-
-  // Override vtk.js's default vtkRenderWindow updater so async scene sync
-  // does not issue the upstream pre-update render() call.
-  const renderWindowUpdaterSkippingPreRender = (instance, state, context) => {
-    if (!isLiveInstance(instance)) {
-      return;
-    }
-
-    cleanupRemovedRendererDependencies(state, context);
-    vtkObjectManager.genericUpdater(instance, state, context);
-    BehaviorManager.applyBehaviors(instance, state, context);
-  };
-
-  vtkObjectManager.setTypeMapping(
-    "vtkRenderWindow",
-    vtkRenderWindow.newInstance,
-    renderWindowUpdaterSkippingPreRender,
+export function isLiveInstance(instance) {
+  return (
+    !!instance &&
+    !(typeof instance.isDeleted === "function" && instance.isDeleted())
   );
-  preRenderSkippingRenderWindowUpdaterInstalled = true;
 }
 
 export function createSyncContext(contextName, renderWindow) {
-  installRenderWindowUpdaterSkippingPreRender();
   const synchronizerContext =
     vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
   const syncRenderWindow = vtkSynchronizableRenderWindow.decorate(

@@ -74,46 +74,6 @@ test("viewAsTypedArray accepts ArrayBuffer / base64 / array inputs", async () =>
   );
 });
 
-test("applyPartialArrayUpdate applies an unaligned Float32 view", async () => {
-  const { applyPartialArrayUpdate } = await loadModule(
-    "/src/components/pushSync.js",
-  );
-
-  const targetValues = new Float32Array([0, 0, 0]);
-  const target = {
-    getData: () => targetValues,
-    modified() {
-      this._modifiedCount = (this._modifiedCount || 0) + 1;
-    },
-  };
-  const points = {
-    getData: () => targetValues,
-    modified: target.modified,
-  };
-  const instance = {
-    getPoints: () => points,
-    modified() {},
-  };
-  const synchronizerContext = {
-    getInstance: (id) => (id === 7 ? instance : null),
-  };
-
-  const unaligned = unalignedFloat32View([1.5, 2.25, 3.125]);
-  const ok = applyPartialArrayUpdate(
-    {
-      instanceId: 7,
-      arrayPath: "points",
-      offset: 0,
-      data: unaligned,
-      dataType: "Float32Array",
-    },
-    synchronizerContext,
-  );
-
-  assert.equal(ok, true);
-  assert.deepEqual(Array.from(targetValues), [1.5, 2.25, 3.125]);
-});
-
 test("viewAsTypedArray with copy:true does not alias an aligned ArrayBuffer view", async () => {
   const { viewAsTypedArray } = await loadModule(
     "/src/components/sync/base64.js",
@@ -124,34 +84,4 @@ test("viewAsTypedArray with copy:true does not alias an aligned ArrayBuffer view
 
   assert.notEqual(result.buffer, view.buffer);
   assert.deepEqual(Array.from(result), [1.5, 2.25, 3.125]);
-});
-
-test("extractInlineArrays caches inline content without aliasing the receive buffer", async () => {
-  const { extractInlineArrays } = await loadModule(
-    "/src/components/sync/syncUpdaters.js",
-  );
-
-  // Build the inline content as an aligned view so the only thing keeping
-  // it from aliasing is the inline path explicitly requesting copy:true.
-  const aligned = alignedFloat32View([4.5, 5.25, 6.125]);
-  const state = {
-    id: "rw",
-    properties: {
-      payload: {
-        hash: "h1",
-        dataType: "Float32Array",
-        content: aligned,
-      },
-    },
-  };
-
-  const cache = new Map();
-  extractInlineArrays(state, cache, { stripInlineData: false });
-
-  const cached = cache.get("h1");
-  assert.ok(cached, "cache should contain hash h1");
-  assert.equal(cached.constructor.name, "Float32Array");
-  assert.deepEqual(Array.from(cached), [4.5, 5.25, 6.125]);
-  // Cache must not alias the msgpack receive buffer.
-  assert.notEqual(cached.buffer, aligned.buffer);
 });

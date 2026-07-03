@@ -44,7 +44,6 @@ async function buildScene(renderWindow) {
       emit() {},
       getRenderWindow: () => renderWindow,
       renderScene() {},
-      syncErrorLabel: "UploadTextureTest",
     },
     {
       createManagedSyncContext: () => ({
@@ -52,27 +51,23 @@ async function buildScene(renderWindow) {
         syncRenderWindow: { id: "sync-render-window" },
         cleanup() {},
       }),
-      withSyncCapability: () => () => true,
-      createPushSync() {
-        return {
-          cleanup() {},
-          requestResync() {},
-          getQueueLength() {
-            return 0;
-          },
-          takeNextMessage() {
-            return null;
-          },
-          markMessageApplied() {},
-        };
-      },
-      createSyncController() {
-        return {
-          async requestSync() {
-            return false;
-          },
-        };
-      },
+      createReconciler: () => ({
+        registerBlockHandler() {
+          return () => {};
+        },
+        teardown() {},
+      }),
+      createSceneEngine: () => ({
+        start() {},
+        stop() {},
+        resync() {},
+        onCommand() {
+          return () => {};
+        },
+        getDiagnostics() {
+          return {};
+        },
+      }),
     },
   );
   scene.initialize({ contextName: "ctx", renderWindowId: 1 });

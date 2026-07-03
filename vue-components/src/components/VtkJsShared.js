@@ -15,7 +15,7 @@ import { applySharedRenderPolicy } from "./sharedRenderPolicy";
 export default {
   emits: [
     "updated",
-    "viewStateExtra",
+    "command",
     "onReady",
     "beforeSceneLoaded",
     "afterSceneLoaded",
@@ -52,8 +52,6 @@ export default {
     let renderWindow = null;
     let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
-    let syncStateAtRenderFlag = false;
-    let disposed = false;
 
     function renderScene() {
       if (renderRequestedCallbackWithDistanceToCamera) {
@@ -69,31 +67,24 @@ export default {
       emit,
       getRenderWindow: () => renderWindow,
       renderScene,
-      syncErrorLabel: "VtkJsShared",
     });
 
-    const scheduleQueuedStateApply = createRafScheduler(() => {
-      scene.update().then(() => {
-        if (!disposed && renderRequestedCallbackWithDistanceToCamera) {
-          renderRequestedCallbackWithDistanceToCamera();
-        }
-      });
+    const scheduleRender = createRafScheduler(() => {
+      renderRequestedCallbackWithDistanceToCamera?.();
     });
 
-    function requestQueuedStateApply(deltaState = null) {
+    // State is already applied when this fires; the host only needs to paint.
+    // The repaint callback lets a host compositor (e.g. a MapLibre custom
+    // layer) own frame timing; otherwise the render callback rides rAF.
+    function requestRender() {
       if (repaintCallback) {
-        repaintCallback(deltaState);
-      } else if (syncStateAtRenderFlag) {
-        renderRequestedCallbackWithDistanceToCamera?.();
+        repaintCallback();
       } else {
-        scheduleQueuedStateApply();
+        scheduleRender();
       }
     }
 
-    function initializeForSharedContext(canvas, gl, options = {}) {
-      const { syncStateAtRender = false } = options;
-
-      syncStateAtRenderFlag = syncStateAtRender;
+    function initializeForSharedContext(canvas, gl) {
       sharedContextGl = gl;
 
       sharedRenderWindow = vtkSharedRenderWindow.createFromContext(canvas, gl);
@@ -107,16 +98,8 @@ export default {
       scene.initialize({
         contextName: `vtkjs-shared-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
-        onStateReceived(deltaState) {
-          requestQueuedStateApply(deltaState);
-        },
-        onQueueReady() {
-          requestQueuedStateApply();
-        },
-        onPartialApplied(_update, _syncCtx, applied) {
-          if (applied) {
-            renderRequestedCallbackWithDistanceToCamera?.();
-          }
+        onRenderNeeded() {
+          requestRender();
         },
         onMessageApplied(message) {
           emit("messageApplied", message);
@@ -127,10 +110,6 @@ export default {
     // options: { clearDepth = true } — the shared-buffer depth-clear policy
     // the host needs around the render (see sharedRenderPolicy.js).
     function renderShared(options = {}) {
-      if (syncStateAtRenderFlag) {
-        scene.applyQueuedStateSync();
-      }
-
       scene.updateDistanceToCameraGlyphs();
       applySharedRenderPolicy(
         sharedContextGl,
@@ -163,7 +142,6 @@ export default {
       initializeForSharedContext,
       update: scene.update,
       requestResync: scene.requestResync,
-      applyQueuedStateSync: scene.applyQueuedStateSync,
       getQueueLength: scene.getQueueLength,
       getRenderWindow: scene.getRenderWindow,
       getRenderer: scene.getRenderer,
@@ -177,6 +155,7 @@ export default {
       renderShared,
       onRenderRequested,
       onSceneApplied: scene.onSceneApplied,
+      onCommand: scene.onCommand,
       getInstance: scene.getInstance,
       uploadTexture: scene.uploadTexture,
       pickAt: scene.pickAt,
@@ -197,8 +176,10 @@ export default {
     });
 
     onBeforeUnmount(() => {
-      disposed = true;
       unregisterView(registryKeys, viewApi);
+      // A rAF render scheduled before unmount must not reach the host.
+      renderRequestedCallbackWithDistanceToCamera = null;
+      repaintCallback = null;
       scene.cleanup();
 
       sharedRenderWindow?.delete?.();

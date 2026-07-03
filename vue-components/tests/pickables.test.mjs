@@ -88,16 +88,8 @@ function buildMapper(vtk, coords) {
   return { mapper, poly, pts };
 }
 
-function pickableNode(id, { ids = null, grabPx, priority = 0, tags = {} }) {
-  return {
-    id,
-    type: "vtkGlyph3DMapper",
-    pickable: { ids, grabPx, priority, tags },
-  };
-}
-
-function rootWith(nodes) {
-  return { id: "root", type: "vtkRenderWindow", dependencies: nodes };
+function pickableBlock({ ids = null, grabPx, priority = 0, tags = {} }) {
+  return { ids, grabPx, priority, tags };
 }
 
 function contextFor(instances) {
@@ -113,17 +105,16 @@ test("pickAt returns the nearest point within the grab radius", async () => {
   const ctx = contextFor(instances);
 
   const registry = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([
-      pickableNode("mapperA", {
-        ids: ["alpha"],
-        grabPx: 20,
-        priority: 3,
-        tags: { group: "A" },
-      }),
-    ]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "mapperA",
+    pickableBlock({
+      ids: ["alpha"],
+      grabPx: 20,
+      priority: 3,
+      tags: { group: "A" },
+    }),
+    mapper,
   );
 
   const view = makeContext();
@@ -154,10 +145,11 @@ test("pickAt honors the grab radius boundary", async () => {
   const ctx = contextFor(instances);
 
   const registry = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([pickableNode("m", { grabPx: 20 })]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 20 }),
+    mapper,
   );
 
   const view = makeContext();
@@ -193,13 +185,17 @@ test("pickAt breaks ties by priority then declaration order", async () => {
 
   // Higher priority wins even though both are exactly on the pointer.
   const byPriority = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([
-      pickableNode("a", { grabPx: 20, priority: 1, tags: { n: "a" } }),
-      pickableNode("b", { grabPx: 20, priority: 5, tags: { n: "b" } }),
-    ]),
-    ctx,
+  pickables.applyPickableBlock(
     byPriority,
+    "a",
+    pickableBlock({ grabPx: 20, priority: 1, tags: { n: "a" } }),
+    a.mapper,
+  );
+  pickables.applyPickableBlock(
+    byPriority,
+    "b",
+    pickableBlock({ grabPx: 20, priority: 5, tags: { n: "b" } }),
+    b.mapper,
   );
   const priorityHit = pickables.pickAt(byPriority, 400, 200, opts);
   assert.equal(priorityHit.instanceId, "b");
@@ -207,13 +203,17 @@ test("pickAt breaks ties by priority then declaration order", async () => {
 
   // Equal priority + equal distance -> earlier declared (registry order) wins.
   const byOrder = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([
-      pickableNode("a", { grabPx: 20, priority: 0, tags: { n: "a" } }),
-      pickableNode("b", { grabPx: 20, priority: 0, tags: { n: "b" } }),
-    ]),
-    ctx,
+  pickables.applyPickableBlock(
     byOrder,
+    "a",
+    pickableBlock({ grabPx: 20, priority: 0, tags: { n: "a" } }),
+    a.mapper,
+  );
+  pickables.applyPickableBlock(
+    byOrder,
+    "b",
+    pickableBlock({ grabPx: 20, priority: 0, tags: { n: "b" } }),
+    b.mapper,
   );
   const orderHit = pickables.pickAt(byOrder, 400, 200, opts);
   assert.equal(orderHit.instanceId, "a");
@@ -228,10 +228,11 @@ test("pickAt rejects points behind the camera", async () => {
   const ctx = contextFor(instances);
 
   const registry = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([pickableNode("m", { grabPx: 1000 })]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 1000 }),
+    mapper,
   );
 
   // worldToClip with w = z: the point at z = -1 is behind the camera.
@@ -255,10 +256,11 @@ test("pointId stays aligned to point order after a point update", async () => {
   const ctx = contextFor(instances);
 
   const registry = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([pickableNode("m", { ids: ["id0", "id1"], grabPx: 30 })]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ ids: ["id0", "id1"], grabPx: 30 }),
+    mapper,
   );
 
   const view = makeContext();
@@ -283,7 +285,7 @@ test("pointId stays aligned to point order after a point update", async () => {
   assert.equal(after.pointId, "id1");
 });
 
-test("re-tagging via a patch op reaches pickAt", async () => {
+test("re-tagging via a block update reaches pickAt", async () => {
   const pickables = await loadPickables();
   const vtk = await loadVtk();
 
@@ -298,49 +300,48 @@ test("re-tagging via a patch op reaches pickAt", async () => {
   };
 
   const registry = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([pickableNode("m", { grabPx: 20, tags: { rev: 1 } })]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 20, tags: { rev: 1 } }),
+    mapper,
   );
   assert.equal(pickables.pickAt(registry, 400, 200, opts).tags.rev, 1);
 
-  pickables.syncPickablePatch(
-    {
-      ops: [
-        {
-          op: "updateObject",
-          state: pickableNode("m", { grabPx: 20, tags: { rev: 2 } }),
-        },
-      ],
-    },
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 20, tags: { rev: 2 } }),
+    mapper,
   );
   assert.equal(pickables.pickAt(registry, 400, 200, opts).tags.rev, 2);
 });
 
-test("a node without a valid pickable block is not registered", async () => {
+test("a null or invalid pickable block drops the entry", async () => {
   const pickables = await loadPickables();
   const vtk = await loadVtk();
 
   const { mapper } = buildMapper(vtk, [0, 0, 0]);
-  const ctx = contextFor(new Map([["m", mapper]]));
 
   const registry = pickables.createPickableRegistry();
-  // No pickable block.
-  pickables.syncPickableState(
-    rootWith([{ id: "m", type: "vtkGlyph3DMapper" }]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 20 }),
+    mapper,
   );
+  assert.equal(registry.size, 1);
+
+  // Block removed (key left the node) -> handler receives null.
+  pickables.applyPickableBlock(registry, "m", null, mapper);
   assert.equal(registry.size, 0);
 
   // Non-positive grab radius -> dropped.
-  pickables.syncPickableState(
-    rootWith([pickableNode("m", { grabPx: 0 })]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 0 }),
+    mapper,
   );
   assert.equal(registry.size, 0);
 });
@@ -354,10 +355,11 @@ test("pickAt drops entries whose mapper instance was deleted", async () => {
   const ctx = contextFor(instances);
 
   const registry = pickables.createPickableRegistry();
-  pickables.syncPickableState(
-    rootWith([pickableNode("m", { grabPx: 20 })]),
-    ctx,
+  pickables.applyPickableBlock(
     registry,
+    "m",
+    pickableBlock({ grabPx: 20 }),
+    mapper,
   );
   assert.equal(registry.size, 1);
 

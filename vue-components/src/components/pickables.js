@@ -1,15 +1,16 @@
 // Client-side pick registry for server-tagged glyph mappers.
 //
 // The server marks a vtkGlyph3DMapper pickable (see interaction.py) and stamps
-// an opaque `pickable` block onto its serialized node. This module tracks those
-// mappers and answers `pickAt(x, y)` from what the client actually rendered:
-// it projects the mapper's live glyph points through the active camera's
-// composite projection and returns the nearest point within its grab radius.
+// an opaque `pickable` block onto its node. The reconcile engine routes that
+// block here (`applyPickableBlock`); this module tracks the tagged mappers and
+// answers `pickAt(x, y)` from what the client actually rendered: it projects
+// the mapper's live glyph points through the active camera's composite
+// projection and returns the nearest point within its grab radius.
 //
 // The block (`tags`, `ids`, `grabPx`, `priority`) is opaque here — the fork
 // never interprets tag meaning; it round-trips them verbatim in the result.
 
-export const PICKABLE_STATE_KEY = "pickable";
+export const PICKABLE_BLOCK_KEY = "pickable";
 
 const BEHIND_CAMERA_EPSILON = 1e-9;
 
@@ -26,16 +27,6 @@ function isLiveInstance(instance) {
 
 function isPositiveFinite(value) {
   return Number.isFinite(value) && value > 0;
-}
-
-function walkStateObjects(state, visit) {
-  if (!state || typeof state !== "object" || Array.isArray(state)) {
-    return;
-  }
-
-  visit(state);
-  const deps = Array.isArray(state.dependencies) ? state.dependencies : [];
-  deps.forEach((dep) => walkStateObjects(dep, visit));
 }
 
 function normalizeConfig(config) {
@@ -68,60 +59,36 @@ function configSignature(config) {
   ].join("|");
 }
 
-export function syncPickableState(
-  state,
-  synchronizerContext,
-  registry,
-  { reset = false } = {},
-) {
-  if (!registry) {
+// Block handler for the reconcile engine: `pickable` block changes land here
+// as (nodeId, block|null, instance). A null/invalid block drops the entry.
+export function applyPickableBlock(registry, nodeId, block, instance) {
+  if (!registry || nodeId == null) {
     return registry;
   }
-  if (reset) {
-    registry.clear();
+
+  const id = String(nodeId);
+  const config = normalizeConfig(block);
+  if (!config) {
+    registry.delete(id);
+    return registry;
   }
 
-  walkStateObjects(state, (node) => {
-    if (node.type !== "vtkGlyph3DMapper" || node.id == null) {
-      return;
-    }
+  const live = isLiveInstance(instance) ? instance : null;
+  const signature = configSignature(config);
+  const previous = registry.get(id);
+  if (previous && previous.signature === signature) {
+    // Config unchanged; just refresh (re)resolution of the mapper instance.
+    previous.mapper = live;
+    previous.pending = !live;
+    return registry;
+  }
 
-    const id = String(node.id);
-    const config = normalizeConfig(node[PICKABLE_STATE_KEY]);
-    if (!config) {
-      registry.delete(id);
-      return;
-    }
-
-    const mapper = synchronizerContext?.getInstance?.(id);
-    const live = isLiveInstance(mapper) ? mapper : null;
-    const signature = configSignature(config);
-    const previous = registry.get(id);
-    if (previous && previous.signature === signature) {
-      // Config unchanged; just refresh (re)resolution of the mapper instance.
-      previous.mapper = live;
-      previous.pending = !live;
-      return;
-    }
-
-    registry.set(id, {
-      id,
-      mapper: live,
-      pending: !live,
-      signature,
-      ...config,
-    });
-  });
-
-  return registry;
-}
-
-export function syncPickablePatch(patch, synchronizerContext, registry) {
-  const ops = Array.isArray(patch?.ops) ? patch.ops : [];
-  ops.forEach((op) => {
-    if (op?.op === "updateObject") {
-      syncPickableState(op.state, synchronizerContext, registry);
-    }
+  registry.set(id, {
+    id,
+    mapper: live,
+    pending: !live,
+    signature,
+    ...config,
   });
   return registry;
 }
@@ -386,8 +353,7 @@ export function describePickableRegistry(registry) {
 
 export default {
   createPickableRegistry,
-  syncPickableState,
-  syncPickablePatch,
+  applyPickableBlock,
   pickAt,
   describePickableRegistry,
 };

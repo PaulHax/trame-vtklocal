@@ -219,18 +219,16 @@ test("distance-to-camera registry sizes the recorded filter input without server
   };
 
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
-  distanceToCameraGlyphs.syncDistanceToCameraGlyphState(
-    {
-      id: "mapper",
-      type: "vtkGlyph3DMapper",
-      distanceToCamera: {
-        arrayName: "DistanceToCamera",
-        screenSize: 40,
-        inputDataObjectId: "filter-input",
-      },
-    },
-    synchronizerContext,
+  distanceToCameraGlyphs.applyDistanceToCameraBlock(
     registry,
+    "mapper",
+    {
+      arrayName: "DistanceToCamera",
+      screenSize: 40,
+      inputDataObjectId: "filter-input",
+    },
+    mapper,
+    synchronizerContext,
   );
   assert.equal(mapper.getInputData(0), filterInput);
 
@@ -313,18 +311,16 @@ test("distance-to-camera registry caps degenerate scales at the point-set extent
   };
 
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
-  distanceToCameraGlyphs.syncDistanceToCameraGlyphState(
-    {
-      id: "mapper",
-      type: "vtkGlyph3DMapper",
-      distanceToCamera: {
-        arrayName: "DistanceToCamera",
-        screenSize: 40,
-        inputDataObjectId: "filter-input",
-      },
-    },
-    synchronizerContext,
+  distanceToCameraGlyphs.applyDistanceToCameraBlock(
     registry,
+    "mapper",
+    {
+      arrayName: "DistanceToCamera",
+      screenSize: 40,
+      inputDataObjectId: "filter-input",
+    },
+    mapper,
+    synchronizerContext,
   );
 
   const camera = {
@@ -387,18 +383,16 @@ test("distance-to-camera registry honors lock-style projection zoom", async () =
   };
 
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
-  distanceToCameraGlyphs.syncDistanceToCameraGlyphState(
-    {
-      id: "mapper",
-      type: "vtkGlyph3DMapper",
-      distanceToCamera: {
-        arrayName: "DistanceToCamera",
-        screenSize: 40,
-        inputDataObjectId: "filter-input",
-      },
-    },
-    synchronizerContext,
+  distanceToCameraGlyphs.applyDistanceToCameraBlock(
     registry,
+    "mapper",
+    {
+      arrayName: "DistanceToCamera",
+      screenSize: 40,
+      inputDataObjectId: "filter-input",
+    },
+    mapper,
+    synchronizerContext,
   );
 
   const zoom = 1.75;
@@ -452,18 +446,18 @@ test("distance-to-camera registry resolves pending mapper state during render", 
   };
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
 
-  distanceToCameraGlyphs.syncDistanceToCameraGlyphState(
-    {
-      id: "mapper",
-      type: "vtkGlyph3DMapper",
-      distanceToCamera: {
-        arrayName: "DistanceToCamera",
-        screenSize: 20,
-        inputDataObjectId: "filter-input",
-      },
-    },
-    synchronizerContext,
+  // The block can arrive before the input dataset instance resolves — the
+  // entry stays pending and resolves during the render-time update.
+  distanceToCameraGlyphs.applyDistanceToCameraBlock(
     registry,
+    "mapper",
+    {
+      arrayName: "DistanceToCamera",
+      screenSize: 20,
+      inputDataObjectId: "filter-input",
+    },
+    null,
+    synchronizerContext,
   );
 
   assert.equal(registry.get("mapper")?.pending, true);

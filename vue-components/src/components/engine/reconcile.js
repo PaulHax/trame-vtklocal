@@ -1,0 +1,542 @@
+// Node-vs-mirror reconcile applier (push sync v2).
+//
+// Applies broadcast ops to live vtk.js instances by diffing each upserted
+// node against the client mirror: changed props -> instance.set, ref-slot
+// diffs -> the pinned add/remove/set calls, array entries -> blob-cache
+// bindings, feature blocks -> registered handlers. `patchArray` mutates the
+// bound typed array in place; `remove` tears the instance down.
+//
+// Two passes per message: (1) build instances for upserted ids missing from
+// the synchronizer context, so same-message refs always resolve; (2) apply
+// ops in order (upserts, patches, removes — the store orders them). A type
+// change on an existing id rebuilds the instance and force-rewires every
+// referrer slot afterwards.
+
+import { deepEqual } from "./values";
+import {
+  bindArrayEntry,
+  cachedTypedArray,
+  removeArrayEntry,
+  typedArrayConstructor,
+} from "./arrayBinding";
+import { viewAsTypedArray } from "../sync/base64";
+
+// Ref-slot -> vtk.js call map (pinned by the wire protocol).
+const SINGLE_REF_SETTERS = {
+  activeCamera: "setActiveCamera",
+  mapper: "setMapper",
+  property: "setProperty",
+  lookupTable: "setLookupTable",
+};
+
+const LIST_REF_SLOTS = {
+  renderers: { add: "addRenderer", remove: "removeRenderer", read: "getRenderers" },
+  viewProps: { add: "addViewProp", remove: "removeViewProp", read: "getViewProps" },
+  lights: { add: "addLight", remove: "removeLight", read: "getLights" },
+  textures: { add: "addTexture", remove: "removeTexture", read: "getTextures" },
+};
+
+const INDEXED_REF_SETTERS = {
+  rgbTransferFunction: "setRGBTransferFunction",
+  grayTransferFunction: "setGrayTransferFunction",
+  scalarOpacity: "setScalarOpacity",
+};
+
+export function isLiveInstance(instance) {
+  return (
+    !!instance &&
+    !(typeof instance.isDeleted === "function" && instance.isDeleted())
+  );
+}
+
+function slotIds(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  return typeof value === "string" ? [value] : value;
+}
+
+function sameIdList(a, b) {
+  return a.length === b.length && a.every((id, i) => b[i] === id);
+}
+
+export function createReconciler({
+  synchronizerContext,
+  objectManager,
+  rootId,
+  rootInstance,
+}) {
+  const blockHandlers = new Map();
+  // nodeId -> Map(arrayKey -> { array: vtk data array, ref }) — the client's
+  // record of which blob each bound array holds, for rebinds and patches.
+  const bindings = new Map();
+  let rootAttached = false;
+
+  // The root render window is widget-owned, never built. Register it so
+  // getInstance/getInstanceId treat it like every other node.
+  if (rootInstance && synchronizerContext?.registerInstance) {
+    synchronizerContext.registerInstance(String(rootId), rootInstance);
+  }
+
+  function getInstance(id) {
+    return synchronizerContext?.getInstance?.(String(id)) ?? null;
+  }
+
+  function liveInstanceFor(id) {
+    const instance = getInstance(id);
+    return isLiveInstance(instance) ? instance : null;
+  }
+
+  function registerBlockHandler(key, handler) {
+    blockHandlers.set(key, handler);
+    return () => {
+      if (blockHandlers.get(key) === handler) {
+        blockHandlers.delete(key);
+      }
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // Ref slots
+  // ---------------------------------------------------------------------
+
+  function applyListSlot(instance, spec, prevIds, nextIds) {
+    if (sameIdList(prevIds, nextIds)) {
+      return;
+    }
+    // Slot order is render order. When the change is pure removals plus
+    // appends the diff is surgical; any other reorder rebuilds the slot.
+    const nextSet = new Set(nextIds);
+    const survivors = prevIds.filter((id) => nextSet.has(id));
+    const appendOnly = survivors.every((id, i) => nextIds[i] === id);
+    const removeIds = appendOnly
+      ? prevIds.filter((id) => !nextSet.has(id))
+      : prevIds;
+    const addIds = appendOnly ? nextIds.slice(survivors.length) : nextIds;
+    for (const refId of removeIds) {
+      const child = getInstance(refId);
+      if (child) {
+        instance[spec.remove](child);
+      }
+    }
+    for (const refId of addIds) {
+      const child = liveInstanceFor(refId);
+      if (child) {
+        instance[spec.add](child);
+      }
+    }
+  }
+
+  function applyIndexedSlot(instance, setter, prevIds, nextIds) {
+    for (let i = 0; i < nextIds.length; i += 1) {
+      if (prevIds[i] !== nextIds[i]) {
+        const child = liveInstanceFor(nextIds[i]);
+        if (child) {
+          instance[setter](i, child);
+        }
+      }
+    }
+    for (let i = nextIds.length; i < prevIds.length; i += 1) {
+      instance[setter](i, null);
+    }
+  }
+
+  function applyInputsSlot(instance, prevIds, nextIds) {
+    for (let port = 0; port < nextIds.length; port += 1) {
+      if (prevIds[port] !== nextIds[port]) {
+        const dataset = liveInstanceFor(nextIds[port]);
+        if (dataset) {
+          instance.setInputData(dataset, port);
+        }
+      }
+    }
+  }
+
+  function applySlotDiff(instance, slot, prevValue, nextValue) {
+    if (slot === "inputs") {
+      applyInputsSlot(instance, slotIds(prevValue), slotIds(nextValue));
+      return;
+    }
+    const singleSetter = SINGLE_REF_SETTERS[slot];
+    if (singleSetter) {
+      // A slot that disappears is left alone: a renderer with no activeCamera
+      // ref keeps its own local camera (client camera authority), and
+      // mapper/property/lookupTable only ever leave with their owner node.
+      if (nextValue === undefined || nextValue === null) {
+        return;
+      }
+      if (prevValue !== nextValue) {
+        const child = liveInstanceFor(nextValue);
+        if (child && typeof instance[singleSetter] === "function") {
+          instance[singleSetter](child);
+        }
+      }
+      return;
+    }
+    const listSpec = LIST_REF_SLOTS[slot];
+    if (listSpec) {
+      applyListSlot(instance, listSpec, slotIds(prevValue), slotIds(nextValue));
+      return;
+    }
+    const indexedSetter = INDEXED_REF_SETTERS[slot];
+    if (indexedSetter) {
+      applyIndexedSlot(
+        instance,
+        indexedSetter,
+        slotIds(prevValue),
+        slotIds(nextValue),
+      );
+      return;
+    }
+    console.warn(`[reconcile] unknown ref slot ${slot}`);
+  }
+
+  function applyRefsDiff(instance, nextRefs, prevRefs) {
+    const slots = new Set([...Object.keys(prevRefs), ...Object.keys(nextRefs)]);
+    for (const slot of slots) {
+      applySlotDiff(instance, slot, prevRefs[slot], nextRefs[slot]);
+    }
+  }
+
+  // Re-apply a slot from scratch against live state — used after an instance
+  // rebuild, when the referrer's collections may hold a stale (replaced)
+  // instance that id lookups can no longer name.
+  function forceApplySlot(instance, slot, value) {
+    const ids = slotIds(value);
+    if (slot === "inputs") {
+      ids.forEach((refId, port) => {
+        const dataset = liveInstanceFor(refId);
+        if (dataset) {
+          instance.setInputData(dataset, port);
+        }
+      });
+      return;
+    }
+    const singleSetter = SINGLE_REF_SETTERS[slot];
+    if (singleSetter) {
+      const child = liveInstanceFor(ids[0]);
+      if (child && typeof instance[singleSetter] === "function") {
+        instance[singleSetter](child);
+      }
+      return;
+    }
+    const listSpec = LIST_REF_SLOTS[slot];
+    if (listSpec) {
+      const current = instance[listSpec.read]?.() || [];
+      for (const item of [...current]) {
+        instance[listSpec.remove](item);
+      }
+      for (const refId of ids) {
+        const child = liveInstanceFor(refId);
+        if (child) {
+          instance[listSpec.add](child);
+        }
+      }
+      return;
+    }
+    const indexedSetter = INDEXED_REF_SETTERS[slot];
+    if (indexedSetter) {
+      ids.forEach((refId, i) => {
+        const child = liveInstanceFor(refId);
+        if (child) {
+          instance[indexedSetter](i, child);
+        }
+      });
+    }
+  }
+
+  function rewireRebuilt(rebuiltIds, mirror) {
+    for (const [referrerId, node] of mirror.entries()) {
+      const refs = node.refs || {};
+      for (const [slot, value] of Object.entries(refs)) {
+        if (!slotIds(value).some((refId) => rebuiltIds.has(refId))) {
+          continue;
+        }
+        const instance = liveInstanceFor(referrerId);
+        if (instance) {
+          forceApplySlot(instance, slot, value);
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Props / arrays / blocks
+  // ---------------------------------------------------------------------
+
+  function applyPropsDiff(instance, nextProps, prevProps, isNew) {
+    const changed = {};
+    let count = 0;
+    for (const [key, value] of Object.entries(nextProps)) {
+      if (isNew || !deepEqual(prevProps[key], value)) {
+        changed[key] = value;
+        count += 1;
+      }
+    }
+    // Props absent from the new node are left at their current value — the
+    // server emits explicit values for anything it wants reset (v1 parity).
+    if (count) {
+      instance.set(changed);
+    }
+  }
+
+  function applyArraysDiff(instance, id, nextArrays, prevArrays, cache) {
+    let nodeBindings = bindings.get(id);
+    for (const [key, entry] of Object.entries(prevArrays)) {
+      if (!(key in nextArrays)) {
+        removeArrayEntry(instance, entry);
+        nodeBindings?.delete(key);
+      }
+    }
+    for (const [key, entry] of Object.entries(nextArrays)) {
+      const bound = nodeBindings?.get(key);
+      if (
+        bound &&
+        bound.ref === entry.ref &&
+        deepEqual(prevArrays[key], entry)
+      ) {
+        continue;
+      }
+      const values = cachedTypedArray(cache, entry.ref, entry.dataType);
+      if (!values) {
+        throw new Error(
+          `blob ${entry.ref} missing from cache (node ${id}, array ${key})`,
+        );
+      }
+      const array = bindArrayEntry(instance, entry, values);
+      if (!nodeBindings) {
+        nodeBindings = new Map();
+        bindings.set(id, nodeBindings);
+      }
+      nodeBindings.set(key, { array, ref: entry.ref });
+    }
+  }
+
+  function applyBlocksDiff(instance, id, nextBlocks, prevBlocks, isNew) {
+    const keys = new Set([...Object.keys(prevBlocks), ...Object.keys(nextBlocks)]);
+    for (const key of keys) {
+      const nextBlock = key in nextBlocks ? nextBlocks[key] : null;
+      const prevBlock = key in prevBlocks ? prevBlocks[key] : null;
+      if (!isNew && deepEqual(prevBlock, nextBlock)) {
+        continue;
+      }
+      const handler = blockHandlers.get(key);
+      if (!handler) {
+        console.warn(`[reconcile] no handler for block ${key} (node ${id})`);
+        continue;
+      }
+      handler(id, nextBlock, instance);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Ops
+  // ---------------------------------------------------------------------
+
+  function drainRootCollections(instance) {
+    // A widget-owned render window can carry renderers from a previous
+    // binding when the first root node arrives; the diff below is against an
+    // empty mirror, so drain by hand once.
+    for (const renderer of [...(instance.getRenderers?.() || [])]) {
+      instance.removeRenderer(renderer);
+    }
+  }
+
+  function applyNodeDiff(id, node, prev, cache) {
+    const instance = liveInstanceFor(id);
+    if (!instance) {
+      // Unbuildable type (already warned in the build pass); skip its state.
+      return;
+    }
+    const isNew = prev === undefined;
+    if (isNew && id === rootId && !rootAttached) {
+      drainRootCollections(instance);
+    }
+    if (id === rootId) {
+      rootAttached = true;
+    }
+    applyPropsDiff(instance, node.props || {}, prev?.props || {}, isNew);
+    applyRefsDiff(instance, node.refs || {}, prev?.refs || {});
+    applyArraysDiff(instance, id, node.arrays || {}, prev?.arrays || {}, cache);
+    applyBlocksDiff(instance, id, node.blocks || {}, prev?.blocks || {}, isNew);
+  }
+
+  function applyArrayPatch(op, mirror, cache) {
+    const id = String(op.id);
+    const node = mirror.get(id);
+    const entry = node?.arrays?.[op.key];
+    if (!entry) {
+      throw new Error(`patchArray target ${id}.${op.key} missing from mirror`);
+    }
+    const binding = bindings.get(id)?.get(op.key);
+    if (!binding || binding.ref !== entry.ref) {
+      throw new Error(
+        `patchArray ${id}.${op.key}: no binding for ref ${entry.ref}`,
+      );
+    }
+    const values = binding.array.getData();
+    const Ctor = typedArrayConstructor(op.dataType);
+    if (values.constructor !== Ctor) {
+      throw new Error(
+        `patchArray ${id}.${op.key}: dataType mismatch ` +
+          `(${op.dataType} vs ${values.constructor.name})`,
+      );
+    }
+    const data = viewAsTypedArray(op.data, op.dataType);
+    if (op.offset < 0 || op.offset + data.length > values.length) {
+      throw new Error(
+        `patchArray ${id}.${op.key}: out of bounds ` +
+          `(offset=${op.offset}, length=${data.length}, size=${values.length})`,
+      );
+    }
+    if (data.length) {
+      values.set(data, op.offset);
+    }
+    binding.array.modified?.();
+    getInstance(id)?.modified?.();
+    // Rebind the cache slot: the same typed array now answers to the new ref.
+    cache.delete(binding.ref);
+    cache.set(op.ref, values);
+    binding.ref = op.ref;
+  }
+
+  function teardownNode(id, prevNode) {
+    if (id === rootId) {
+      return;
+    }
+    const instance = getInstance(id);
+    for (const key of Object.keys(prevNode?.blocks || {})) {
+      blockHandlers.get(key)?.(id, null, instance);
+    }
+    bindings.delete(id);
+    if (instance) {
+      synchronizerContext.unregisterInstance?.(id);
+      if (isLiveInstance(instance)) {
+        instance.delete?.();
+      }
+    }
+  }
+
+  function buildFor(id, type) {
+    const built = objectManager.build(type, { managedInstanceId: id });
+    if (!built) {
+      console.warn(`[reconcile] cannot build type ${type} (node ${id})`);
+      return null;
+    }
+    synchronizerContext.registerInstance(id, built);
+    return built;
+  }
+
+  function buildInstances(ops, mirror) {
+    const rebuilt = new Map(); // id -> replaced (old) instance
+    for (const op of ops) {
+      if (op.op !== "upsert") {
+        continue;
+      }
+      const id = String(op.id);
+      if (id === rootId) {
+        continue;
+      }
+      let instance = getInstance(id);
+      if (instance && !isLiveInstance(instance)) {
+        synchronizerContext.unregisterInstance?.(id);
+        bindings.delete(id);
+        instance = null;
+      }
+      if (!instance) {
+        buildFor(id, op.node.type);
+        continue;
+      }
+      const prevType = mirror.get(id)?.type;
+      if (prevType && prevType !== op.node.type) {
+        // Same id, new type: rebuild, then rewire referrers after the ops
+        // apply. When the new type cannot be built, keep the old instance
+        // registered so live wiring stays render-safe.
+        if (buildFor(id, op.node.type)) {
+          rebuilt.set(id, instance);
+          bindings.delete(id);
+        }
+      }
+    }
+    return rebuilt;
+  }
+
+  // Apply one broadcast message's ops to instances and the mirror together.
+  // Throws on contract violations; the engine translates throws into resyncs.
+  function applyMessage(ops, mirror, cache) {
+    const rebuilt = buildInstances(ops, mirror);
+    for (const op of ops) {
+      if (op.op === "upsert") {
+        const id = String(op.id);
+        const prev = rebuilt.has(id) ? undefined : mirror.get(id);
+        applyNodeDiff(id, op.node, prev, cache);
+        mirror.applyOp(op);
+      } else if (op.op === "patchArray") {
+        applyArrayPatch(op, mirror, cache);
+        mirror.applyOp(op);
+      } else if (op.op === "remove") {
+        teardownNode(String(op.id), mirror.get(String(op.id)));
+        mirror.applyOp(op);
+      } else {
+        throw new Error(`unknown op ${op.op}`);
+      }
+    }
+    if (rebuilt.size) {
+      rewireRebuilt(new Set(rebuilt.keys()), mirror);
+      for (const oldInstance of rebuilt.values()) {
+        if (isLiveInstance(oldInstance)) {
+          oldInstance.delete?.();
+        }
+      }
+    }
+  }
+
+  // Reconcile a resync snapshot: upsert every snapshot node (diffing against
+  // the mirror keeps unchanged instances untouched), then remove leftovers.
+  function applySnapshot(nodes, mirror, cache) {
+    const ops = [];
+    for (const [id, node] of Object.entries(nodes || {})) {
+      ops.push({ op: "upsert", id, node });
+    }
+    for (const id of mirror.ids()) {
+      if (!(id in nodes)) {
+        ops.push({ op: "remove", id });
+      }
+    }
+    applyMessage(ops, mirror, cache);
+  }
+
+  // Full local reset: drop every managed instance (the root stays; its
+  // collections drain) so the next snapshot rebuilds from scratch. Used when
+  // an apply failure leaves instances and mirror potentially diverged.
+  function reset(mirror) {
+    const rootInstanceLive = liveInstanceFor(rootId);
+    if (rootInstanceLive) {
+      drainRootCollections(rootInstanceLive);
+    }
+    for (const id of mirror.ids()) {
+      teardownNode(id, mirror.get(id));
+    }
+    mirror.clear();
+    bindings.clear();
+    rootAttached = false;
+  }
+
+  function getBoundArray(id, key) {
+    return bindings.get(String(id))?.get(key)?.array ?? null;
+  }
+
+  function teardown() {
+    bindings.clear();
+    blockHandlers.clear();
+  }
+
+  return {
+    registerBlockHandler,
+    applyMessage,
+    applySnapshot,
+    reset,
+    getBoundArray,
+    teardown,
+  };
+}

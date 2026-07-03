@@ -1,6 +1,6 @@
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 
-export const DISTANCE_TO_CAMERA_STATE_KEY = "distanceToCamera";
+export const DISTANCE_TO_CAMERA_BLOCK_KEY = "distanceToCamera";
 export const DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera";
 
 // World-unit fallback cap for degenerate projections, used only when the point
@@ -37,16 +37,6 @@ function validObjectId(value) {
   );
 }
 
-function walkStateObjects(state, visit) {
-  if (!state || typeof state !== "object" || Array.isArray(state)) {
-    return;
-  }
-
-  visit(state);
-  const deps = Array.isArray(state.dependencies) ? state.dependencies : [];
-  deps.forEach((dep) => walkStateObjects(dep, visit));
-}
-
 function normalizeConfig(config) {
   if (!config || typeof config !== "object") {
     return null;
@@ -74,87 +64,68 @@ function normalizeConfig(config) {
   };
 }
 
-export function syncDistanceToCameraGlyphState(
-  state,
-  synchronizerContext,
+// Block handler for the reconcile engine: `distanceToCamera` block changes
+// land here as (nodeId, block|null, instance). The input dataset resolves
+// through the synchronizer context by the block's inputDataObjectId; when it
+// is not live yet, the entry stays pending and resolves at render time.
+export function applyDistanceToCameraBlock(
   registry,
-  { reset = false } = {},
+  nodeId,
+  block,
+  instance,
+  synchronizerContext,
 ) {
-  if (!registry) {
+  if (!registry || nodeId == null) {
     return registry;
   }
-  if (reset) {
-    registry.clear();
+
+  const id = String(nodeId);
+  const config = normalizeConfig(block);
+  if (!config) {
+    registry.delete(id);
+    return registry;
   }
 
-  walkStateObjects(state, (node) => {
-    if (node.type !== "vtkGlyph3DMapper" || node.id == null) {
-      return;
-    }
+  const mapper = isLiveInstance(instance)
+    ? instance
+    : synchronizerContext?.getInstance?.(id);
+  const input = synchronizerContext?.getInstance?.(config.inputDataObjectId);
 
-    const id = String(node.id);
-    const config = normalizeConfig(node[DISTANCE_TO_CAMERA_STATE_KEY]);
-    const mapper = synchronizerContext?.getInstance?.(id);
-    const input = config
-      ? synchronizerContext?.getInstance?.(config.inputDataObjectId)
-      : null;
-
-    if (!config) {
-      registry.delete(id);
-      return;
-    }
-
-    if (!isLiveInstance(mapper) || !isLiveInstance(input)) {
-      registry.set(id, {
-        id,
-        mapper: null,
-        input: null,
-        ...config,
-        lastSignature: null,
-        pending: true,
-      });
-      return;
-    }
-
-    const previous = registry.get(id);
-    const unchanged =
-      previous &&
-      previous.mapper === mapper &&
-      previous.input === input &&
-      previous.screenSize === config.screenSize &&
-      previous.arrayName === config.arrayName &&
-      previous.inputDataObjectId === config.inputDataObjectId &&
-      previous.maxScale === config.maxScale;
-
-    if (mapper.getInputData?.(0) !== input) {
-      mapper.setInputData?.(input, 0);
-    }
-    mapper.setScaleArray?.(config.arrayName);
-
+  if (!isLiveInstance(mapper) || !isLiveInstance(input)) {
     registry.set(id, {
-      ...(unchanged ? previous : {}),
       id,
-      mapper,
-      input,
+      mapper: null,
+      input: null,
       ...config,
-      lastSignature: unchanged ? previous.lastSignature : null,
-      pending: false,
+      lastSignature: null,
+      pending: true,
     });
-  });
+    return registry;
+  }
 
-  return registry;
-}
+  const previous = registry.get(id);
+  const unchanged =
+    previous &&
+    previous.mapper === mapper &&
+    previous.input === input &&
+    previous.screenSize === config.screenSize &&
+    previous.arrayName === config.arrayName &&
+    previous.inputDataObjectId === config.inputDataObjectId &&
+    previous.maxScale === config.maxScale;
 
-export function syncDistanceToCameraGlyphPatch(
-  patch,
-  synchronizerContext,
-  registry,
-) {
-  const ops = Array.isArray(patch?.ops) ? patch.ops : [];
-  ops.forEach((op) => {
-    if (op?.op === "updateObject") {
-      syncDistanceToCameraGlyphState(op.state, synchronizerContext, registry);
-    }
+  if (mapper.getInputData?.(0) !== input) {
+    mapper.setInputData?.(input, 0);
+  }
+  mapper.setScaleArray?.(config.arrayName);
+
+  registry.set(id, {
+    ...(unchanged ? previous : {}),
+    id,
+    mapper,
+    input,
+    ...config,
+    lastSignature: unchanged ? previous.lastSignature : null,
+    pending: false,
   });
   return registry;
 }
@@ -561,8 +532,7 @@ export function describeDistanceToCameraGlyphRegistry(registry) {
 
 export default {
   createDistanceToCameraGlyphRegistry,
-  syncDistanceToCameraGlyphState,
-  syncDistanceToCameraGlyphPatch,
+  applyDistanceToCameraBlock,
   createDistanceToCameraRenderCallback,
   bindDistanceToCameraInteractorRenderEvent,
   computeDistanceToCameraScales,

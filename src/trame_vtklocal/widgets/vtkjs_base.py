@@ -41,8 +41,7 @@ class VtkJsBaseView(HtmlElement):
             # not bypassed here (they execute renderer-less and error out).
             self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
 
-        self._collection_tracker = {}
-        self._push_sync = None
+        self._publisher = None
 
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self._ref}"'
@@ -65,50 +64,19 @@ class VtkJsBaseView(HtmlElement):
     def ref_name(self):
         return self._ref
 
-    def _get_vtkjs_state(self, version_registry=None, collection_tracker=None):
-        from trame_vtklocal.module.vtkjs_translator import translate_scene
-
-        with bypass_distance_to_camera_for_serialization(self._render_window):
-            self._render_window.Render()
-            # Scoped for the same reason as __init__: only this window's
-            # mappers are bypassed, so only this window may be serialized.
-            self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
-            tracker = (
-                self._collection_tracker
-                if collection_tracker is None
-                else collection_tracker
-            )
-            return translate_scene(
-                self.object_manager,
-                self._window_id,
-                tracker,
-                version_registry=version_registry,
-                rw_id=self._window_id,
-            )
-
     def get_instance_id(self, vtk_object):
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
 
-    def has_view_clients(self) -> bool:
-        """Report whether any view client has attached to this view.
-
-        ``PushSync.update()``/``request_resync()`` silently no-op until a client
-        completes its initial resync, so callers use this to tell whether a push
-        will actually deliver.
-        """
-        return bool(self._push_sync and self._push_sync._view_clients)
-
-    def _init_push_sync(self):
-        from trame_vtklocal.widgets.push_sync import PushSync
+    def _init_publisher(self):
+        from trame_vtklocal.widgets.publisher import ScenePublisher
 
         self.cleanup()
-        self._push_sync = PushSync(
+        self._publisher = ScenePublisher(
             self.server,
-            self._get_vtkjs_state,
-            self.get_instance_id,
+            self.api,
+            self._render_window,
             self._window_id,
-            api=self.api,
         )
 
     def _configure_sync_mode(self, sync_mode, extra_event_names=None):
@@ -120,10 +88,47 @@ class VtkJsBaseView(HtmlElement):
         if extra_event_names:
             self._event_names += list(extra_event_names)
         self._event_names += self._scene_event_names[1:]
-        self._init_push_sync()
+        self._init_publisher()
 
-    def _update_view(self, extra=None):
-        self._push_sync.update(extra=extra)
+    # ------------------------------------------------------------------
+    # Push sync v2 view API
+    # ------------------------------------------------------------------
+
+    def sync(self):
+        """Publish pending scene changes now."""
+        if self._publisher:
+            self._publisher.sync()
+
+    async def settled(self):
+        """Wait until every pending scene change has been published."""
+        if self._publisher:
+            await self._publisher.settled()
+
+    def transaction(self):
+        """Batch mutations (and commands) into one commit + broadcast."""
+        return self._publisher.transaction()
+
+    def send_command(self, name, payload=None):
+        """Send a named command ordered atomically with pending scene ops."""
+        if self._publisher:
+            self._publisher.send_command(name, payload)
+
+    def on_client_resync(self, callback):
+        """Call ``callback(client_id)`` whenever a client pulls a snapshot."""
+        return self._publisher.on_client_resync(callback)
+
+    def request_resync(self):
+        """Server-forced resync: every client re-pulls the full snapshot."""
+        if self._publisher:
+            self._publisher.request_resync()
+
+    def update(self):
+        """Alias for :meth:`sync`."""
+        self.sync()
+
+    # ------------------------------------------------------------------
+    # Client-side camera / pointer seams
+    # ------------------------------------------------------------------
 
     def get_renderer(self):
         renderers = self._render_window.GetRenderers()
@@ -165,23 +170,10 @@ class VtkJsBaseView(HtmlElement):
         """
         self.server.js_call(self._ref, "setPointerContext", context)
 
-    def mark_modified(self, vtk_object, array_path, start=0, count=None, data=None, data_type=None):
-        if self._push_sync:
-            self._push_sync.mark_modified(vtk_object, array_path, start, count, data, data_type)
-
-    def flush(self, extra=None):
-        if self._push_sync:
-            self._push_sync.flush(extra)
-
-    def request_resync(self, extra=None):
-        if self._push_sync:
-            self._collection_tracker.clear()
-            self._push_sync.request_resync(extra)
-
     def cleanup(self):
-        if self._push_sync:
-            self._push_sync.cleanup()
-            self._push_sync = None
+        if self._publisher:
+            self._publisher.cleanup()
+            self._publisher = None
 
     def close(self):
         self.cleanup()

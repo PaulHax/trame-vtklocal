@@ -1,10 +1,18 @@
-"""Translator regressions for vtk.js scene generation."""
+"""Structural add/remove and distance-to-camera translation regressions.
+
+Structural changes have no full-sync fallback in push sync v2: an added or
+removed actor must round-trip through flat-node translation + the scene
+store as plain ``upsert``/``remove`` ops. The distance-to-camera cases guard
+the serialization bypass (the server-side filter must never execute
+renderer-less) and the glyph-mapper input bridging.
+"""
 
 from trame_vtklocal.module.distance_to_camera import (
     bypass_distance_to_camera_for_serialization,
 )
+from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.protocol import ObjectManagerAPI
-from trame_vtklocal.module.vtkjs_translator import translate_object, translate_scene
+from trame_vtklocal.store import SceneStore
 
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
@@ -38,29 +46,6 @@ def get_object_manager():
     return om
 
 
-def find_calls(state, method_name):
-    """Recursively find all calls matching method_name in state tree."""
-    found = []
-    if "calls" in state:
-        for call in state["calls"]:
-            if call[0] == method_name:
-                found.append(call)
-    for dep in state.get("dependencies", []):
-        found.extend(find_calls(dep, method_name))
-    return found
-
-
-def find_node_by_id(state, node_id):
-    """Recursively find the translated node for the given vtk object id."""
-    if state.get("id") == str(node_id):
-        return state
-    for dep in state.get("dependencies", []):
-        found = find_node_by_id(dep, node_id)
-        if found:
-            return found
-    return None
-
-
 def make_cross_polydata():
     points = vtkPoints()
     lines = vtkCellArray()
@@ -77,7 +62,7 @@ def make_cross_polydata():
     return polydata
 
 
-def test_remove_actor_emits_removal_call():
+def test_remove_actor_round_trips_as_store_removals():
     rw = vtkRenderWindow()
     rw.SetOffScreenRendering(1)
     renderer = vtkRenderer()
@@ -93,94 +78,27 @@ def test_remove_actor_emits_removal_call():
     rw.Render()
     om.UpdateStatesFromObjects()
 
-    tracker = {}
+    renderer_id = str(om.GetId(renderer))
+    actor1_id = str(om.GetId(actor1))
+    actor2_id = str(om.GetId(actor2))
 
-    # First translate — should have addViewProp, no removeViewProp
-    state1 = translate_scene(om, rw_id, tracker)
-    adds = find_calls(state1, "addViewProp")
-    removes = find_calls(state1, "removeViewProp")
-    assert len(adds) == 2
-    assert len(removes) == 0
+    nodes = translate_scene(om, rw_id)
+    assert set(nodes[renderer_id]["refs"]["viewProps"]) == {actor1_id, actor2_id}
+    store = SceneStore(str(rw_id))
+    store.transact().upsert_nodes(nodes).commit()
 
-    # Remove one actor
     renderer.RemoveActor(actor1)
     rw.Render()
     om.UpdateStatesFromObjects()
 
-    # Second translate — removeViewProp for removed, no redundant adds
-    state2 = translate_scene(om, rw_id, tracker)
-    adds2 = find_calls(state2, "addViewProp")
-    removes2 = find_calls(state2, "removeViewProp")
-    assert len(adds2) == 0, "actor2 was already sent, should not re-add"
-    assert len(removes2) == 1
+    after = translate_scene(om, rw_id)
+    assert after[renderer_id]["refs"]["viewProps"] == [actor2_id]
+    result = store.transact().upsert_nodes(after).commit()
 
-    # Third translate — steady state, no calls at all
-    rw.Render()
-    om.UpdateStatesFromObjects()
-    state3 = translate_scene(om, rw_id, tracker)
-    adds3 = find_calls(state3, "addViewProp")
-    removes3 = find_calls(state3, "removeViewProp")
-    assert len(adds3) == 0
-    assert len(removes3) == 0
-
-
-def test_no_removal_without_tracker():
-    rw = vtkRenderWindow()
-    rw.SetOffScreenRendering(1)
-    renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
-
-    actor = make_actor()
-    renderer.AddActor(actor)
-
-    om = get_object_manager()
-    rw_id = om.RegisterObject(rw)
-    rw.Render()
-    om.UpdateStatesFromObjects()
-
-    # First translate without tracker
-    translate_scene(om, rw_id, None)
-
-    # Remove actor
-    renderer.RemoveActor(actor)
-    rw.Render()
-    om.UpdateStatesFromObjects()
-
-    # Second translate — no tracker means no removal calls
-    state = translate_scene(om, rw_id, None)
-    removes = find_calls(state, "removeViewProp")
-    assert len(removes) == 0
-
-
-def test_tracker_resets_on_clear():
-    rw = vtkRenderWindow()
-    rw.SetOffScreenRendering(1)
-    renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
-
-    actor = make_actor()
-    renderer.AddActor(actor)
-
-    om = get_object_manager()
-    rw_id = om.RegisterObject(rw)
-    rw.Render()
-    om.UpdateStatesFromObjects()
-
-    tracker = {}
-    translate_scene(om, rw_id, tracker)
-
-    # Remove actor
-    renderer.RemoveActor(actor)
-    rw.Render()
-    om.UpdateStatesFromObjects()
-
-    # Clear tracker (simulates request_resync)
-    tracker.clear()
-
-    # After clear, no removal calls — client is rebuilding from scratch
-    state = translate_scene(om, rw_id, tracker)
-    removes = find_calls(state, "removeViewProp")
-    assert len(removes) == 0
+    removed = {op["id"] for op in result["ops"] if op["op"] == "remove"}
+    assert actor1_id in removed
+    assert actor2_id not in removed
+    assert store.snapshot()["nodes"] == after
 
 
 def test_glyph_mapper_keeps_source_input_on_port_one():
@@ -213,24 +131,18 @@ def test_glyph_mapper_keeps_source_input_on_port_one():
     rw.Render()
     om.UpdateStatesFromObjects()
 
-    state = translate_scene(om, rw_id, {})
-    mapper_node = find_node_by_id(state, om.GetId(mapper))
+    nodes = translate_scene(om, rw_id)
+    mapper_node = nodes[str(om.GetId(mapper))]
 
-    assert mapper_node is not None
     assert mapper_node["type"] == "vtkGlyph3DMapper"
-
     centers_id = str(om.GetId(centers))
     source_id = str(om.GetId(source))
-    dep_ids = {dep["id"] for dep in mapper_node.get("dependencies", [])}
-    assert centers_id in dep_ids
-    assert source_id in dep_ids
-
-    calls = mapper_node.get("calls", [])
-    assert ["setInputData", [f"instance:${{{centers_id}}}"]] in calls
-    assert ["setInputData", [f"instance:${{{source_id}}}", 1]] in calls
+    assert mapper_node["refs"]["inputs"] == [centers_id, source_id]
+    assert centers_id in nodes
+    assert source_id in nodes
 
 
-def test_glyph_mapper_records_distance_to_camera_input():
+def _make_dtc_glyph_window():
     rw = vtkRenderWindow()
     rw.SetOffScreenRendering(1)
     renderer = vtkRenderer()
@@ -238,7 +150,6 @@ def test_glyph_mapper_records_distance_to_camera_input():
 
     centers_points = vtkPoints()
     centers_points.InsertNextPoint(-0.5, 0.0, 0.0)
-    centers_points.InsertNextPoint(0.5, 0.0, 0.0)
     centers = vtkPolyData()
     centers.SetPoints(centers_points)
 
@@ -259,64 +170,11 @@ def test_glyph_mapper_records_distance_to_camera_input():
     actor.SetMapper(mapper)
     renderer.AddActor(actor)
     renderer.ResetCamera()
-
-    om = get_object_manager()
-    rw_id = om.RegisterObject(rw)
-    om.UpdateStatesFromObjects()
-
-    state = translate_scene(om, rw_id, {})
-    mapper_node = find_node_by_id(state, om.GetId(mapper))
-    centers_id = str(om.GetId(centers))
-    source_id = str(om.GetId(source))
-
-    assert mapper_node is not None
-    assert mapper_node["type"] == "vtkGlyph3DMapper"
-    assert mapper_node["properties"]["scaleArray"] == "DistanceToCamera"
-    assert mapper_node["properties"]["scaleMode"] == 1
-    assert mapper_node["distanceToCamera"] == {
-        "arrayName": "DistanceToCamera",
-        "screenSize": 36.0,
-        "inputDataObjectId": centers_id,
-    }
-
-    dep_ids = {dep["id"] for dep in mapper_node.get("dependencies", [])}
-    assert centers_id in dep_ids
-    assert source_id in dep_ids
-
-    calls = mapper_node.get("calls", [])
-    assert ["setInputData", [f"instance:${{{centers_id}}}"]] in calls
-    assert ["setInputData", [f"instance:${{{source_id}}}", 1]] in calls
+    return rw, mapper, centers
 
 
 def test_distance_to_camera_serialization_bypasses_server_filter(capfd):
-    rw = vtkRenderWindow()
-    rw.SetOffScreenRendering(1)
-    renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
-
-    centers_points = vtkPoints()
-    centers_points.InsertNextPoint(-0.5, 0.0, 0.0)
-    centers_points.InsertNextPoint(0.5, 0.0, 0.0)
-    centers = vtkPolyData()
-    centers.SetPoints(centers_points)
-
-    distance_to_camera = vtkDistanceToCamera()
-    distance_to_camera.SetInputData(centers)
-    distance_to_camera.SetScreenSize(36)
-
-    source = make_cross_polydata()
-    mapper = vtkGlyph3DMapper()
-    mapper.SetInputConnection(distance_to_camera.GetOutputPort())
-    mapper.SetSourceData(source)
-    mapper.SetScaleArray("DistanceToCamera")
-    mapper.SetScaleModeToScaleByMagnitude()
-    mapper.OrientOff()
-    mapper.SetScalarVisibility(False)
-
-    actor = vtkActor()
-    actor.SetMapper(mapper)
-    renderer.AddActor(actor)
-    renderer.ResetCamera()
+    rw, mapper, centers = _make_dtc_glyph_window()
     capfd.readouterr()
 
     om = get_object_manager()
@@ -329,11 +187,11 @@ def test_distance_to_camera_serialization_bypasses_server_filter(capfd):
     assert "Renderer must be non-nullptr" not in captured.err
     assert mapper.GetInputAlgorithm().GetClassName() == "vtkDistanceToCamera"
 
-    state = translate_scene(om, rw_id, {})
-    mapper_node = find_node_by_id(state, om.GetId(mapper))
+    nodes = translate_scene(om, rw_id)
+    mapper_node = nodes[str(om.GetId(mapper))]
     centers_id = str(om.GetId(centers))
 
-    assert mapper_node["distanceToCamera"] == {
+    assert mapper_node["blocks"]["distanceToCamera"] == {
         "arrayName": "DistanceToCamera",
         "screenSize": 36.0,
         "inputDataObjectId": centers_id,
@@ -341,33 +199,7 @@ def test_distance_to_camera_serialization_bypasses_server_filter(capfd):
 
 
 def test_distance_to_camera_translation_uses_snapshot_while_bypassed(capfd):
-    rw = vtkRenderWindow()
-    rw.SetOffScreenRendering(1)
-    renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
-
-    centers_points = vtkPoints()
-    centers_points.InsertNextPoint(-0.5, 0.0, 0.0)
-    centers = vtkPolyData()
-    centers.SetPoints(centers_points)
-
-    distance_to_camera = vtkDistanceToCamera()
-    distance_to_camera.SetInputData(centers)
-    distance_to_camera.SetScreenSize(36)
-
-    source = make_cross_polydata()
-    mapper = vtkGlyph3DMapper()
-    mapper.SetInputConnection(distance_to_camera.GetOutputPort())
-    mapper.SetSourceData(source)
-    mapper.SetScaleArray("DistanceToCamera")
-    mapper.SetScaleModeToScaleByMagnitude()
-    mapper.OrientOff()
-    mapper.SetScalarVisibility(False)
-
-    actor = vtkActor()
-    actor.SetMapper(mapper)
-    renderer.AddActor(actor)
-    renderer.ResetCamera()
+    rw, mapper, centers = _make_dtc_glyph_window()
     capfd.readouterr()
 
     om = get_object_manager()
@@ -375,8 +207,8 @@ def test_distance_to_camera_translation_uses_snapshot_while_bypassed(capfd):
     with bypass_distance_to_camera_for_serialization(rw):
         rw.Render()
         om.UpdateStatesFromObjects()
-        state = translate_scene(om, rw_id, {})
-        mapper_node = find_node_by_id(state, om.GetId(mapper))
+        nodes = translate_scene(om, rw_id)
+        mapper_node = nodes[str(om.GetId(mapper))]
         object_node = translate_object(om, om.GetId(mapper))
 
     captured = capfd.readouterr()
@@ -388,37 +220,13 @@ def test_distance_to_camera_translation_uses_snapshot_while_bypassed(capfd):
     }
 
     assert "Renderer must be non-nullptr" not in captured.err
-    assert mapper_node["distanceToCamera"] == expected
-    assert object_node["distanceToCamera"] == expected
+    assert mapper_node["blocks"]["distanceToCamera"] == expected
+    assert object_node["blocks"]["distanceToCamera"] == expected
     assert mapper.GetInputAlgorithm().GetClassName() == "vtkDistanceToCamera"
 
 
 def test_protocol_update_bypasses_distance_to_camera_for_registered_push_views(capfd):
-    rw = vtkRenderWindow()
-    rw.SetOffScreenRendering(1)
-    renderer = vtkRenderer()
-    rw.AddRenderer(renderer)
-
-    centers_points = vtkPoints()
-    centers_points.InsertNextPoint(-0.5, 0.0, 0.0)
-    centers = vtkPolyData()
-    centers.SetPoints(centers_points)
-
-    distance_to_camera = vtkDistanceToCamera()
-    distance_to_camera.SetInputData(centers)
-    distance_to_camera.SetScreenSize(36)
-
-    source = make_cross_polydata()
-    mapper = vtkGlyph3DMapper()
-    mapper.SetInputConnection(distance_to_camera.GetOutputPort())
-    mapper.SetSourceData(source)
-    mapper.SetScaleArray("DistanceToCamera")
-    mapper.SetScaleModeToScaleByMagnitude()
-
-    actor = vtkActor()
-    actor.SetMapper(mapper)
-    renderer.AddActor(actor)
-    renderer.ResetCamera()
+    rw, mapper, _centers = _make_dtc_glyph_window()
 
     protocol = ObjectManagerAPI()
     rw_id = protocol.vtk_object_manager.RegisterObject(rw)

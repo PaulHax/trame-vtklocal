@@ -59,14 +59,3 @@ def pickable_config(mapper):
     config = _PICKABLE_CONFIGS.get(mapper)
     return _copy_config(config) if config else None
 
-
-def update_mapper_state(state, config):
-    """Stamp a translated mapper node with its pickable block.
-
-    Mirrors ``distance_to_camera.update_mapper_state``: the block rides at the
-    top level of the serialized node (``node["pickable"]``), where the client
-    registry walker reads it.
-    """
-    if config:
-        state[PICKABLE_STATE_KEY] = config
-    return state

@@ -50,12 +50,11 @@ def _imported_modules(source_path: Path):
 def test_module_subpackage_does_not_import_widgets():
     """Layer direction: module/ may not import from widgets/.
 
-    Encodes PR #6 / commit 3f7f9122. Protocol constants were extracted to
-    ``trame_vtklocal._protocol_constants`` precisely because importing them
-    from ``widgets.push_sync`` made ``module/__init__.py`` (eagerly
-    importing ``vtkSerializationManager``) reachable from a leaf path that
-    is supposed to work without VTK installed. Locking the direction
-    prevents that regression class from reappearing.
+    Encodes PR #6 / commit 3f7f9122. Shared protocol constants once imported
+    from ``widgets.push_sync`` made ``module/__init__.py`` (eagerly importing
+    ``vtkSerializationManager``) reachable from a leaf path that is supposed
+    to work without VTK installed. Locking the direction prevents that
+    regression class from reappearing; the shared leaf is now ``store.py``.
     """
     bad = []
     for path in _iter_python_files(SRC_ROOT / "module"):
@@ -77,9 +76,9 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
-    "module/protocol.py": 430,           # DTC push-view bypass protects legacy RPC dependency walks; protocol GC remains the next extraction target
-    "widgets/push_sync.py": 1700,        # downsplit in progress; helpers + ledger extracted; PushSync state machine vs publish dispatch is the next seam
-    "module/vtkjs_translator.py": 980,   # DTC mapper bridge added; still next candidate for the same downsplit arc as push_sync
+    "module/vtkjs_translator.py": 420,   # pure translation tables mirrored by the generated JS schema; shrinks only if tables shrink
+    "widgets/dirty_tracker.py": 500,     # one concern (dirty candidates) but three observer graphs: objects, dataset children, pipeline producers
+    "widgets/publisher.py": 520,         # publish tick + wire encoding + resync; hot arrays already extracted; next seam is blob payload resolution
 }
 
 
@@ -111,22 +110,22 @@ def test_source_files_under_line_budget():
     )
 
 
-def test_protocol_constants_stays_a_leaf():
-    """``_protocol_constants.py`` may not depend on any other in-package module.
+def test_store_stays_a_vtk_free_leaf():
+    """``store.py`` may not depend on VTK or any other in-package module.
 
-    The whole reason the file exists is to be a no-dependency leaf that
-    both ``module/`` and ``widgets/`` can safely import. Letting it reach
-    back into either subpackage would reintroduce the import cycle that
-    3f7f9122 broke.
+    The scene store is the replication seam both ``module/`` and ``widgets/``
+    import (node shapes, ref namespaces, ``ref_manager_hashes``). Reaching
+    back into either subpackage — or importing VTK — would reintroduce the
+    import cycle 3f7f9122 broke and break VTK-free unit testing.
     """
-    path = SRC_ROOT / "_protocol_constants.py"
+    path = SRC_ROOT / "store.py"
     bad = [
         f"{path.name}:{lineno}: {name}"
         for lineno, name in _imported_modules(path)
-        if name.startswith("trame_vtklocal.")
-        and name != "trame_vtklocal._protocol_constants"
+        if name.startswith(("trame_vtklocal.", "vtk"))
+        and name != "trame_vtklocal.store"
     ]
     assert not bad, (
-        "_protocol_constants.py must remain a leaf (no in-package imports). "
-        "See PR #6 / commit 3f7f9122. Violations:\n  " + "\n  ".join(bad)
+        "store.py must remain a VTK-free leaf (no in-package imports). "
+        "Violations:\n  " + "\n  ".join(bad)
     )

@@ -31,7 +31,7 @@ from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
 from trame_vtklocal.store import SceneStore
-from trame_vtklocal.widgets._push_sync_helpers import _pack_cell_array_payload
+from trame_vtklocal.widgets.publisher import _pack_cell_array_payload
 
 
 # ----------------------------------------------------------------------

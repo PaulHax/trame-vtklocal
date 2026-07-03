@@ -4,7 +4,7 @@ import pytest
 
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module.protocol import ObjectManagerAPI
-from trame_vtklocal.module.vtkjs_translator import translate_scene
+from trame_vtklocal.module.node_translator import translate_scene
 
 
 def _make_scene():
@@ -53,19 +53,12 @@ def _translate(api, render_window_id):
     return translate_scene(api.vtk_object_manager, render_window_id)
 
 
-def _find_pickable_nodes(state):
-    found = []
-
-    def visit(node):
-        if not isinstance(node, dict):
-            return
-        if node.get(pick.PICKABLE_STATE_KEY) is not None:
-            found.append(node)
-        for dep in node.get("dependencies") or []:
-            visit(dep)
-
-    visit(state)
-    return found
+def _find_pickable_nodes(nodes):
+    return [
+        node
+        for node in nodes.values()
+        if (node.get("blocks") or {}).get(pick.PICKABLE_STATE_KEY) is not None
+    ]
 
 
 def test_marked_mapper_stamps_the_pickable_block():
@@ -84,7 +77,7 @@ def test_marked_mapper_stamps_the_pickable_block():
     state = _translate(api, render_window_id)
 
     (node,) = _find_pickable_nodes(state)
-    block = node[pick.PICKABLE_STATE_KEY]
+    block = node["blocks"][pick.PICKABLE_STATE_KEY]
     # tags and ids round-trip verbatim; the fork never interprets them.
     assert block["tags"] == {"owner_id": "landmarks", "target_revision": 7}
     assert block["ids"] == ["a", "b"]
@@ -98,7 +91,7 @@ def test_retag_bumps_mtime_and_reaches_the_state():
 
     state = _translate(api, render_window_id)
     (node,) = _find_pickable_nodes(state)
-    assert node[pick.PICKABLE_STATE_KEY]["tags"] == {"rev": 1}
+    assert node["blocks"][pick.PICKABLE_STATE_KEY]["tags"] == {"rev": 1}
 
     # Re-marking with new tags bumps the mapper MTime — that is what makes the
     # push sync emit a delta (a patch op) for this mapper.
@@ -109,8 +102,9 @@ def test_retag_bumps_mtime_and_reaches_the_state():
     state = _translate(api, render_window_id)
     (node,) = _find_pickable_nodes(state)
     # Whole config is replaced, not merged.
-    assert node[pick.PICKABLE_STATE_KEY]["tags"] == {"rev": 2}
-    assert node[pick.PICKABLE_STATE_KEY]["ids"] is None
+    block = node["blocks"][pick.PICKABLE_STATE_KEY]
+    assert block["tags"] == {"rev": 2}
+    assert block["ids"] is None
 
 
 def test_clear_restores_plain_mapper_translation():

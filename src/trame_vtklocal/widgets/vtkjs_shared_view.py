@@ -21,9 +21,6 @@ class VtkJsSharedView(VtkJsBaseView):
 
         VtkJsSharedView._shared_views[self._view_id] = self
 
-    def update(self, extra=None):
-        self._update_view(extra=extra)
-
     def render_shared(self, options=None, **kwargs):
         self.server.js_call(self._ref, "renderShared", options or {})
 

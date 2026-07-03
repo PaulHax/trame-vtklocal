@@ -11,10 +11,6 @@ DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera"
 _MAPPER_TRANSLATION_SNAPSHOTS = weakref.WeakKeyDictionary()
 
 
-def wrap_id(obj_id):
-    return f"instance:${{{obj_id}}}"
-
-
 def mapper_input_algorithm(vtk_mapper, port_index=0, connection_index=0):
     if vtk_mapper is None:
         return None
@@ -215,45 +211,6 @@ def ensure_registered_vtk_object(object_manager, vtk_obj, clear_state_cache):
     return obj_id
 
 
-def prepare_mapper_translation(
-    vtkjs_type, vtk_mapper, object_manager, props, translate_ref, clear_state_cache
-):
-    if vtkjs_type != "vtkGlyph3DMapper":
-        return {}
-
-    translation = distance_to_camera_mapper_translation(vtk_mapper)
-    if not translation:
-        return {}
-
-    config = dict(translation["config"])
-    props["scaleArray"] = config["arrayName"]
-    input_data_object = translation["inputDataObject"]
-    input_id = ensure_registered_vtk_object(
-        object_manager, input_data_object, clear_state_cache
-    )
-    if not input_id:
-        return {}
-
-    config["inputDataObjectId"] = str(input_id)
-    input_dep, _should_emit_ref = translate_ref(input_id)
-    return {
-        "state": config,
-        "inputDataObjectId": input_id,
-        "dependencies": [input_dep] if input_dep else [],
-        "calls": [["setInputData", [wrap_id(input_id)]]],
-    }
-
-
-def update_mapper_props(vtkjs_type, vtk_mapper, props):
-    if vtkjs_type != "vtkGlyph3DMapper":
-        return None
-
-    config = distance_to_camera_mapper_config(vtk_mapper)
-    if config:
-        props["scaleArray"] = config["arrayName"]
-    return config
-
-
 def _iter_collection_items(collection):
     if collection is None:
         return
@@ -382,7 +339,3 @@ def bypass_distance_to_camera_for_serialization(vtk_root):
         for mapper, input_algorithm in reversed(rewired):
             _restore_mapper_primary_input_connection(mapper, input_algorithm)
 
-
-def update_mapper_state(state, config):
-    if config:
-        state[DISTANCE_TO_CAMERA_STATE_KEY] = config

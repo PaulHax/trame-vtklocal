@@ -27,21 +27,26 @@ class OracleScene:
 
 
 class _ObjectManagerApiNoAttachments:
-    """Minimal API stand-in that skips attachment serialization."""
+    """Minimal API stand-in that skips attachment serialization.
+
+    Exposes no ``addAttachment`` so publishers keep raw bytes in payloads —
+    tests inspect blob content directly. Blob GC delegates to the real
+    ``ObjectManagerAPI`` so targeted ``UnRegisterBlob`` behavior is exercised.
+    """
 
     def __init__(self):
         self._api = ObjectManagerAPI()
         self.vtk_object_manager = self._api.vtk_object_manager
         self._registered_push_views = {}
 
-    def register_push_view(self, rw_id, push_sync):
-        self._registered_push_views[int(rw_id)] = push_sync
+    def register_push_view(self, rw_id, publisher):
+        self._registered_push_views[int(rw_id)] = publisher
 
     def unregister_push_view(self, rw_id):
         self._registered_push_views.pop(int(rw_id), None)
 
-    def _convert_bytes_to_attachments(self, _state):
-        pass
+    def update_push_view_refs(self, rw_id, live_refs, refs_leaving):
+        return self._api.update_push_view_refs(rw_id, live_refs, refs_leaving)
 
 
 def set_float_array_values(vtk_array, values):

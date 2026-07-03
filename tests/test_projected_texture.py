@@ -4,7 +4,7 @@ import pytest
 
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.protocol import ObjectManagerAPI
-from trame_vtklocal.module.vtkjs_translator import translate_scene
+from trame_vtklocal.module.node_translator import translate_scene
 
 
 def _make_scene():
@@ -54,19 +54,8 @@ def _translate(api, rw, render_window_id):
     return translate_scene(api.vtk_object_manager, render_window_id)
 
 
-def _find_nodes(state, node_type):
-    found = []
-
-    def visit(node):
-        if not isinstance(node, dict):
-            return
-        if node.get("type") == node_type:
-            found.append(node)
-        for dep in node.get("dependencies") or []:
-            visit(dep)
-
-    visit(state)
-    return found
+def _find_nodes(nodes, node_type):
+    return [node for node in nodes.values() if node.get("type") == node_type]
 
 
 def test_marked_mapper_translates_with_type_and_props():
@@ -79,9 +68,11 @@ def test_marked_mapper_translates_with_type_and_props():
     state = _translate(api, rw, render_window_id)
 
     (node,) = _find_nodes(state, ptx.PROJECTED_TEXTURE_TYPE)
-    assert node["properties"]["textureKey"] == "video"
-    assert node["properties"]["mode"] == "homography"
-    assert "homography" not in node["properties"]
+    block = node["blocks"]["projectedTexture"]
+    assert block["textureKey"] == "video"
+    assert block["mode"] == "homography"
+    assert "homography" not in block
+    assert "textureKey" not in node.get("props", {})
 
 
 def test_matrix_updates_ride_the_mapper_state():
@@ -99,15 +90,15 @@ def test_matrix_updates_ride_the_mapper_state():
 
     state = _translate(api, rw, render_window_id)
     (node,) = _find_nodes(state, ptx.PROJECTED_TEXTURE_TYPE)
-    assert node["properties"]["worldToClip"] == matrix
-    assert node["properties"]["mode"] == "worldToClip"
+    assert node["blocks"]["projectedTexture"]["worldToClip"] == matrix
+    assert node["blocks"]["projectedTexture"]["mode"] == "worldToClip"
 
     ptx.set_projected_texture_matrix(
         mapper, homography=[1, 0, 0, 0, 1, 0, 0, 0, 1]
     )
     state = _translate(api, rw, render_window_id)
     (node,) = _find_nodes(state, ptx.PROJECTED_TEXTURE_TYPE)
-    assert node["properties"]["homography"] == [
+    assert node["blocks"]["projectedTexture"]["homography"] == [
         1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
     ]
     # Remarking (e.g. a mode flip) keeps previously set matrices.

@@ -36,6 +36,23 @@ REF_CELLS_PREFIX = "c2:"
 REF_VERSION_PREFIX = "v:"
 
 
+def ref_manager_hashes(refs):
+    """Raw object-manager blob hashes behind ``c:``/``c2:`` refs.
+
+    ``v:`` refs are versioned identities resolved from live VTK arrays — they
+    have no object-manager blob, so they contribute nothing here.
+    """
+    hashes = set()
+    for ref in refs or ():
+        if ref.startswith(REF_CONTENT_PREFIX):
+            hashes.add(ref[len(REF_CONTENT_PREFIX):])
+        elif ref.startswith(REF_CELLS_PREFIX):
+            connectivity_hash, offsets_hash = ref[len(REF_CELLS_PREFIX):].split(":", 1)
+            hashes.add(connectivity_hash)
+            hashes.add(offsets_hash)
+    return hashes
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers over node dicts
 # ---------------------------------------------------------------------------

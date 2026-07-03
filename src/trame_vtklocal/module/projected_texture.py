@@ -95,15 +95,3 @@ def projected_texture_config(mapper):
     config = _MAPPER_CONFIGS.get(mapper)
     return dict(config) if config else None
 
-
-def update_mapper_translation(vtk_mapper, result):
-    """Stamp a translated mapper node with its projected-texture identity."""
-    if vtk_mapper is None:
-        return result
-    config = _MAPPER_CONFIGS.get(vtk_mapper)
-    if not config:
-        return result
-
-    result["type"] = PROJECTED_TEXTURE_TYPE
-    result["properties"].update(config)
-    return result

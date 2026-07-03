@@ -11,6 +11,7 @@ from vtkmodules.vtkSerializationManager import vtkObjectManager
 from vtkmodules.vtkCommonCore import vtkVersion
 
 from trame_vtklocal.module import distance_to_camera as dtc
+from trame_vtklocal.store import ref_manager_hashes
 
 try:
     import zlib  # noqa
@@ -70,9 +71,10 @@ class ObjectManagerAPI(LinkProtocol):
         #     vtkLogger.VERBOSITY_WARNING
         # )
 
-    def register_push_view(self, rw_id, push_sync):
+    def register_push_view(self, rw_id, publisher):
+        """Register the ScenePublisher serving one render window."""
         rw_id = int(rw_id)
-        self._push_views[rw_id] = push_sync
+        self._push_views[rw_id] = publisher
         self._push_view_blob_hashes.setdefault(rw_id, set())
 
     def unregister_push_view(self, rw_id):
@@ -80,20 +82,22 @@ class ObjectManagerAPI(LinkProtocol):
         self._push_views.pop(rw_id, None)
         self._push_view_blob_hashes.pop(rw_id, None)
 
-    def update_push_view_blob_hashes(self, rw_id, live_hashes):
-        """Forget stale vtkObjectManager blobs known to be dead for a push view.
+    def update_push_view_refs(self, rw_id, live_refs, refs_leaving):
+        """Retire vtkObjectManager blobs behind store refs that left a view.
 
-        PushSync already knows the live object-manager hashes for each render
-        window after it publishes a state. Use that bounded live set to unregister
-        hashes that fell out of the view instead of running PruneUnusedBlobs(),
-        whose cost grows with the historical blob table.
+        The publisher hands the store's live ref set plus the exact refs that
+        left it this commit (including hot-array refs it minted but never
+        adopted). Refs strip to raw manager hashes (``v:`` refs have none);
+        hashes still tracked by another push view or referenced by any live
+        dependency of the shared object manager are protected before
+        ``UnRegisterBlob``. This replaces per-frame ``PruneUnusedBlobs()``,
+        whose sweep cost grows with the historical blob table.
         """
         rw_id = int(rw_id)
-        current = {str(hash_value) for hash_value in (live_hashes or set())}
-        previous = self._push_view_blob_hashes.get(rw_id, set())
+        current = ref_manager_hashes(live_refs)
         self._push_view_blob_hashes[rw_id] = current
 
-        stale = set(previous) - current
+        stale = ref_manager_hashes(refs_leaving) - current
         if not stale:
             return 0
 
@@ -164,10 +168,6 @@ class ObjectManagerAPI(LinkProtocol):
                 self._warned_missing_client_id = True
             return None
         return ws_server.last_active_client_id
-
-    def onClose(self, client_id):
-        for push_view in self._push_views.values():
-            push_view.drop_client(client_id)
 
     def register_widget(self, root_obj, dep_obj):
         self.vtk_object_manager.RegisterObject(dep_obj)
@@ -284,48 +284,20 @@ class ObjectManagerAPI(LinkProtocol):
         # print("get_hash", hash)
         return self.addAttachment(memoryview(self.vtk_object_manager.GetBlob(hash)))
 
-    @export_rpc("vtkjs.push.resync")
-    def push_resync(self, obj_id):
-        """Return full scene state in vtk.js format for the requesting client.
+    @export_rpc("scene.resync")
+    def scene_resync(self, rw_id, known_refs=None):
+        """Full scene snapshot for the requesting client (push sync v2).
 
-        Routes to the registered PushSync for this render window so resync
-        shares the same state path as normal push updates.
+        Returns ``{"v": 2, "rw", "seq", "root", "nodes", "blobs"}`` where
+        ``blobs`` inlines content only for live refs missing from the
+        client-reported ``known_refs``. The server keeps no per-client state:
+        the snapshot is a read of the publisher's scene store.
         """
-        rw_id = int(obj_id)
-        push_view = self._push_views.get(rw_id)
-        client_id = self.get_active_client_id()
-
-        if push_view is not None:
-            return push_view.client_resync(client_id)
-
-        raise RuntimeError(f"No registered push view for render window {rw_id}")
-
-    @export_rpc("vtkjs.push.dispose")
-    def push_dispose(self, obj_id):
-        """Drop per-client push state for a view being disposed on the client."""
-        rw_id = int(obj_id)
-        push_view = self._push_views.get(rw_id)
-        client_id = self.get_active_client_id()
-        if push_view is None or client_id is None:
-            return False
-        push_view.drop_client(client_id)
-        return True
-
-    def _convert_bytes_to_attachments(self, node):
-        if isinstance(node, list):
-            for item in node:
-                self._convert_bytes_to_attachments(item)
-            return
-        if not isinstance(node, dict):
-            return
-
-        if isinstance(node.get("content"), (bytes, memoryview)):
-            node["content"] = self.addAttachment(memoryview(node["content"]))
-
-        for key, value in node.items():
-            if key == "content":
-                continue
-            self._convert_bytes_to_attachments(value)
+        rw_id = int(rw_id)
+        publisher = self._push_views.get(rw_id)
+        if publisher is None:
+            raise RuntimeError(f"No registered publisher for render window {rw_id}")
+        return publisher.resync(known_refs, client_id=self.get_active_client_id())
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id):

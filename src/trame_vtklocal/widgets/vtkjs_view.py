@@ -13,7 +13,7 @@ class VtkJsLocalView(VtkJsBaseView):
         self._configure_sync_mode(sync_mode, extra_event_names=["camera"])
 
     def update(self, push_camera=False, **kwargs):
-        self._update_view()
+        self.sync()
 
         if push_camera:
             self._push_camera()

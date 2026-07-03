@@ -8,11 +8,10 @@ feature seams (pickable, distanceToCamera, projectedTexture) ride as opaque
 ``blocks``.
 
 The translation knowledge (class maps, skip lists, property fixups,
-field-array bridging, cell packing shape, userMatrix) is shared with the v1
-``vtkjs_translator`` — only the output shape differs. Callers own the
-render-window ``Render()`` / ``UpdateStatesFromObjects()`` / dtc-bypass
-choreography (as ``vtkjs_base`` does); the translator only reads
-object-manager state plus live objects.
+field-array bridging, cell packing shape, userMatrix) lives in the shared
+``vtkjs_translator`` tables. Callers own the render-window ``Render()`` /
+``UpdateStatesFromObjects()`` / dtc-bypass choreography (as the publisher
+does); the translator only reads object-manager state plus live objects.
 """
 
 from __future__ import annotations
@@ -85,7 +84,8 @@ _NON_NODE_CLASS_NAMES = COLLECTION_TYPES | {
 }
 
 
-def _is_node_class(class_name):
+def is_node_class(class_name):
+    """Whether objects of this VTK class become scene-store nodes."""
     if not class_name:
         return False
     if class_name in SKIP_TYPES or class_name in _NON_NODE_CLASS_NAMES:
@@ -187,7 +187,7 @@ def _ref_node_ids(reader, value):
             for item_id in _collection_item_ids(reader, ref_id)
             for node_id in _ref_node_ids(reader, {"Id": item_id})
         ]
-    if not _is_node_class(class_name):
+    if not is_node_class(class_name):
         return []
     return [ref_id]
 
@@ -348,7 +348,7 @@ def _translate_generic(reader, state, vtkjs_type):
 def _translate_node(reader, obj_id):
     state = reader.state(obj_id)
     class_name = state.get("ClassName", "")
-    if not _is_node_class(class_name):
+    if not is_node_class(class_name):
         return None
 
     vtkjs_type = map_class_name(class_name)

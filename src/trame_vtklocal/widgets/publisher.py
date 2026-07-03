@@ -31,7 +31,7 @@ import numpy as np
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.camera_authority import validate_camera_authority
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
-from trame_vtklocal.store import SceneStore
+from trame_vtklocal.store import SceneStore, ref_manager_hashes
 from trame_vtklocal.widgets.blob_payloads import (
     attach_binary,
     numpy_array_from_vtk_data,
@@ -460,7 +460,49 @@ class ScenePublisher:
                         for ref_id in _node_ref_ids(node)
                         if ref_id not in nodes and ref_id not in known
                     )
+                # Only nodes new to the store can cite a dropped blob: a node
+                # still in the store keeps its refs live, so its blobs are never
+                # UnRegisterBlob'd. A module-singleton glyph source that left on
+                # a landmark clear and re-enters on the rebuild returns with an
+                # unchanged VTK MTime, so the object manager serves a cached,
+                # blob-less state and never re-registers its content blob (a
+                # per-object UpdateStateFromObject is a no-op). A full-window
+                # re-serialize is the only call that re-registers it; the
+                # content-addressed refs are unchanged, so the built nodes stay
+                # valid — only the payloads they cite are repopulated.
+                new_nodes = [
+                    node for node_id, node in nodes.items() if node_id not in known
+                ]
+                if new_nodes and self._nodes_reference_dropped_blob(new_nodes):
+                    object_manager.UpdateStatesFromObjects([self._rw_id])
         return nodes
+
+    def _nodes_reference_dropped_blob(self, nodes):
+        """True if a built node cites a content/cell blob the manager dropped.
+
+        A declared-non-empty ``c:``/``c2:`` array whose object-manager blob is
+        gone (``None`` or zero bytes) would broadcast an empty payload and leave
+        the client caching an empty array. See :meth:`_translate_candidates`.
+        """
+        object_manager = self._object_manager
+
+        def _blob_empty(hash_value):
+            blob = object_manager.GetBlob(hash_value)
+            if blob is None:
+                return True
+            try:
+                return memoryview(blob).nbytes == 0
+            except (TypeError, ValueError):
+                return False
+
+        for node in nodes:
+            for entry in (node.get("arrays") or {}).values():
+                if not isinstance(entry, dict) or not entry.get("size"):
+                    continue
+                ref = entry.get("ref")
+                if ref and any(_blob_empty(h) for h in ref_manager_hashes([ref])):
+                    return True
+        return False
 
     def _live_hot_array(self, node_id):
         """Flat numpy view of the live points data array, or None."""

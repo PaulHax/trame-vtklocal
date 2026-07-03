@@ -602,6 +602,65 @@ def test_removed_dataset_blobs_are_unregistered():
         publisher.cleanup()
 
 
+def test_reentering_dataset_reregisters_its_dropped_blob():
+    """A dataset removed from the scene, then re-added through a fresh actor
+    over the same VTK object (unchanged MTime), must re-broadcast its content
+    blob with real bytes.
+
+    Regression: a landmark clear on a second video load tore down the shared
+    crosshair glyph source; removing it UnRegisterBlob'd its points blob, and
+    the object manager then served a cached, blob-less state on re-entry, so the
+    payload broadcast empty and the client cached an empty array — the glyph
+    stamped nothing and every landmark rendered invisible.
+    """
+    scene = make_basic_scene()
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        object_manager = scene.api.vtk_object_manager
+        polydata, _points = make_line_polydata()
+        actor, _mapper = add_actor(scene.handles["renderer"], polydata)
+        publisher.sync()
+        server.protocol.drain()
+
+        dataset_id = str(object_manager.GetId(polydata))
+        points_entry = publisher.store.get(dataset_id)["arrays"]["points"]
+        assert points_entry["ref"].startswith("c:")
+        expected_bytes = points_entry["size"] * 4  # float32 xyz
+        (hash_value,) = ref_manager_hashes([points_entry["ref"]])
+
+        # Removing the actor drops the dataset; its blob is UnRegisterBlob'd.
+        scene.handles["renderer"].RemoveActor(actor)
+        publisher.sync()
+        server.protocol.drain()
+        assert object_manager.GetBlob(hash_value) is None
+
+        # Re-add through a NEW actor over the SAME polydata (unchanged MTime).
+        add_actor(scene.handles["renderer"], polydata)
+        publisher.sync()
+        ((_topic, message),) = server.protocol.drain()
+
+        dataset_id = str(object_manager.GetId(polydata))
+        (upsert,) = [
+            op
+            for op in message["ops"]
+            if op["op"] == "upsert" and op["id"] == dataset_id
+        ]
+        entry = upsert["node"]["arrays"]["points"]
+        assert entry["ref"] in message["blobs"], (
+            "the re-entering dataset's points blob must be inlined"
+        )
+        payload = bytes(message["blobs"][entry["ref"]])
+        assert len(payload) == expected_bytes, (
+            f"re-entering dataset broadcast {len(payload)} bytes, expected "
+            f"{expected_bytes}; an empty payload leaves the client glyph invisible"
+        )
+    finally:
+        publisher.cleanup()
+
+
 def test_ref_manager_hashes_strips_namespaces():
     assert ref_manager_hashes(
         ["c:abc", "c2:conn:off", "v:5:points:3", "c:abc"]

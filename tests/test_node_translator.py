@@ -30,7 +30,7 @@ from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
-from trame_vtklocal.store import SceneStore
+from trame_vtklocal.store import SceneStore, ref_manager_hashes
 from trame_vtklocal.widgets.blob_payloads import pack_cell_array_payload
 
 
@@ -611,6 +611,40 @@ def test_named_attribute_arrays_carry_registrations():
 
     assert arrays["field:pointData:PointScalars"]["registration"] == "setScalars"
     assert arrays["field:cellData:CellScalars"]["registration"] == "setScalars"
+
+
+def test_field_array_blob_registration_caches_by_mtime():
+    """Unchanged attribute arrays keep their ref without re-registration;
+    a GC'd blob is re-registered on the next translate; a content change
+    (new MTime) mints a new content ref."""
+    scene = make_quad_scene()
+    object_manager = scene.api.vtk_object_manager
+    dataset_id = oid(scene, scene.handles["polydata"])
+    key = "field:pointData:TextureCoordinates"
+
+    first = translate(scene)[dataset_id]["arrays"][key]
+    (hash_value,) = ref_manager_hashes([first["ref"]])
+
+    # Unchanged array: same ref, blob live, registration still stamped.
+    second = translate(scene)[dataset_id]["arrays"][key]
+    assert second == first
+    assert object_manager.GetBlob(hash_value) is not None
+
+    # The blob GC retired the hash while the node was out of the scene: a
+    # cache hit alone must not serve a ref whose payload is gone.
+    object_manager.UnRegisterBlob(hash_value)
+    third = translate(scene)[dataset_id]["arrays"][key]
+    assert third["ref"] == first["ref"]
+    assert object_manager.GetBlob(hash_value) is not None
+
+    # Content change -> new MTime -> new content ref.
+    tcoords = scene.handles["tcoords"]
+    tcoords.SetComponent(0, 0, 0.25)
+    tcoords.Modified()
+    changed = translate(scene)[dataset_id]["arrays"][key]
+    assert changed["ref"] != first["ref"]
+    (changed_hash,) = ref_manager_hashes([changed["ref"]])
+    assert object_manager.GetBlob(changed_hash) is not None
 
 
 @pytest.mark.parametrize(

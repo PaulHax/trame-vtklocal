@@ -11,6 +11,7 @@ new output shape.
 from __future__ import annotations
 
 import hashlib
+import weakref
 
 import numpy as np
 from vtkmodules.util.numpy_support import numpy_to_vtk
@@ -91,10 +92,41 @@ def _topology_entry(reader, ref_value, spec):
     return entry
 
 
+# array -> (mtime, entry). MTime covers content and name; a changed array
+# always lands on a new MTime, so a hit means the md5 and the registered
+# blob are both still valid for these bytes.
+_FIELD_BLOB_CACHE = weakref.WeakKeyDictionary()
+
+
+def _blob_present(object_manager, hash_value):
+    try:
+        blob = object_manager.GetBlob(hash_value)
+    except (RuntimeError, TypeError, ValueError):
+        return False
+    if blob is None:
+        return False
+    try:
+        return memoryview(blob).nbytes > 0
+    except (TypeError, ValueError):
+        return True
+
+
 def _register_field_array_blob(object_manager, array, location):
     # vtkObjectManager doesn't serialize vtkDataSetAttributes arrays, so
     # bridge them by hand: md5-address the raw bytes and register the blob
-    # under that hash (same gap-bridging as v1).
+    # under that hash (same gap-bridging as v1). Re-hashing + re-registering
+    # every translate is O(bytes) per attribute array, so the entry is cached
+    # by MTime; the blob's presence is re-checked on a hit because the blob
+    # GC may have retired it while the owning node was out of the scene.
+    cached = _FIELD_BLOB_CACHE.get(array)
+    mtime = array.GetMTime()
+    if cached is not None and cached[0] == mtime:
+        entry = dict(cached[1])
+        entry["location"] = location
+        hash_value = entry["ref"][len(REF_CONTENT_PREFIX):]
+        if _blob_present(object_manager, hash_value):
+            return entry
+
     flat = np.array(array).ravel()
     raw_bytes = flat.view(np.uint8)
     content_hash = hashlib.md5(raw_bytes).hexdigest()
@@ -102,7 +134,7 @@ def _register_field_array_blob(object_manager, array, location):
     object_manager.RegisterBlob(content_hash, numpy_to_vtk(raw_bytes, deep=True))
 
     components = array.GetNumberOfComponents()
-    return {
+    entry = {
         "ref": REF_CONTENT_PREFIX + content_hash,
         "dataType": VTK_DATATYPE_MAP.get(array.GetDataType(), "Float32Array"),
         "size": array.GetNumberOfTuples() * components,
@@ -110,6 +142,10 @@ def _register_field_array_blob(object_manager, array, location):
         "name": array.GetName() or "",
         "location": location,
     }
+    # Cache a private copy: callers stamp "registration" onto the returned
+    # entry, which must not leak into the cache.
+    _FIELD_BLOB_CACHE[array] = (mtime, dict(entry))
+    return entry
 
 
 def _field_data_arrays(reader, dataset_id):

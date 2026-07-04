@@ -107,6 +107,22 @@ def test_retag_bumps_mtime_and_reaches_the_state():
     assert block["ids"] is None
 
 
+def test_retag_with_unchanged_config_is_a_no_op():
+    _api, _rw, mapper, _id = _make_scene()
+    pick.make_pickable(
+        mapper, tags={"owner_id": "landmarks"}, ids=["a", "b"], grab_px=36.0
+    )
+
+    # Callers re-tag on every update (e.g. once per drag move); an identical
+    # config must not bump the MTime, or every move re-serializes the mapper.
+    mtime_before = mapper.GetMTime()
+    returned = pick.make_pickable(
+        mapper, tags={"owner_id": "landmarks"}, ids=["a", "b"], grab_px=36.0
+    )
+    assert mapper.GetMTime() == mtime_before
+    assert returned == pick.pickable_config(mapper)
+
+
 def test_clear_restores_plain_mapper_translation():
     api, _rw, mapper, render_window_id = _make_scene()
     pick.make_pickable(mapper, grab_px=10.0)

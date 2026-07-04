@@ -30,8 +30,10 @@ def make_pickable(mapper, tags=None, ids=None, grab_px=None, priority=0):
     ``tags`` (dict) and ``ids`` (list, one entry per glyph point) are opaque to
     the fork and round-tripped verbatim. ``grab_px`` is the CSS-pixel grab
     radius; ``priority`` breaks ties between overlapping pickables (higher
-    wins). Re-calling replaces the whole config and bumps the mapper's MTime so
-    the next push re-serializes it (reaching the client as a patch op).
+    wins). Re-calling with a changed config replaces it and bumps the mapper's
+    MTime so the next push re-serializes it (reaching the client as a patch
+    op); an unchanged config is a no-op, so callers can re-tag on every update
+    without forcing spurious re-serialization.
     """
     grab = float(grab_px) if grab_px is not None else float("nan")
     if not math.isfinite(grab) or grab <= 0:
@@ -43,8 +45,9 @@ def make_pickable(mapper, tags=None, ids=None, grab_px=None, priority=0):
         "grabPx": grab,
         "priority": int(priority),
     }
-    _PICKABLE_CONFIGS[mapper] = config
-    mapper.Modified()
+    if _PICKABLE_CONFIGS.get(mapper) != config:
+        _PICKABLE_CONFIGS[mapper] = config
+        mapper.Modified()
     return _copy_config(config)
 
 

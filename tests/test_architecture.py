@@ -77,8 +77,8 @@ DEFAULT_LINE_BUDGET = 400
 # almost always to split it.
 SIZE_BUDGETS = {
     "module/vtkjs_translator.py": 420,   # pure translation tables mirrored by the generated JS schema; shrinks only if tables shrink
-    "widgets/dirty_tracker.py": 500,     # one concern (dirty candidates) but three observer graphs: objects, dataset children, pipeline producers
-    "widgets/publisher.py": 500,         # publish tick + wire encoding + resync; hot arrays and blob payloads extracted; next seam is object-manager choreography
+    "widgets/dirty_tracker.py": 510,     # one concern (dirty candidates) but three observer graphs: objects, dataset children, pipeline producers — plus the dtc rewire-noise filter
+    "widgets/publisher.py": 540,         # publish tick + wire encoding + resync + dropped-blob re-entry guard; hot arrays and blob payloads extracted; next seam is object-manager choreography
 }
 
 

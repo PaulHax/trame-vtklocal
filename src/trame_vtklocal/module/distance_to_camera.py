@@ -9,6 +9,42 @@ from vtkmodules.vtkCommonDataModel import vtkDataObject
 DISTANCE_TO_CAMERA_STATE_KEY = "distanceToCamera"
 DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera"
 _MAPPER_TRANSLATION_SNAPSHOTS = weakref.WeakKeyDictionary()
+_REWIRE_DEPTH = 0
+_POST_REWIRE_MTIMES = weakref.WeakKeyDictionary()
+
+
+def serialization_rewire_active():
+    """True while the bypass is rewiring mapper inputs (enter/exit loops).
+
+    The rewires fire ``ModifiedEvent`` on every dtc-fed mapper even though
+    they are semantic no-ops (data in, connection restored). Dirty trackers
+    consult this to drop that noise at the source, no matter which layer runs
+    the bypass — publisher, tracker, protocol blob GC, or widget init.
+    """
+    return _REWIRE_DEPTH > 0
+
+
+def mtime_is_rewire_noise(vtk_obj, mtime):
+    """True when ``mtime`` is exactly the bypass's own post-restore bump.
+
+    Lets MTime-based change detection (:meth:`DirtyTracker.sweep`) tell "the
+    bypass touched this mapper" apart from a real modification: anything real
+    after the bypass yields a strictly larger MTime.
+    """
+    try:
+        return _POST_REWIRE_MTIMES.get(vtk_obj) == mtime
+    except TypeError:
+        return False
+
+
+@contextmanager
+def _rewire_scope():
+    global _REWIRE_DEPTH
+    _REWIRE_DEPTH += 1
+    try:
+        yield
+    finally:
+        _REWIRE_DEPTH -= 1
 
 
 def mapper_input_algorithm(vtk_mapper, port_index=0, connection_index=0):
@@ -325,17 +361,21 @@ def _restore_mapper_primary_input_connection(mapper, input_algorithm):
 @contextmanager
 def bypass_distance_to_camera_for_serialization(vtk_root):
     rewired = []
-    for mapper in iter_scene_mappers(vtk_root):
-        input_algorithm, input_data = mapper_distance_to_camera_input(mapper)
-        if input_algorithm is None or input_data is None:
-            continue
-        _capture_mapper_translation_snapshot(mapper, input_data)
-        if _set_mapper_primary_input_data(mapper, input_data):
-            rewired.append((mapper, input_algorithm))
+    with _rewire_scope():
+        for mapper in iter_scene_mappers(vtk_root):
+            input_algorithm, input_data = mapper_distance_to_camera_input(mapper)
+            if input_algorithm is None or input_data is None:
+                continue
+            _capture_mapper_translation_snapshot(mapper, input_data)
+            if _set_mapper_primary_input_data(mapper, input_data):
+                rewired.append((mapper, input_algorithm))
 
     try:
         yield
     finally:
-        for mapper, input_algorithm in reversed(rewired):
-            _restore_mapper_primary_input_connection(mapper, input_algorithm)
+        with _rewire_scope():
+            for mapper, input_algorithm in reversed(rewired):
+                _restore_mapper_primary_input_connection(mapper, input_algorithm)
+                if hasattr(mapper, "GetMTime"):
+                    _POST_REWIRE_MTIMES[mapper] = mapper.GetMTime()
 

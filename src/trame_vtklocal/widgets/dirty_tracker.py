@@ -170,7 +170,14 @@ class DirtyTracker:
     def _mark_dirty(self, object_id):
         # Observers can fire during interpreter teardown when self.__dict__ is
         # already cleared; default-True _disposed makes that a silent no-op.
-        if getattr(self, "_disposed", True) or self._suppressed:
+        # The dtc rewire check drops the bypass's semantic-no-op input swaps,
+        # which fire ModifiedEvent from every layer that serializes (including
+        # ones with no handle on this tracker, e.g. the protocol blob GC).
+        if (
+            getattr(self, "_disposed", True)
+            or self._suppressed
+            or dtc.serialization_rewire_active()
+        ):
             return
         self._dirty_ids.add(str(object_id))
         if self._on_dirty is not None:
@@ -481,6 +488,11 @@ class DirtyTracker:
             mtime = vtk_obj.GetMTime()
             if mtime != previous:
                 self._mtimes[object_id] = mtime
+                # The bypass's input rewires advance mapper MTimes without
+                # changing anything real; a genuine change after the bypass
+                # always lands on a strictly larger MTime.
+                if dtc.mtime_is_rewire_noise(vtk_obj, mtime):
+                    continue
                 self._dirty_ids.add(object_id)
 
     def cleanup(self):

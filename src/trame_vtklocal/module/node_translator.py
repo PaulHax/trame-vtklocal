@@ -366,13 +366,23 @@ def _translate_node(reader, obj_id):
     return _translate_generic(reader, state, vtkjs_type)
 
 
-def translate_object(object_manager, obj_id, camera_authority="server"):
+def scene_reader(object_manager, camera_authority="server"):
+    """A cached state reader, shareable across several ``translate_object``
+    calls in one pass so referenced states are JSON-parsed once."""
+    return _Reader(object_manager, camera_authority)
+
+
+def translate_object(object_manager, obj_id, camera_authority="server", reader=None):
     """Translate one object into its flat node.
 
     Returns ``None`` for objects that never become nodes (SKIP_TYPES,
-    collections, data containers, client-authority cameras).
+    collections, data containers, client-authority cameras). Pass a shared
+    ``reader`` (from :func:`scene_reader`) when translating several objects
+    from the same refreshed states.
     """
-    return _translate_node(_Reader(object_manager, camera_authority), int(obj_id))
+    if reader is None:
+        reader = _Reader(object_manager, camera_authority)
+    return _translate_node(reader, int(obj_id))
 
 
 def translate_scene(object_manager, root_id, camera_authority="server"):

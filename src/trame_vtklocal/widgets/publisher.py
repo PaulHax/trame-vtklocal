@@ -30,7 +30,11 @@ import numpy as np
 
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.camera_authority import validate_camera_authority
-from trame_vtklocal.module.node_translator import translate_object, translate_scene
+from trame_vtklocal.module.node_translator import (
+    scene_reader,
+    translate_object,
+    translate_scene,
+)
 from trame_vtklocal.store import SceneStore, ref_manager_hashes
 from trame_vtklocal.widgets.blob_payloads import (
     attach_binary,
@@ -302,9 +306,15 @@ class ScenePublisher:
         self._after_publish(batch, result)
 
     def _commit_batch(self, batch):
-        self._update_pipeline_producers(batch.producers)
-        self._refresh_object_states(batch.refresh_ids)
-        nodes = self._translate_candidates(batch.candidates)
+        # One serialization scope for the whole tick: the dtc bypass walks
+        # every renderer's prop tree and rewires every dtc-fed mapper, so
+        # entering it once (not per step) halves that walk and the rewire
+        # MTime churn. Every VTK touch below is serialization work.
+        with self._tracker_suppress():
+            with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
+                self._update_pipeline_producers(batch.producers)
+                self._refresh_object_states(batch.refresh_ids)
+                nodes = self._translate_candidates(batch.candidates)
         tx = self._store.transact()
         for node_id, node in nodes.items():
             self._hot_arrays.apply(node_id, node, self._store.get(node_id), tx)
@@ -387,6 +397,13 @@ class ScenePublisher:
         self._prune_object_manager()
 
     def _refresh_object_states(self, refresh_ids):
+        """Refresh serialized states (caller holds the serialization scope).
+
+        UpdateStateFromObject can fire ModifiedEvent on observed objects —
+        the commit-wide suppression swallows those re-entrant marks.
+        Refreshing a state re-serializes its dependencies, which registers
+        structurally-added objects with the object manager.
+        """
         object_manager = self._object_manager
         manager_ids = set()
         for object_id in refresh_ids:
@@ -394,28 +411,19 @@ class ScenePublisher:
                 manager_ids.add(int(str(object_id)))
             except (TypeError, ValueError):
                 continue
-        # UpdateStateFromObject can fire ModifiedEvent on observed objects;
-        # suppress those re-entrant marks so they don't re-dirty ids we just
-        # consumed. Refreshing a state re-serializes its dependencies, which
-        # registers structurally-added objects with the object manager.
-        with self._tracker_suppress():
-            with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                for object_id in sorted(manager_ids):
-                    object_manager.UpdateStateFromObject(object_id)
+        for object_id in sorted(manager_ids):
+            object_manager.UpdateStateFromObject(object_id)
         self._prune_object_manager()
 
     def _update_pipeline_producers(self, producers):
-        if not producers:
-            return
-        # producer.Update() can fire ModifiedEvent downstream, which would
-        # re-add ids the tick just consumed.
-        with self._tracker_suppress():
-            for producer in producers.values():
-                if dtc.is_distance_to_camera_algorithm(producer):
-                    continue
-                update = getattr(producer, "Update", None)
-                if update is not None:
-                    update()
+        # producer.Update() can fire ModifiedEvent downstream; the
+        # commit-wide suppression keeps those out of the next tick.
+        for producer in producers.values():
+            if dtc.is_distance_to_camera_algorithm(producer):
+                continue
+            update = getattr(producer, "Update", None)
+            if update is not None:
+                update()
 
     def _tracker_suppress(self):
         return self._tracker.suppress()
@@ -434,47 +442,46 @@ class ScenePublisher:
                 )
 
     def _translate_candidates(self, candidate_ids):
-        """Candidates plus transitively referenced ids missing from the store."""
+        """Candidates plus transitively referenced ids missing from the store
+        (caller holds the serialization scope)."""
         object_manager = self._object_manager
         known = self._store.node_ids()
         nodes = {}
         pending = [str(object_id) for object_id in candidate_ids]
-        with self._tracker_suppress():
-            with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                while pending:
-                    node_id = pending.pop()
-                    if node_id in nodes:
-                        continue
-                    if object_manager.GetObjectAtId(int(node_id)) is None:
-                        continue
-                    node = translate_object(
-                        object_manager,
-                        int(node_id),
-                        camera_authority=self._camera_authority,
-                    )
-                    if node is None:
-                        continue
-                    nodes[node_id] = node
-                    pending.extend(
-                        ref_id
-                        for ref_id in _node_ref_ids(node)
-                        if ref_id not in nodes and ref_id not in known
-                    )
-                # Only nodes new to the store can cite a dropped blob: a node
-                # still in the store keeps its refs live, so its blobs are never
-                # UnRegisterBlob'd. A module-singleton glyph source that left on
-                # a landmark clear and re-enters on the rebuild returns with an
-                # unchanged VTK MTime, so the object manager serves a cached,
-                # blob-less state and never re-registers its content blob (a
-                # per-object UpdateStateFromObject is a no-op). A full-window
-                # re-serialize is the only call that re-registers it; the
-                # content-addressed refs are unchanged, so the built nodes stay
-                # valid — only the payloads they cite are repopulated.
-                new_nodes = [
-                    node for node_id, node in nodes.items() if node_id not in known
-                ]
-                if new_nodes and self._nodes_reference_dropped_blob(new_nodes):
-                    object_manager.UpdateStatesFromObjects([self._rw_id])
+        reader = scene_reader(object_manager, self._camera_authority)
+        while pending:
+            node_id = pending.pop()
+            if node_id in nodes:
+                continue
+            if object_manager.GetObjectAtId(int(node_id)) is None:
+                continue
+            node = translate_object(
+                object_manager,
+                int(node_id),
+                camera_authority=self._camera_authority,
+                reader=reader,
+            )
+            if node is None:
+                continue
+            nodes[node_id] = node
+            pending.extend(
+                ref_id
+                for ref_id in _node_ref_ids(node)
+                if ref_id not in nodes and ref_id not in known
+            )
+        # Only nodes new to the store can cite a dropped blob: a node
+        # still in the store keeps its refs live, so its blobs are never
+        # UnRegisterBlob'd. A module-singleton glyph source that left on
+        # a landmark clear and re-enters on the rebuild returns with an
+        # unchanged VTK MTime, so the object manager serves a cached,
+        # blob-less state and never re-registers its content blob (a
+        # per-object UpdateStateFromObject is a no-op). A full-window
+        # re-serialize is the only call that re-registers it; the
+        # content-addressed refs are unchanged, so the built nodes stay
+        # valid — only the payloads they cite are repopulated.
+        new_nodes = [node for node_id, node in nodes.items() if node_id not in known]
+        if new_nodes and self._nodes_reference_dropped_blob(new_nodes):
+            object_manager.UpdateStatesFromObjects([self._rw_id])
         return nodes
 
     def _nodes_reference_dropped_blob(self, nodes):

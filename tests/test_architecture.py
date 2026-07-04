@@ -76,6 +76,8 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
+    "module/node_translator.py": 415,    # one translator for every node kind + the shared-reader seam; next seam is splitting mapper translation
+    "module/protocol.py": 450,           # wslink RPC surface + push-view blob registry with debounced GC; next seam is extracting the blob registry
     "module/vtkjs_translator.py": 420,   # pure translation tables mirrored by the generated JS schema; shrinks only if tables shrink
     "widgets/dirty_tracker.py": 510,     # one concern (dirty candidates) but three observer graphs: objects, dataset children, pipeline producers — plus the dtc rewire-noise filter
     "widgets/publisher.py": 540,         # publish tick + wire encoding + resync + dropped-blob re-entry guard; hot arrays and blob payloads extracted; next seam is object-manager choreography

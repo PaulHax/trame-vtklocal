@@ -1,3 +1,4 @@
+import asyncio
 import zipfile
 import json
 import logging
@@ -22,6 +23,12 @@ except ImportError:
 
 VTK_VERSION = vtkVersion()
 logger = logging.getLogger(__name__)
+# Stale blobs are retired in batches: verifying a hash is truly dead walks the
+# whole shared object manager (GetAllDependencies("") + GetBlobHashes), so a
+# per-commit sweep would pay a full-scene walk on every landmark-drag move.
+# Deferring only delays memory reclamation; protection is re-derived at flush
+# time, so a hash that came back alive meanwhile is simply kept.
+BLOB_GC_DEBOUNCE_SECONDS = 2.0
 API_NO_IDS_UPDATE = (
     VTK_VERSION.GetVTKMajorVersion() <= 9
     and VTK_VERSION.GetVTKMinorVersion() <= 4
@@ -58,6 +65,8 @@ class ObjectManagerAPI(LinkProtocol):
         self._push_camera = False
         self._push_views = {}
         self._push_view_blob_hashes = {}
+        self._pending_stale_blob_hashes = set()
+        self._blob_gc_handle = None
         self._warned_missing_client_id = False
 
         self._debug_state = False
@@ -83,21 +92,56 @@ class ObjectManagerAPI(LinkProtocol):
         self._push_view_blob_hashes.pop(rw_id, None)
 
     def update_push_view_refs(self, rw_id, live_refs, refs_leaving):
-        """Retire vtkObjectManager blobs behind store refs that left a view.
+        """Queue retirement of vtkObjectManager blobs behind refs that left.
 
         The publisher hands the store's live ref set plus the exact refs that
         left it this commit (including hot-array refs it minted but never
         adopted). Refs strip to raw manager hashes (``v:`` refs have none);
-        hashes still tracked by another push view or referenced by any live
-        dependency of the shared object manager are protected before
-        ``UnRegisterBlob``. This replaces per-frame ``PruneUnusedBlobs()``,
-        whose sweep cost grows with the historical blob table.
+        the stale hashes are batched and retired by a debounced
+        :meth:`flush_stale_blobs`. This replaces per-frame
+        ``PruneUnusedBlobs()``, whose sweep cost grows with the historical
+        blob table.
         """
         rw_id = int(rw_id)
         current = ref_manager_hashes(live_refs)
         self._push_view_blob_hashes[rw_id] = current
 
         stale = ref_manager_hashes(refs_leaving) - current
+        if not stale:
+            return
+        self._pending_stale_blob_hashes |= stale
+        self._schedule_blob_gc()
+
+    def _schedule_blob_gc(self):
+        if self._blob_gc_handle is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop (sync tests, teardown): an explicit flush_stale_blobs()
+            # or the next scheduling attempt under a loop flushes.
+            return
+        self._blob_gc_handle = loop.call_later(
+            BLOB_GC_DEBOUNCE_SECONDS, self._run_scheduled_blob_gc
+        )
+
+    def _run_scheduled_blob_gc(self):
+        self._blob_gc_handle = None
+        self.flush_stale_blobs()
+
+    def flush_stale_blobs(self):
+        """UnRegister pending stale blobs not protected at flush time.
+
+        Hashes still tracked by any push view or referenced by any live
+        dependency of the shared object manager are kept — protection is
+        computed here, not at queue time, so deferral can never retire a
+        blob that came back alive.
+        """
+        if self._blob_gc_handle is not None:
+            self._blob_gc_handle.cancel()
+            self._blob_gc_handle = None
+        stale = self._pending_stale_blob_hashes
+        self._pending_stale_blob_hashes = set()
         if not stale:
             return 0
 

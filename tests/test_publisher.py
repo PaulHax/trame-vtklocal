@@ -252,9 +252,11 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
     assert object_manager.GetBlob(orphan_hash) is not None
 
     # The next patch mints a new fresh hash; the previous orphan's blob is
-    # no longer referenced by any state and gets unregistered.
+    # no longer referenced by any state and is queued for the debounced GC.
     _touch_point(scene, 43, (2.0, 2.0, 2.0))
     publisher.sync()
+    assert object_manager.GetBlob(orphan_hash) is not None  # retire is deferred
+    scene.api.flush_stale_blobs()
     assert object_manager.GetBlob(orphan_hash) is None
 
 
@@ -595,6 +597,7 @@ def test_removed_dataset_blobs_are_unregistered():
 
         scene.handles["renderer"].RemoveActor(actor2)
         publisher.sync()
+        scene.api.flush_stale_blobs()
 
         for hash_value in hashes:
             assert object_manager.GetBlob(hash_value) is None
@@ -631,10 +634,12 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
         expected_bytes = points_entry["size"] * 4  # float32 xyz
         (hash_value,) = ref_manager_hashes([points_entry["ref"]])
 
-        # Removing the actor drops the dataset; its blob is UnRegisterBlob'd.
+        # Removing the actor drops the dataset; the flushed GC UnRegisterBlob's
+        # its blob.
         scene.handles["renderer"].RemoveActor(actor)
         publisher.sync()
         server.protocol.drain()
+        scene.api.flush_stale_blobs()
         assert object_manager.GetBlob(hash_value) is None
 
         # Re-add through a NEW actor over the SAME polydata (unchanged MTime).
@@ -657,6 +662,36 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
             f"re-entering dataset broadcast {len(payload)} bytes, expected "
             f"{expected_bytes}; an empty payload leaves the client glyph invisible"
         )
+    finally:
+        publisher.cleanup()
+
+
+def test_deferred_blob_gc_keeps_hashes_that_return_alive():
+    """Protection is computed at flush time: a hash queued as stale that a
+    later commit brings back into the live set must survive the flush."""
+    scene = make_basic_scene()
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        object_manager = scene.api.vtk_object_manager
+        polydata, _points = make_line_polydata()
+        actor, _mapper = add_actor(scene.handles["renderer"], polydata)
+        publisher.sync()
+
+        dataset_id = str(object_manager.GetId(polydata))
+        points_entry = publisher.store.get(dataset_id)["arrays"]["points"]
+        (hash_value,) = ref_manager_hashes([points_entry["ref"]])
+
+        scene.handles["renderer"].RemoveActor(actor)
+        publisher.sync()  # hash queued for the deferred GC
+
+        add_actor(scene.handles["renderer"], polydata)
+        publisher.sync()  # hash re-enters the live set before the flush
+
+        scene.api.flush_stale_blobs()
+        assert object_manager.GetBlob(hash_value) is not None
     finally:
         publisher.cleanup()
 

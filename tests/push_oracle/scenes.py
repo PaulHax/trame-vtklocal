@@ -48,6 +48,9 @@ class _ObjectManagerApiNoAttachments:
     def update_push_view_refs(self, rw_id, live_refs, refs_leaving):
         return self._api.update_push_view_refs(rw_id, live_refs, refs_leaving)
 
+    def flush_stale_blobs(self):
+        return self._api.flush_stale_blobs()
+
 
 def set_float_array_values(vtk_array, values):
     vtk_array.SetNumberOfTuples(len(values))

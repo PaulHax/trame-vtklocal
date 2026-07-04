@@ -100,10 +100,16 @@ export function createSceneEngine({
 
   function applyOpsMessage(message) {
     ingestBlobs(message.blobs);
-    reconciler.applyMessage(message.ops || [], mirror, cache);
-    mirror.gcBlobCache(cache);
+    const ops = message.ops || [];
+    reconciler.applyMessage(ops, mirror, cache);
+    // patchArray re-points its cache slot in place, so only upserts and
+    // removes can strand a cached blob — skip the full live-ref walk for
+    // the pure-patch messages a drag emits every move.
+    if (ops.some((op) => op.op !== "patchArray")) {
+      mirror.gcBlobCache(cache);
+    }
     mySeq = message.seq;
-    recordLastOp(message.ops);
+    recordLastOp(ops);
     dispatchCommands(message.commands);
     callbacks.onApplied?.(message);
   }

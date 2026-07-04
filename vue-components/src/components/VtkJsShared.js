@@ -4,13 +4,13 @@ import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Glyph";
 
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
-import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
+import vtkExternalContextRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/ExternalContextRenderWindow";
 
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
 import { registerView, unregisterView } from "./viewRegistry";
-import { applySharedRenderPolicy } from "./sharedRenderPolicy";
+import { applyExternalRenderPolicy } from "./externalRenderPolicy";
 
 export default {
   emits: [
@@ -47,8 +47,8 @@ export default {
     const trame = inject("trame");
     const client = props.wsClient || trame?.client;
 
-    let sharedRenderWindow = null;
-    let sharedContextGl = null;
+    let externalRenderWindow = null;
+    let externalContextGl = null;
     let renderWindow = null;
     let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
@@ -59,7 +59,7 @@ export default {
         return;
       }
       scene.updateDistanceToCameraGlyphs();
-      sharedRenderWindow?.renderShared?.();
+      externalRenderWindow?.renderExternal?.();
     }
 
     const scene = useSceneSync({
@@ -84,16 +84,16 @@ export default {
       }
     }
 
-    function initializeForSharedContext(canvas, gl) {
-      sharedContextGl = gl;
+    function initializeForExternalContext(canvas, gl) {
+      externalContextGl = gl;
 
-      sharedRenderWindow = vtkSharedRenderWindow.createFromContext(canvas, gl);
-      sharedRenderWindow?.setRenderCallback?.(
+      externalRenderWindow = vtkExternalContextRenderWindow.createFromContext(canvas, gl);
+      externalRenderWindow?.setRenderCallback?.(
         renderRequestedCallbackWithDistanceToCamera,
       );
 
       renderWindow = vtkRenderWindow.newInstance();
-      renderWindow.addView(sharedRenderWindow);
+      renderWindow.addView(externalRenderWindow);
 
       scene.initialize({
         contextName: `vtkjs-shared-${props.renderWindow}`,
@@ -107,14 +107,25 @@ export default {
       });
     }
 
-    // options: { clearDepth = true } — the shared-buffer depth-clear policy
-    // the host needs around the render (see sharedRenderPolicy.js).
-    function renderShared(options = {}) {
+    // options:
+    //   clearDepth = true — the shared-buffer depth-clear policy the host
+    //     needs around the render (see externalRenderPolicy.js).
+    //   framebuffer / drawBuffers — host-declared GL state, forwarded to
+    //     vtk.js so the render issues no gl.getParameter readbacks (each one
+    //     is a synchronous CPU/GPU stall). Omit to let vtk.js query.
+    function renderExternal(options = {}) {
       scene.updateDistanceToCameraGlyphs();
-      applySharedRenderPolicy(
-        sharedContextGl,
-        () => sharedRenderWindow?.renderShared?.(),
-        options,
+      const hostState =
+        "framebuffer" in options
+          ? {
+              framebuffer: options.framebuffer,
+              drawBuffers: options.drawBuffers,
+            }
+          : undefined;
+      applyExternalRenderPolicy(
+        externalContextGl,
+        () => externalRenderWindow?.renderExternal?.(hostState),
+        { clearDepth: options.clearDepth },
       );
     }
 
@@ -126,7 +137,7 @@ export default {
               callback,
             )
           : null;
-      sharedRenderWindow?.setRenderCallback?.(
+      externalRenderWindow?.setRenderCallback?.(
         renderRequestedCallbackWithDistanceToCamera,
       );
     }
@@ -139,7 +150,7 @@ export default {
     // returned from setup, so onSceneApplied/getInstance/render methods keep
     // working without unwrapping the Vue component ref.
     const viewApi = {
-      initializeForSharedContext,
+      initializeForExternalContext,
       update: scene.update,
       requestResync: scene.requestResync,
       getQueueLength: scene.getQueueLength,
@@ -152,7 +163,7 @@ export default {
       // Diagnostics / oracle support (read-only, not general app integration).
       getSyncDiagnostics: scene.getSyncDiagnostics,
       getAppliedSceneState: scene.getAppliedSceneState,
-      renderShared,
+      renderExternal,
       onRenderRequested,
       onSceneApplied: scene.onSceneApplied,
       onCommand: scene.onCommand,
@@ -183,9 +194,9 @@ export default {
       repaintCallback = null;
       scene.cleanup();
 
-      sharedRenderWindow?.delete?.();
-      sharedRenderWindow = null;
-      sharedContextGl = null;
+      externalRenderWindow?.delete?.();
+      externalRenderWindow = null;
+      externalContextGl = null;
 
       renderWindow?.delete?.();
       renderWindow = null;

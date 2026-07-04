@@ -131,9 +131,9 @@ SHARED_INIT_JS = r"""
         if (initialized) return;
 
         const ref = window.trame?.refs?.vtkView;
-        vtkView = ref?.initializeForSharedContext ? ref : ref?.$.exposed || ref;
+        vtkView = ref?.initializeForExternalContext ? ref : ref?.$.exposed || ref;
 
-        if (!vtkView?.initializeForSharedContext) {
+        if (!vtkView?.initializeForExternalContext) {
             setTimeout(window.initSharedContext, 100);
             return;
         }
@@ -144,9 +144,9 @@ SHARED_INIT_JS = r"""
             preserveDrawingBuffer: true,
             antialias: false,
         });
-        vtkView.initializeForSharedContext(canvas, gl);
+        vtkView.initializeForExternalContext(canvas, gl);
         vtkView.onRenderRequested(function() {
-            vtkView.renderShared({});
+            vtkView.renderExternal({});
         });
     };
 

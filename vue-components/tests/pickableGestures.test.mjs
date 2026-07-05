@@ -159,6 +159,53 @@ test("startTargetDrag runs the full lifecycle in order with a self-contained pay
   assert.equal(h.windowRef.hasListener("pointercancel"), false);
 });
 
+test("shouldGrab can decline a hit so the press falls through to pan", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h);
+  const seen = [];
+  // App policy: only grab while the Alt modifier is held.
+  g.setShouldGrab((pick, event) => {
+    seen.push({ pick, altKey: !!event.altKey });
+    return !!event.altKey;
+  });
+
+  // No modifier: the pick is found but declined, so no drag starts, nothing is
+  // captured, and no event is emitted — the press is free to pan.
+  const plain = pointerEvent(100, 50);
+  assert.equal(g.startTargetDrag(plain), false);
+  assert.deepEqual(h.canvas.captured, []);
+  assert.equal(h.events.length, 0);
+  assert.equal(h.windowRef.hasListener("pointermove"), false);
+  // The policy saw the real pick and the raw event.
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].pick, h.pickResult);
+  assert.equal(seen[0].altKey, false);
+
+  // Modifier held: the same press now grabs.
+  const withAlt = pointerEvent(100, 50);
+  withAlt.altKey = true;
+  assert.equal(g.startTargetDrag(withAlt), true);
+  assert.deepEqual(h.canvas.captured, [7]);
+  assert.equal(h.events[0].type, "target.drag.start");
+});
+
+test("setShouldGrab installs and clears the grab policy at runtime", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h);
+
+  // Default policy: any hit grabs.
+  assert.equal(g.startTargetDrag(pointerEvent(10, 10)), true);
+  h.windowRef.dispatch("pointerup", pointerEvent(10, 10)); // end the drag cleanly
+
+  // Deny-all policy: the same hit no longer grabs.
+  g.setShouldGrab(() => false);
+  assert.equal(g.startTargetDrag(pointerEvent(20, 20)), false);
+
+  // A non-function restores the default (any hit grabs).
+  g.setShouldGrab(null);
+  assert.equal(g.startTargetDrag(pointerEvent(30, 30)), true);
+});
+
 test("a pending move is force-flushed before the terminal end", async () => {
   const h = makeHarness();
   const g = await createGestures(h);

@@ -459,6 +459,7 @@ export function useSceneSync(
     emitTargetClick: gestures.emitTargetClick,
     setPointerContext: gestures.setPointerContext,
     setEmitBackgroundClick: gestures.setEmitBackgroundClick,
+    setShouldGrab: gestures.setShouldGrab,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

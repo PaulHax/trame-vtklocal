@@ -175,6 +175,7 @@ export default {
       emitTargetClick: scene.emitTargetClick,
       setPointerContext: scene.setPointerContext,
       setEmitBackgroundClick: scene.setEmitBackgroundClick,
+      setShouldGrab: scene.setShouldGrab,
       setRepaintCallback,
     };
 

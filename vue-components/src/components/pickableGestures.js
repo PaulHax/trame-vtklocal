@@ -31,6 +31,12 @@ export function createPickableGestures({
 } = {}) {
   let context = null;
   let backgroundClickEnabled = !!emitBackgroundClick;
+  // Policy hook: given the pick under the pointer and the raw pointer event,
+  // decide whether this press should begin a drag (vs. fall through so the app
+  // pans). Default: any hit grabs. The fork owns the hit test and the drag
+  // lifecycle; the app owns this policy (modifier keys, per-pin rules, a
+  // "locked" mode) and installs it via setShouldGrab.
+  let shouldGrab = () => true;
 
   // Active drag lifecycle state. The pick is frozen at drag start: the target
   // identity and grab offset don't change mid-drag, only the pointer moves.
@@ -191,6 +197,9 @@ export function createPickableGestures({
     if (!cssPointer) return false;
     const pickResult = pick(cssPointer.x, cssPointer.y);
     if (!pickResult) return false;
+    // App policy has the final say: a hit the app declines is a miss here, so
+    // the press falls through to the app's own pan (return false, no capture).
+    if (!shouldGrab(pickResult, event)) return false;
 
     const canvas = getCanvas();
     const grabOffset = pickResult.grabOffset || { x: 0, y: 0 };
@@ -236,6 +245,12 @@ export function createPickableGestures({
     backgroundClickEnabled = !!enabled;
   }
 
+  // Install the app's grab policy. Passing a non-function restores the default
+  // (any hit grabs).
+  function setShouldGrab(fn) {
+    shouldGrab = typeof fn === "function" ? fn : () => true;
+  }
+
   // Force-end any active drag (emitting the terminal end) and detach listeners.
   // Called on view teardown so a drag in flight can't leak listeners or capture.
   function teardown() {
@@ -253,6 +268,7 @@ export function createPickableGestures({
     emitTargetClick,
     setPointerContext,
     setEmitBackgroundClick,
+    setShouldGrab,
     teardown,
   };
 }

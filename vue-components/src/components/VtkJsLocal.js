@@ -181,6 +181,7 @@ export default {
       emitTargetClick: scene.emitTargetClick,
       setPointerContext: scene.setPointerContext,
       setEmitBackgroundClick: scene.setEmitBackgroundClick,
+      setShouldGrab: scene.setShouldGrab,
       // Diagnostics / oracle support (read-only, not general app integration).
       getSyncDiagnostics: scene.getSyncDiagnostics,
       getAppliedSceneState: scene.getAppliedSceneState,

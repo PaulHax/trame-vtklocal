@@ -299,11 +299,26 @@ def _distance_to_camera_block(reader, vtkjs_type, vtk_mapper):
     return config
 
 
+def _glyph_mapper_array_props(vtk_mapper):
+    """Recover vtkGlyph3DMapper array-name properties missing from VTK state."""
+    props = {}
+    scale_array = dtc.mapper_input_array_name(vtk_mapper, index=0)
+    if scale_array:
+        props["scaleArray"] = scale_array
+    orientation_array = dtc.mapper_input_array_name(vtk_mapper, index=3)
+    if orientation_array:
+        props["orientationArray"] = orientation_array
+    return props
+
+
 def _translate_mapper(reader, state, vtkjs_type):
     vtk_mapper = reader.vtk_object(state["Id"])
     props = _scalar_props(state, vtkjs_type, extra_skips=MAPPER_SKIP_PROPERTIES)
     refs = {}
     blocks = {}
+
+    if vtkjs_type == "vtkGlyph3DMapper":
+        props.update(_glyph_mapper_array_props(vtk_mapper))
 
     input_ids = _mapper_input_port_ids(reader, state)
     dtc_block = _distance_to_camera_block(reader, vtkjs_type, vtk_mapper)

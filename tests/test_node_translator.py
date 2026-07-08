@@ -55,7 +55,7 @@ def _wrap_scene(name, api, render_window, handles):
 
 def make_glyph_scene(name="glyph_dtc"):
     """Glyph mapper fed by a vtkDistanceToCamera filter (screen-size glyphs)."""
-    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonCore import vtkFloatArray, vtkPoints
     from vtkmodules.vtkCommonDataModel import vtkPolyData
     from vtkmodules.vtkFiltersSources import vtkSphereSource
     from vtkmodules.vtkRenderingCore import (
@@ -77,6 +77,12 @@ def make_glyph_scene(name="glyph_dtc"):
     points.InsertNextPoint(1.0, 0.0, 0.0)
     centers = vtkPolyData()
     centers.SetPoints(points)
+    rotation = vtkFloatArray()
+    rotation.SetName("GlyphRotation")
+    rotation.SetNumberOfComponents(3)
+    rotation.InsertNextTuple3(0.0, 0.0, 0.25)
+    rotation.InsertNextTuple3(0.0, 0.0, -0.5)
+    centers.GetPointData().AddArray(rotation)
 
     distance_filter = vtkDistanceToCamera()
     distance_filter.SetInputData(centers)
@@ -90,7 +96,9 @@ def make_glyph_scene(name="glyph_dtc"):
     mapper.SetSourceData(source.GetOutput())
     mapper.SetScaleArray("DistanceToCamera")
     mapper.SetScaleModeToScaleByMagnitude()
-    mapper.OrientOff()
+    mapper.SetOrientationArray("GlyphRotation")
+    mapper.SetOrientationModeToRotation()
+    mapper.OrientOn()
     mapper.SetScalarVisibility(False)
 
     actor = vtkActor()
@@ -398,6 +406,9 @@ def test_distance_to_camera_glyph_mapper_bypasses_the_filter():
     assert node["refs"]["inputs"][0] == centers_id
     assert node["refs"]["inputs"][1] == source_id
     assert node["props"]["scaleArray"] == "DistanceToCamera"
+    assert node["props"]["orientationArray"] == "GlyphRotation"
+    assert node["props"]["orientationMode"] == 1
+    assert node["props"]["orient"] is True
     assert node["blocks"]["distanceToCamera"] == {
         "arrayName": "DistanceToCamera",
         "screenSize": 36.0,

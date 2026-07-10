@@ -314,6 +314,29 @@ def test_property_color_change_touches_only_the_property_node():
     assert after[property_id]["props"]["color"] == [0.9, 0.1, 0.2]
 
 
+def test_renderer_composition_properties_round_trip():
+    scene = make_basic_scene()
+    renderer = scene.handles["renderer"]
+    before = translate(scene)
+
+    renderer.SetLayer(1)
+    renderer.PreserveColorBufferOn()
+    renderer.PreserveDepthBufferOff()
+    refresh(scene)
+    after = translate(scene)
+
+    renderer_id = oid(scene, renderer)
+    assert changed_ids(before, after) == {renderer_id}
+    assert after[renderer_id]["props"]["layer"] == 1
+    assert after[renderer_id]["props"]["preserveColorBuffer"] == 1
+    assert after[renderer_id]["props"]["preserveDepthBuffer"] == 0
+
+    renderer.PreserveDepthBufferOn()
+    refresh(scene)
+    preserved = translate(scene)
+    assert preserved[renderer_id]["props"]["preserveDepthBuffer"] == 1
+
+
 def test_points_mutation_changes_only_the_dataset_array_ref():
     scene = make_basic_scene()
     before = translate(scene)

@@ -3,6 +3,7 @@ import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRende
 import {
   createManagedSyncContext,
   getPrimaryRenderer,
+  getSyncedRenderers,
   applyCameraParams,
 } from "./vtkJsSync";
 import { createMirrorStore } from "./engine/mirrorStore";
@@ -60,6 +61,28 @@ export function useSceneSync(
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
+  }
+
+  function getRenderers() {
+    return getSyncedRenderers(getRenderWindow?.() || null);
+  }
+
+  function bindPrimaryCameraToRenderers() {
+    const renderer = getRenderer();
+    const camera = renderer?.getActiveCamera?.();
+    if (!renderer || !camera) {
+      return { renderer: null, camera: null };
+    }
+    for (const sibling of getRenderers()) {
+      if (
+        sibling !== renderer &&
+        sibling.getActiveCamera?.() !== camera &&
+        typeof sibling.setActiveCamera === "function"
+      ) {
+        sibling.setActiveCamera(camera);
+      }
+    }
+    return { renderer, camera };
   }
 
   function noteMessageApplied(message) {
@@ -132,7 +155,7 @@ export function useSceneSync(
   }
 
   function setCamera(params) {
-    const camera = getRenderer()?.getActiveCamera?.();
+    const { camera } = bindPrimaryCameraToRenderers();
     if (!camera) return;
     applyCameraParams(camera, params);
     renderScene?.();
@@ -150,7 +173,7 @@ export function useSceneSync(
     clippingRange,
     physicalScale,
   } = {}) {
-    const camera = getRenderer()?.getActiveCamera?.();
+    const { camera } = bindPrimaryCameraToRenderers();
     const recordedViewMatrix = matrixCopy16(viewMatrix);
     const recordedProjectionMatrix = matrixCopy16(projectionMatrix);
     if (!camera || !recordedViewMatrix || !recordedProjectionMatrix)
@@ -195,7 +218,7 @@ export function useSceneSync(
   }
 
   function resetCamera() {
-    const renderer = getRenderer();
+    const { renderer } = bindPrimaryCameraToRenderers();
     if (!renderer) return;
     renderer.resetCamera();
     renderScene?.();
@@ -445,6 +468,7 @@ export function useSceneSync(
     getQueueLength,
     getRenderWindow,
     getRenderer,
+    getRenderers,
     setCamera,
     setRenderedCamera,
     getRenderedCamera,

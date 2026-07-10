@@ -268,8 +268,6 @@ RENDERER_SKIP_PROPERTIES = {
     "texturedBackground",
     "automaticLightCreation",
     "backingStore",
-    "preserveColorBuffer",
-    "preserveDepthBuffer",
     "useImageBasedLighting",
     "useSphericalHarmonics",
 }

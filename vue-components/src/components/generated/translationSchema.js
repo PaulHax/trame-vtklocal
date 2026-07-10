@@ -332,8 +332,6 @@ export const RENDERER_SKIP_PROPERTIES = new Set([
   "automaticLightCreation",
   "backgroundAlpha",
   "backingStore",
-  "preserveColorBuffer",
-  "preserveDepthBuffer",
   "texturedBackground",
   "useImageBasedLighting",
   "useSphericalHarmonics"

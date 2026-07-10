@@ -10,7 +10,6 @@ import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
 import { registerView, unregisterView } from "./viewRegistry";
-import { applyExternalRenderPolicy } from "./externalRenderPolicy";
 
 export default {
   emits: [
@@ -48,7 +47,6 @@ export default {
     const client = props.wsClient || trame?.client;
 
     let externalRenderWindow = null;
-    let externalContextGl = null;
     let renderWindow = null;
     let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
@@ -85,9 +83,14 @@ export default {
     }
 
     function initializeForExternalContext(canvas, gl) {
-      externalContextGl = gl;
-
-      externalRenderWindow = vtkExternalContextRenderWindow.createFromContext(canvas, gl);
+      externalRenderWindow = vtkExternalContextRenderWindow.createFromContext(
+        canvas,
+        gl,
+      );
+      // Apply the stock vtkRenderer preserve-color/depth policy for every
+      // layer. The synchronized renderer state decides which attachments load
+      // existing contents and which clear before drawing.
+      externalRenderWindow.setAutoClear(true);
       externalRenderWindow?.setRenderCallback?.(
         renderRequestedCallbackWithDistanceToCamera,
       );
@@ -108,8 +111,6 @@ export default {
     }
 
     // options:
-    //   clearDepth = true — the shared-buffer depth-clear policy the host
-    //     needs around the render (see externalRenderPolicy.js).
     //   framebuffer / drawBuffers — host-declared GL state, forwarded to
     //     vtk.js so the render issues no gl.getParameter readbacks (each one
     //     is a synchronous CPU/GPU stall). Omit to let vtk.js query.
@@ -122,11 +123,7 @@ export default {
               drawBuffers: options.drawBuffers,
             }
           : undefined;
-      applyExternalRenderPolicy(
-        externalContextGl,
-        () => externalRenderWindow?.renderExternal?.(hostState),
-        { clearDepth: options.clearDepth },
-      );
+      externalRenderWindow?.renderExternal?.(hostState);
     }
 
     function onRenderRequested(callback) {
@@ -156,6 +153,7 @@ export default {
       getQueueLength: scene.getQueueLength,
       getRenderWindow: scene.getRenderWindow,
       getRenderer: scene.getRenderer,
+      getRenderers: scene.getRenderers,
       setCamera: scene.setCamera,
       setRenderedCamera: scene.setRenderedCamera,
       getRenderedCamera: scene.getRenderedCamera,
@@ -197,7 +195,6 @@ export default {
 
       externalRenderWindow?.delete?.();
       externalRenderWindow = null;
-      externalContextGl = null;
 
       renderWindow?.delete?.();
       renderWindow = null;

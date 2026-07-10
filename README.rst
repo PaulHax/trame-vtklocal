@@ -156,6 +156,9 @@ Running examples
     # regular trame app
     python ./examples/vtk/cone.py 
 
+    # vtk.js layered renderers: preserve color while resetting overlay depth
+    python ./examples/vtk/vtkjs_layered_renderers.py
+
 
 Some example are meant to test and validate WASM rendering.
 Some will default for remote rendering but if you want to force them to use WASM just run `export USE_WASM=1` before executing them.

@@ -172,6 +172,7 @@ export default {
       getQueueLength: scene.getQueueLength,
       getRenderWindow: scene.getRenderWindow,
       getRenderer: scene.getRenderer,
+      getRenderers: scene.getRenderers,
       setCamera: scene.setCamera,
       resetCamera: scene.resetCamera,
       onCommand: scene.onCommand,

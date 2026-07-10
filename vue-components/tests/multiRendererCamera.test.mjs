@@ -106,7 +106,7 @@ test("server camera authority preserves independent renderer cameras", async () 
   assert.equal(primary.resetCameraCalls, 1);
 });
 
-test("client camera authority binds initial and newly added renderers before repaint", async () => {
+test("client camera authority binds initial, added, and replaced renderers before repaint", async () => {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
   const primaryCamera = makeCamera();
   const primary = makeRenderer(1, primaryCamera);
@@ -115,6 +115,7 @@ test("client camera authority binds initial and newly added renderers before rep
   const renderWindow = makeRenderWindow(renderers);
   let callbacks = null;
   let repaintCount = 0;
+  let rendererExpectedAtRepaint = underlay;
 
   const scene = useSceneSync(
     {
@@ -154,6 +155,11 @@ test("client camera authority binds initial and newly added renderers before rep
     contextName: "multi-renderer-camera",
     renderWindowId: 1,
     onRenderNeeded() {
+      assert.equal(
+        rendererExpectedAtRepaint.getActiveCamera(),
+        primaryCamera,
+        "renderer is bound to the shared camera before repaint",
+      );
       repaintCount += 1;
     },
   });
@@ -164,13 +170,15 @@ test("client camera authority binds initial and newly added renderers before rep
 
   const lateRenderer = makeRenderer(3, makeCamera());
   renderers.push(lateRenderer);
+  rendererExpectedAtRepaint = lateRenderer;
   callbacks.onApplied({ kind: "ops", seq: 2 });
   assert.equal(lateRenderer.getActiveCamera(), primaryCamera);
   assert.equal(repaintCount, 2);
 
-  renderers.splice(0, renderers.length, lateRenderer);
-  lateRenderer.setActiveCamera(makeCamera());
+  const replacementRenderer = makeRenderer(4, makeCamera());
+  renderers.splice(0, renderers.length, replacementRenderer);
+  rendererExpectedAtRepaint = replacementRenderer;
   callbacks.onApplied({ kind: "ops", seq: 3 });
-  assert.equal(lateRenderer.getActiveCamera(), primaryCamera);
+  assert.equal(replacementRenderer.getActiveCamera(), primaryCamera);
   assert.equal(repaintCount, 3);
 });

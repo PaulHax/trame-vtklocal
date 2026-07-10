@@ -29,6 +29,11 @@ export default {
       type: Number,
       required: true,
     },
+    cameraAuthority: {
+      type: String,
+      default: "server",
+      validator: (value) => value === "server" || value === "client",
+    },
     wsClient: {
       type: Object,
     },
@@ -63,6 +68,7 @@ export default {
       emit,
       getRenderWindow: () => renderWindow,
       renderScene,
+      cameraAuthority: props.cameraAuthority,
     });
 
     // State applies in the websocket handler; only rendering rides rAF (a

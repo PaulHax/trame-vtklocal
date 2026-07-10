@@ -32,6 +32,9 @@ class VtkJsBaseView(HtmlElement):
         # renderer's activeCamera slot; the server drives the view via commands
         # and reads camera matrices only from seq-stamped events.
         self._camera_authority = validate_camera_authority(camera_authority)
+        self._attributes["camera_authority"] = (
+            f'camera-authority="{self._camera_authority}"'
+        )
 
         self._ref = kwargs.get("ref")
         if self._ref is None:

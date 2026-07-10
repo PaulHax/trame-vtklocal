@@ -32,7 +32,7 @@ import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
 
 export function useSceneSync(
-  { client, emit, getRenderWindow, renderScene },
+  { client, emit, getRenderWindow, renderScene, cameraAuthority = "server" },
   dependencies = {},
 ) {
   const {
@@ -56,6 +56,7 @@ export function useSceneSync(
   const commandRegistrations = new Set(); // { name, callback } — survive re-init
   let syncedRootId = null;
   let renderedCamera = null;
+  let clientCamera = null;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
 
@@ -69,13 +70,25 @@ export function useSceneSync(
 
   function bindPrimaryCameraToRenderers() {
     const renderer = getRenderer();
-    const camera = renderer?.getActiveCamera?.();
+    let camera = renderer?.getActiveCamera?.();
     if (!renderer || !camera) {
       return { renderer: null, camera: null };
     }
+
+    if (cameraAuthority !== "client") {
+      return { renderer, camera };
+    }
+
+    if (clientCamera?.isDeleted?.()) {
+      clientCamera = null;
+    }
+    if (!clientCamera) {
+      clientCamera = camera;
+    }
+    camera = clientCamera;
+
     for (const sibling of getRenderers()) {
       if (
-        sibling !== renderer &&
         sibling.getActiveCamera?.() !== camera &&
         typeof sibling.setActiveCamera === "function"
       ) {
@@ -234,6 +247,7 @@ export function useSceneSync(
     messageAppliedCallback = null;
     renderRequestCallback = null;
     syncedRootId = null;
+    clientCamera = null;
     distanceToCameraGlyphs.clear();
     pickables.clear();
     managedSyncContext?.cleanup?.();
@@ -309,6 +323,7 @@ export function useSceneSync(
         },
         onSnapshotApplied(snapshot) {
           if (disposed) return;
+          bindPrimaryCameraToRenderers();
           updateDistanceToCameraGlyphsForRender();
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
@@ -316,6 +331,7 @@ export function useSceneSync(
         },
         onApplied(message) {
           if (disposed) return;
+          bindPrimaryCameraToRenderers();
           updateDistanceToCameraGlyphsForRender();
           noteMessageApplied(message);
           renderRequestCallback?.();

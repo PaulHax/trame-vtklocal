@@ -7,22 +7,17 @@ class VtkJsSharedView(VtkJsBaseView):
     _ref_prefix = "_vtkjssharedview"
     _shared_views = weakref.WeakValueDictionary()
 
-    def __init__(self, render_window, sync_mode="push", **kwargs):
+    def __init__(self, render_window, **kwargs):
         super().__init__("vtk-js-shared", render_window, **kwargs)
 
         self._view_id = str(self._window_id)
 
-        # Pass the ref name through as a prop so the client registers the mounted
-        # view in window.trameVtklocal under this key; consumers then resolve it
-        # via whenView(ref_name) instead of unwrapping the Vue component ref.
-        self._attributes["view_key"] = f'view-key="{self._ref}"'
-
-        self._configure_sync_mode(sync_mode)
+        self._configure_push()
 
         VtkJsSharedView._shared_views[self._view_id] = self
 
     def render_shared(self, options=None, **kwargs):
-        self.server.js_call(self._ref, "renderShared", options or {})
+        self.server.js_call(self._ref, "renderExternal", options or {})
 
     def on_render_requested(self, callback_name, **kwargs):
         self.server.js_call(self._ref, "onRenderRequested", callback_name)

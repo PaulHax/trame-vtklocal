@@ -262,7 +262,9 @@ def test_patch_on_node_removed_in_same_commit_is_dropped():
 
 def test_version_counter_survives_node_removal():
     store, _ = committed_store()
-    store.transact().patch_array("5", "points", 0, b"\x04" * 12, "Float32Array").commit()
+    store.transact().patch_array(
+        "5", "points", 0, b"\x04" * 12, "Float32Array"
+    ).commit()
 
     renderer = basic_nodes()["2"]
     renderer["refs"]["viewProps"] = []
@@ -318,6 +320,23 @@ def test_last_seq_touching_tracks_ops_and_forgets_removed_nodes():
     renderer["refs"]["viewProps"] = []
     store.transact().upsert("2", renderer).commit()
     assert store.last_seq_touching("4") is None
+
+
+def test_array_patches_do_not_advance_default_staleness_cursor():
+    store, _ = committed_store()
+    before = store.last_seq_touching("5")
+
+    store.transact().patch_array(
+        "5", "points", 0, b"\x00" * 12, "Float32Array"
+    ).commit()
+
+    assert store.last_seq_touching("5") == before
+    assert store.last_seq_touching("5", strict=True) == store.seq
+
+    node = store.get("5")
+    node["props"] = {"structuralRevision": 2}
+    store.transact().upsert("5", node).commit()
+    assert store.last_seq_touching("5") == store.seq
 
 
 def test_snapshot_is_isolated_from_store_mutation():

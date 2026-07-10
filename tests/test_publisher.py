@@ -43,6 +43,19 @@ class _FakeServer:
         self.protocol = _FakeProtocol()
 
 
+class _CountingObjectManager:
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+        self.get_state_calls = []
+
+    def GetState(self, object_id):
+        self.get_state_calls.append(int(object_id))
+        return self.wrapped.GetState(object_id)
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
+
+
 POINT_COUNT = 10_000
 
 
@@ -77,9 +90,7 @@ def make_points_cloud_scene(point_count=POINT_COUNT, name="points_cloud"):
     renderer = vtkRenderer()
     render_window.AddRenderer(renderer)
 
-    coords = np.linspace(
-        0.0, 1.0, point_count * 3, dtype=np.float32
-    ).reshape(-1, 3)
+    coords = np.linspace(0.0, 1.0, point_count * 3, dtype=np.float32).reshape(-1, 3)
     points = vtkPoints()
     points.SetData(numpy_to_vtk(coords, deep=True))
 
@@ -172,6 +183,54 @@ def test_one_point_move_in_10k_points_emits_one_small_patch(
     ]
     assert op["ref"] == f"v:{_dataset_id(scene)}:points:1"
     assert message["blobs"] == {}
+
+
+def test_two_distant_point_moves_emit_two_small_patches(publisher_env):
+    scene, publisher, server = publisher_env
+    _start_retention(scene, publisher, server)
+
+    _touch_point(scene, 20, (2.0, 3.0, 4.0))
+    _touch_point(scene, 8_000, (5.0, 6.0, 7.0))
+    publisher.sync()
+
+    ((_topic, message),) = server.protocol.drain()
+    patches = [op for op in message["ops"] if op["op"] == "patchArray"]
+    assert [op["offset"] for op in patches] == [60, 24_000]
+    assert sum(len(bytes(op["data"])) for op in patches) == 6 * 4
+
+
+def test_registered_named_point_data_array_uses_region_patches():
+    scene = make_points_cloud_scene(point_count=1_000)
+    values = np.arange(1_000, dtype=np.float32)
+    vtk_array = numpy_to_vtk(values, deep=True)
+    vtk_array.SetName("Heat")
+    scene.handles["polydata"].GetPointData().AddArray(vtk_array)
+    key = "field:pointData:Heat"
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server,
+        scene.api,
+        scene.render_window,
+        scene.render_window_id,
+        hot_array_keys={key},
+    )
+    try:
+        vtk_array.SetValue(1, -1.0)
+        vtk_array.Modified()
+        publisher.sync()
+        server.protocol.drain()  # first candidate starts retention
+
+        vtk_array.SetValue(10, -10.0)
+        vtk_array.SetValue(900, -900.0)
+        vtk_array.Modified()
+        publisher.sync()
+
+        ((_topic, message),) = server.protocol.drain()
+        patches = [op for op in message["ops"] if op["op"] == "patchArray"]
+        assert [op["key"] for op in patches] == [key, key]
+        assert [op["offset"] for op in patches] == [10, 900]
+    finally:
+        publisher.cleanup()
 
 
 def test_majority_change_resends_full_content_ref(publisher_env):
@@ -284,12 +343,9 @@ def test_transaction_batches_mutations_into_one_broadcast():
         object_manager = scene.api.vtk_object_manager
         assert str(object_manager.GetId(scene.handles["actor"])) in upserted
         assert (
-            str(object_manager.GetId(scene.handles["actor"].GetProperty()))
-            in upserted
+            str(object_manager.GetId(scene.handles["actor"].GetProperty())) in upserted
         )
-        assert message["commands"] == [
-            {"name": "mapCamera", "payload": {"frame": 3}}
-        ]
+        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}}]
     finally:
         publisher.cleanup()
 
@@ -353,6 +409,32 @@ def test_resync_fires_on_client_resync_callbacks():
         publisher.on_client_resync(seen.append)
         publisher.resync([], client_id="client-7")
         assert seen == ["client-7"]
+    finally:
+        publisher.cleanup()
+
+
+def test_retained_commands_are_replaced_cleared_and_replayed_on_resync():
+    scene = make_basic_scene()
+    publisher, _server = make_publisher(scene)
+    try:
+        publisher.send_command(
+            "camera.set", {"parallelScale": 2}, retain=True, render=True
+        )
+        assert publisher.resync([])["commands"] == [
+            {
+                "name": "camera.set",
+                "payload": {"parallelScale": 2},
+                "render": True,
+            }
+        ]
+
+        publisher.send_command(
+            "camera.set", {"parallelScale": 4}, retain=True, render=True
+        )
+        assert publisher.resync([])["commands"][0]["payload"] == {"parallelScale": 4}
+
+        publisher.send_command("camera.set", None, retain=True)
+        assert "commands" not in publisher.resync([])
     finally:
         publisher.cleanup()
 
@@ -550,9 +632,7 @@ def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
         scene.handles["actor"].SetVisibility(False)
         publisher.sync()
         assert not publisher.event_is_current(event)
-        assert publisher.event_is_current(
-            {**event, "seq": publisher.store.seq}
-        )
+        assert publisher.event_is_current({**event, "seq": publisher.store.seq})
 
         # A removed node is unknown -> stale, however fresh the seq claims.
         polydata, _points = make_line_polydata()
@@ -567,6 +647,43 @@ def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
         assert not publisher.event_is_current(
             {"seq": publisher.store.seq + 100, "pick": {"nodeId": actor2_id}}
         )
+    finally:
+        publisher.cleanup()
+
+
+def test_patch_array_confirmation_does_not_stale_an_inflight_event(publisher_env):
+    scene, publisher, server = publisher_env
+    _start_retention(scene, publisher, server)
+    dataset_id = _dataset_id(scene)
+    event = {"seq": publisher.store.seq, "pick": {"nodeId": dataset_id}}
+
+    _touch_point(scene, 12, (8.0, 7.0, 6.0))
+    publisher.sync()
+    server.protocol.drain()
+
+    assert publisher.event_is_current(event)
+    assert not publisher.event_is_current(event, strict=True)
+
+
+def test_parsed_state_cache_skips_unchanged_referenced_states():
+    scene = make_basic_scene()
+    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    scene.api.vtk_object_manager = counting
+    publisher = ScenePublisher(
+        _FakeServer(), scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        mapper_id = counting.GetId(scene.handles["mapper"])
+        property_id = counting.GetId(scene.handles["actor"].GetProperty())
+        counting.get_state_calls.clear()
+
+        scene.handles["actor"].SetVisibility(False)
+        publisher.sync()
+        scene.handles["actor"].SetVisibility(True)
+        publisher.sync()
+
+        assert mapper_id not in counting.get_state_calls
+        assert property_id not in counting.get_state_calls
     finally:
         publisher.cleanup()
 
@@ -697,9 +814,11 @@ def test_deferred_blob_gc_keeps_hashes_that_return_alive():
 
 
 def test_ref_manager_hashes_strips_namespaces():
-    assert ref_manager_hashes(
-        ["c:abc", "c2:conn:off", "v:5:points:3", "c:abc"]
-    ) == {"abc", "conn", "off"}
+    assert ref_manager_hashes(["c:abc", "c2:conn:off", "v:5:points:3", "c:abc"]) == {
+        "abc",
+        "conn",
+        "off",
+    }
     assert ref_manager_hashes(None) == set()
 
 

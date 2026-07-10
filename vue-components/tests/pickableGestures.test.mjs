@@ -51,11 +51,19 @@ function makeWindow() {
 function makeCanvas(rect = { left: 0, top: 0, width: 800, height: 400 }) {
   const captured = [];
   const released = [];
+  const listeners = new Map();
   return {
     style: { cursor: "" },
     getBoundingClientRect: () => rect,
     setPointerCapture: (id) => captured.push(id),
     releasePointerCapture: (id) => released.push(id),
+    addEventListener: (type, handler) => listeners.set(type, handler),
+    removeEventListener(type, handler) {
+      if (listeners.get(type) === handler) listeners.delete(type);
+    },
+    dispatch(type, event) {
+      listeners.get(type)?.(event);
+    },
     captured,
     released,
   };
@@ -374,4 +382,53 @@ test("the pointer context blob round-trips verbatim on every event", async () =>
   for (const event of h.events) {
     assert.deepEqual(event.context, blob);
   }
+});
+
+test("hover emits enter/leave once, disables cleanly, and pauses during drag", async () => {
+  const h = makeHarness();
+  const pick = (x) => {
+    if (x < 100) return { ...h.pickResult, nodeId: "a" };
+    if (x < 200) return { ...h.pickResult, nodeId: "b" };
+    return null;
+  };
+  const g = await createGestures(h, { pick });
+  g.setHoverEnabled(true);
+
+  h.canvas.dispatch("pointermove", pointerEvent(50, 20));
+  h.windowRef.flushRaf();
+  h.canvas.dispatch("pointermove", pointerEvent(150, 20));
+  h.windowRef.flushRaf();
+  assert.deepEqual(
+    h.events.map((event) => [event.type, event.pick?.nodeId]),
+    [
+      ["target.enter", "a"],
+      ["target.leave", "a"],
+      ["target.enter", "b"],
+    ],
+  );
+
+  g.setHoverEnabled(false);
+  h.canvas.dispatch("pointermove", pointerEvent(250, 20));
+  h.windowRef.flushRaf();
+  assert.equal(h.events.length, 3);
+
+  g.setHoverEnabled(true);
+  assert.equal(g.startTargetDrag(pointerEvent(150, 20)), true);
+  const countAfterStart = h.events.length;
+  h.canvas.dispatch("pointermove", pointerEvent(50, 20));
+  h.windowRef.flushRaf();
+  assert.equal(h.events.length, countAfterStart);
+});
+
+test("removing the active target emits a terminal cancelled drag end", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h);
+  g.startTargetDrag(pointerEvent(10, 10));
+
+  assert.equal(g.cancelForNode("m"), true);
+  const terminal = h.events.at(-1);
+  assert.equal(terminal.type, "target.drag.end");
+  assert.equal(terminal.cancelled, true);
+  assert.equal(terminal.unresolved, true);
+  assert.equal(g.getActivePick(), null);
 });

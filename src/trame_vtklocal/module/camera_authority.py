@@ -1,7 +1,10 @@
 """Who owns a view's rendered camera (push sync v2).
 
-- ``"server"``: cameras are normal synced nodes; the client interactor emits
-  seq-stamped camera events upstream.
+- ``"server"``: cameras are normal synced nodes for initial and idle state.
+  During a client interaction, camera-node prop updates are deferred by the
+  reconciler and the newest deferred state applies when interaction ends.
+  Explicit ``camera.set``/``camera.reset`` commands remain available for
+  ordered server intents.
 - ``"client"``: cameras never become nodes and no ref slot (the renderer's
   ``activeCamera``) points at one; the server drives the view via commands and
   the client pushes rendered matrices itself, reporting them only inside

@@ -1,4 +1,4 @@
-import { ref, inject, onMounted, onBeforeUnmount, watchEffect } from "vue";
+import { ref, inject, onMounted, onBeforeUnmount } from "vue";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Glyph";
@@ -8,10 +8,11 @@ import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWind
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
 import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera";
 
-import { extractCameraParams } from "./vtkJsSync";
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { bindDistanceToCameraInteractorRenderEvent } from "./distanceToCameraGlyphs";
+import { createViewApi } from "./viewApi";
+import { registerView, unregisterView } from "./viewRegistry";
 
 export default {
   emits: [
@@ -37,14 +38,9 @@ export default {
     wsClient: {
       type: Object,
     },
-    syncMode: {
+    viewKey: {
       type: String,
-      default: "push",
-      validator: (value) => value === "push",
-    },
-    interactorSettings: {
-      type: Array,
-      default: () => [],
+      default: null,
     },
   },
   setup(props, { emit }) {
@@ -57,6 +53,7 @@ export default {
     let interactor = null;
     let resizeObserver = null;
     let interactorRenderSubscription = null;
+    let cameraSubscriptions = [];
 
     function renderScene() {
       scene.updateDistanceToCameraGlyphs();
@@ -91,6 +88,13 @@ export default {
       renderScene();
     }
 
+    const viewApi = createViewApi(scene, {
+      container,
+      render: renderScene,
+      resize,
+    });
+    const registryKeys = [props.viewKey, props.renderWindow];
+
     onMounted(async () => {
       openGLRenderWindow = vtkOpenGLRenderWindow.newInstance();
       openGLRenderWindow.setContainer(container.value);
@@ -120,31 +124,29 @@ export default {
         interactor,
         () => scene.updateDistanceToCameraGlyphs(),
       );
-
-      interactor.onEndInteraction(() => {
-        const camera = scene.getRenderer()?.getActiveCamera?.();
-        if (camera) {
-          // seq-stamped like gesture payloads, so the server can run the
-          // same staleness check on camera events.
-          emit("camera", {
-            ...extractCameraParams(camera),
-            seq: scene.getSeq(),
-          });
-        }
-      });
+      scene.enableCameraReports({ during: "interaction", terminal: true });
+      cameraSubscriptions = [
+        interactor.onStartInteractionEvent?.(scene.beginCameraInteraction),
+        interactor.onInteractionEvent?.(scene.cameraInteraction),
+        interactor.onEndInteractionEvent?.(scene.endCameraInteraction),
+      ].filter(Boolean);
 
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(container.value);
 
       resize();
+      registerView(registryKeys, viewApi);
       emit("onReady");
     });
 
     onBeforeUnmount(() => {
+      unregisterView(registryKeys, viewApi);
       scene.cleanup();
 
       interactorRenderSubscription?.unsubscribe?.();
       interactorRenderSubscription = null;
+      cameraSubscriptions.forEach((subscription) => subscription.unsubscribe?.());
+      cameraSubscriptions = [];
 
       resizeObserver?.disconnect?.();
       resizeObserver = null;
@@ -162,39 +164,7 @@ export default {
       renderWindow = null;
     });
 
-    watchEffect(() => {
-      if (props.interactorSettings && interactor) {
-        const style = interactor.getInteractorStyle();
-        if (style?.applySettings) {
-          style.applySettings(props.interactorSettings);
-        }
-      }
-    });
-
-    return {
-      container,
-      update: scene.update,
-      requestResync: scene.requestResync,
-      getQueueLength: scene.getQueueLength,
-      getRenderWindow: scene.getRenderWindow,
-      getRenderer: scene.getRenderer,
-      getRenderers: scene.getRenderers,
-      setCamera: scene.setCamera,
-      resetCamera: scene.resetCamera,
-      onCommand: scene.onCommand,
-      getSeq: scene.getSeq,
-      pickAt: scene.pickAt,
-      startTargetDrag: scene.startTargetDrag,
-      emitTargetClick: scene.emitTargetClick,
-      setPointerContext: scene.setPointerContext,
-      setEmitBackgroundClick: scene.setEmitBackgroundClick,
-      setShouldGrab: scene.setShouldGrab,
-      // Diagnostics / oracle support (read-only, not general app integration).
-      getSyncDiagnostics: scene.getSyncDiagnostics,
-      getAppliedSceneState: scene.getAppliedSceneState,
-      render: renderScene,
-      resize,
-    };
+    return viewApi;
   },
   template: `<div ref="container" style="position: relative; width: 100%; height: 100%;"></div>`,
 };

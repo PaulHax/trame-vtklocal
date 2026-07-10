@@ -9,11 +9,13 @@ import vtkExternalContextRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/Ext
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
+import { createViewApi } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
 
 export default {
   emits: [
     "updated",
+    "camera",
     "command",
     "onReady",
     "beforeSceneLoaded",
@@ -40,11 +42,6 @@ export default {
     },
     wsClient: {
       type: Object,
-    },
-    syncMode: {
-      type: String,
-      default: "push",
-      validator: (value) => value === "push",
     },
   },
   setup(props, { emit }) {
@@ -152,36 +149,12 @@ export default {
     // The public API consumers resolve through the registry — the same object
     // returned from setup, so onSceneApplied/getInstance/render methods keep
     // working without unwrapping the Vue component ref.
-    const viewApi = {
+    const viewApi = createViewApi(scene, {
       initializeForExternalContext,
-      update: scene.update,
-      requestResync: scene.requestResync,
-      getQueueLength: scene.getQueueLength,
-      getRenderWindow: scene.getRenderWindow,
-      getRenderer: scene.getRenderer,
-      getRenderers: scene.getRenderers,
-      setCamera: scene.setCamera,
-      setRenderedCamera: scene.setRenderedCamera,
-      getRenderedCamera: scene.getRenderedCamera,
-      resetCamera: scene.resetCamera,
-      // Diagnostics / oracle support (read-only, not general app integration).
-      getSyncDiagnostics: scene.getSyncDiagnostics,
-      getAppliedSceneState: scene.getAppliedSceneState,
       renderExternal,
       onRenderRequested,
-      onSceneApplied: scene.onSceneApplied,
-      onCommand: scene.onCommand,
-      getInstance: scene.getInstance,
-      getSeq: scene.getSeq,
-      uploadTexture: scene.uploadTexture,
-      pickAt: scene.pickAt,
-      startTargetDrag: scene.startTargetDrag,
-      emitTargetClick: scene.emitTargetClick,
-      setPointerContext: scene.setPointerContext,
-      setEmitBackgroundClick: scene.setEmitBackgroundClick,
-      setShouldGrab: scene.setShouldGrab,
       setRepaintCallback,
-    };
+    });
 
     // Keyed by trame ref name and render-window id so consumers can await
     // whenView(refName) (or look up by render-window id) with no polling.

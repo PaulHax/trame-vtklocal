@@ -19,13 +19,11 @@ never become nodes and no ref slot points at one — no dangling refs either way
 
 from __future__ import annotations
 
-import json
-
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
-from trame_vtklocal.module.camera_authority import validate_camera_authority
 from trame_vtklocal.module.node_arrays import polydata_array_entries
+from trame_vtklocal.module.state_cache import SceneReader
 from trame_vtklocal.module.vtkjs_translator import (
     CAMERA_PROPERTIES,
     COLLECTION_TYPES,
@@ -87,6 +85,7 @@ _NON_NODE_CLASS_NAMES = COLLECTION_TYPES | {
     "vtkFieldData",
 }
 
+
 def is_node_class(class_name, camera_authority="server"):
     """Whether objects of this VTK class become scene-store nodes."""
     if not class_name:
@@ -125,35 +124,6 @@ def _node_ref_ids(node):
             yield from value
 
 
-class _Reader:
-    """Cached read access to object-manager states and live objects."""
-
-    def __init__(self, object_manager, camera_authority="server"):
-        self.object_manager = object_manager
-        self.camera_authority = validate_camera_authority(camera_authority)
-        self._states = {}
-
-    def state(self, obj_id):
-        obj_id = int(obj_id)
-        if obj_id not in self._states:
-            self._states[obj_id] = json.loads(self.object_manager.GetState(obj_id))
-        return self._states[obj_id]
-
-    def class_name(self, obj_id):
-        return self.state(obj_id).get("ClassName", "")
-
-    def vtk_object(self, obj_id):
-        return self.object_manager.GetObjectAtId(int(obj_id))
-
-    def clear_state_cache(self):
-        self._states.clear()
-
-
-# ---------------------------------------------------------------------------
-# Ref slots
-# ---------------------------------------------------------------------------
-
-
 def _collection_item_ids(reader, collection_id):
     """Item ids of a live VTK collection (state ``Items`` as fallback)."""
     collection = reader.vtk_object(collection_id)
@@ -180,9 +150,7 @@ def _ref_node_ids(reader, value):
     emitted ref slots can never dangle.
     """
     if isinstance(value, list):
-        return [
-            node_id for item in value for node_id in _ref_node_ids(reader, item)
-        ]
+        return [node_id for item in value for node_id in _ref_node_ids(reader, item)]
 
     ref_id = get_ref_id(value)
     if not ref_id:
@@ -210,13 +178,10 @@ def _slot_refs(reader, state, vtkjs_type):
     for state_key, slot in LIST_REF_SLOTS.get(vtkjs_type, {}).items():
         if state_key not in state:
             continue
-        refs[slot] = [str(node_id) for node_id in _ref_node_ids(reader, state[state_key])]
+        refs[slot] = [
+            str(node_id) for node_id in _ref_node_ids(reader, state[state_key])
+        ]
     return refs
-
-
-# ---------------------------------------------------------------------------
-# Props
-# ---------------------------------------------------------------------------
 
 
 def _scalar_props(state, vtkjs_type, extra_skips=frozenset()):
@@ -381,10 +346,20 @@ def _translate_node(reader, obj_id):
     return _translate_generic(reader, state, vtkjs_type)
 
 
-def scene_reader(object_manager, camera_authority="server"):
+def scene_reader(
+    object_manager,
+    camera_authority="server",
+    state_cache=None,
+    class_names=None,
+):
     """A cached state reader, shareable across several ``translate_object``
     calls in one pass so referenced states are JSON-parsed once."""
-    return _Reader(object_manager, camera_authority)
+    return SceneReader(
+        object_manager,
+        camera_authority,
+        state_cache=state_cache,
+        class_names=class_names,
+    )
 
 
 def translate_object(object_manager, obj_id, camera_authority="server", reader=None):
@@ -396,18 +371,29 @@ def translate_object(object_manager, obj_id, camera_authority="server", reader=N
     from the same refreshed states.
     """
     if reader is None:
-        reader = _Reader(object_manager, camera_authority)
+        reader = SceneReader(object_manager, camera_authority)
     return _translate_node(reader, int(obj_id))
 
 
-def translate_scene(object_manager, root_id, camera_authority="server"):
+def translate_scene(
+    object_manager,
+    root_id,
+    camera_authority="server",
+    state_cache=None,
+    class_names=None,
+):
     """Translate every node reachable from ``root_id`` into ``{id: node}``.
 
     Every id a node's ``refs`` mention is present in the result, so the map
     upserts into a :class:`~trame_vtklocal.store.SceneStore` without dangling
     refs.
     """
-    reader = _Reader(object_manager, camera_authority)
+    reader = SceneReader(
+        object_manager,
+        camera_authority,
+        state_cache=state_cache,
+        class_names=class_names,
+    )
     nodes = {}
     pending = [int(root_id)]
     while pending:

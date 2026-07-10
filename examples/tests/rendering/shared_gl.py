@@ -50,9 +50,9 @@ JS_CODE = r"""
         if (initialized) return;
 
         const ref = window.trame?.refs?.vtkView;
-        vtkView = ref?.initializeForSharedContext ? ref : ref?.$.exposed || ref;
+        vtkView = ref?.initializeForExternalContext ? ref : ref?.$.exposed || ref;
 
-        if (!vtkView?.initializeForSharedContext) {
+        if (!vtkView?.initializeForExternalContext) {
             setTimeout(window.initSharedGLTest, 100);
             return;
         }
@@ -65,9 +65,9 @@ JS_CODE = r"""
             antialias: false
         });
 
-        vtkView.initializeForSharedContext(canvas, gl);
+        vtkView.initializeForExternalContext(canvas, gl);
         vtkView.onRenderRequested(function() {
-            vtkView.renderShared({});
+            vtkView.renderExternal({});
         });
     };
 
@@ -130,7 +130,6 @@ JS_CODE = r"""
 
     window.testCommonSceneApi = function() {
         const methods = [
-            "update",
             "requestResync",
             "getQueueLength",
             "getRenderWindow",

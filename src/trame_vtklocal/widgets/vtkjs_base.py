@@ -5,6 +5,7 @@ from trame_vtklocal.module.distance_to_camera import (
 )
 from trame_vtklocal.module.camera_authority import validate_camera_authority
 
+
 class HtmlElement(AbstractElement):
     def __init__(self, _elem_name, children=None, **kwargs):
         super().__init__(_elem_name, children, **kwargs)
@@ -12,12 +13,13 @@ class HtmlElement(AbstractElement):
             kwargs.pop("trame_server", None)
             self.server.enable_module(module, **kwargs)
 
+
 class VtkJsBaseView(HtmlElement):
     _next_id = 0
     _ref_prefix = "_vtkjsview"
     _scene_event_names = [
         "updated",
-        ("view_state_extra", "viewStateExtra"),
+        "camera",
         ("on_ready", "onReady"),
         ("before_scene_loaded", "beforeSceneLoaded"),
         ("after_scene_loaded", "afterSceneLoaded"),
@@ -52,9 +54,11 @@ class VtkJsBaseView(HtmlElement):
             self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
 
         self._publisher = None
+        self._closed = False
 
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self._ref}"'
+        self._attributes["view_key"] = f'view-key="{self._ref}"'
 
     def __del__(self):
         try:
@@ -85,7 +89,8 @@ class VtkJsBaseView(HtmlElement):
     def _init_publisher(self):
         from trame_vtklocal.widgets.publisher import ScenePublisher
 
-        self.cleanup()
+        if self._publisher:
+            self._publisher.cleanup()
         self._publisher = ScenePublisher(
             self.server,
             self.api,
@@ -94,15 +99,8 @@ class VtkJsBaseView(HtmlElement):
             camera_authority=self._camera_authority,
         )
 
-    def _configure_sync_mode(self, sync_mode, extra_event_names=None):
-        if sync_mode != "push":
-            raise ValueError("vtk-js views only support sync_mode='push'")
-
-        self._attributes["sync_mode"] = 'sync-mode="push"'
-        self._event_names += ["updated"]
-        if extra_event_names:
-            self._event_names += list(extra_event_names)
-        self._event_names += self._scene_event_names[1:]
+    def _configure_push(self):
+        self._event_names += self._scene_event_names
         self._init_publisher()
 
     # ------------------------------------------------------------------
@@ -123,10 +121,10 @@ class VtkJsBaseView(HtmlElement):
         """Batch mutations (and commands) into one commit + broadcast."""
         return self._publisher.transaction()
 
-    def send_command(self, name, payload=None):
+    def send_command(self, name, payload=None, *, retain=False, render=False):
         """Send a named command ordered atomically with pending scene ops."""
         if self._publisher:
-            self._publisher.send_command(name, payload)
+            self._publisher.send_command(name, payload, retain=retain, render=render)
 
     def on_client_resync(self, callback):
         """Call ``callback(client_id)`` whenever a client pulls a snapshot."""
@@ -137,19 +135,15 @@ class VtkJsBaseView(HtmlElement):
         if self._publisher:
             self._publisher.request_resync()
 
-    def event_is_current(self, event, node_id=None):
+    def event_is_current(self, event, node_id=None, strict=False):
         """Whether a seq-stamped client event is current for its target node.
 
-        ``node_id`` defaults to ``event["pick"]["nodeId"]``. Unknown is stale:
-        a missing/non-int seq, no node id, or an unknown/removed node -> False.
+        Array confirmations are ignored unless ``strict=True``. ``node_id``
+        defaults to ``event["pick"]["nodeId"]``; unknown/removed is stale.
         """
         if not self._publisher:
             return False
-        return self._publisher.event_is_current(event, node_id)
-
-    def update(self):
-        """Alias for :meth:`sync`."""
-        self.sync()
+        return self._publisher.event_is_current(event, node_id, strict=strict)
 
     # ------------------------------------------------------------------
     # Client-side camera / pointer seams
@@ -161,30 +155,34 @@ class VtkJsBaseView(HtmlElement):
             return renderers.GetItemAsObject(0)
         return None
 
-    def _push_camera(self):
+    def _camera_params(self):
         renderer = self.get_renderer()
         if not renderer:
-            return
+            return None
         cam = renderer.GetActiveCamera()
         if not cam:
-            return
-        self.set_camera(
-            {
-                "position": list(cam.GetPosition()),
-                "focalPoint": list(cam.GetFocalPoint()),
-                "viewUp": list(cam.GetViewUp()),
-                "viewAngle": cam.GetViewAngle(),
-                "parallelProjection": bool(cam.GetParallelProjection()),
-                "parallelScale": cam.GetParallelScale(),
-                "clippingRange": list(cam.GetClippingRange()),
-            }
-        )
+            return None
+        return {
+            "position": list(cam.GetPosition()),
+            "focalPoint": list(cam.GetFocalPoint()),
+            "viewUp": list(cam.GetViewUp()),
+            "viewAngle": cam.GetViewAngle(),
+            "parallelProjection": bool(cam.GetParallelProjection()),
+            "parallelScale": cam.GetParallelScale(),
+            "clippingRange": list(cam.GetClippingRange()),
+        }
 
-    def reset_camera(self):
-        self.server.js_call(self._ref, "resetCamera")
+    def reset_camera(self, *, retain=True):
+        if retain and self._publisher:
+            self._publisher.clear_retained_command("camera.set")
+        self.send_command("camera.reset", {}, retain=retain, render=True)
 
-    def set_camera(self, params):
-        self.server.js_call(self._ref, "setCamera", params)
+    def set_camera(self, params=None, *, retain=True):
+        params = self._camera_params() if params is None else params
+        if params is not None:
+            if retain and self._publisher:
+                self._publisher.clear_retained_command("camera.reset")
+            self.send_command("camera.set", params, retain=retain, render=True)
 
     def set_pointer_context(self, context):
         """Store an opaque blob echoed verbatim in every ``pointer_event``.
@@ -196,9 +194,28 @@ class VtkJsBaseView(HtmlElement):
         self.server.js_call(self._ref, "setPointerContext", context)
 
     def cleanup(self):
-        if self._publisher:
-            self._publisher.cleanup()
+        if getattr(self, "_closed", True):
+            return
+        publisher = self._publisher
+        api = self.api
+        object_manager = api.vtk_object_manager
+        if publisher is not None:
+            update_refs = getattr(api, "update_push_view_refs", None)
+            if update_refs is not None:
+                update_refs(
+                    self._window_id,
+                    frozenset(),
+                    publisher.store.live_refs(),
+                )
+            publisher.cleanup()
             self._publisher = None
+        object_manager.UnRegisterObject(int(self._window_id))
+        object_manager.PruneUnusedObjects()
+        object_manager.PruneUnusedStates()
+        flush_blobs = getattr(api, "flush_stale_blobs", None)
+        if flush_blobs is not None:
+            flush_blobs()
+        self._closed = True
 
     def close(self):
         self.cleanup()

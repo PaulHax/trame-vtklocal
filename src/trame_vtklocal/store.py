@@ -7,16 +7,8 @@ generic, schema-agnostic ops (``upsert`` / ``remove`` / ``patchArray``) plus
 the blob-ref deltas the publisher needs for payload inlining and server-side
 blob GC.
 
-Key properties:
-
-- **Schema-agnostic.** Nodes are opaque JSON-able dicts; any key that differs
-  makes the node dirty. New kinds of state (feature blocks, future top-level
-  keys) participate in diffing automatically — nothing to register.
-- **No per-client state.** One global ``seq``; clients keep their own cursor
-  and cache keys and resync from ``snapshot()`` when they can't apply ops.
-- **Reachability-based lifetime.** Nodes unreachable from the root after a
-  commit are removed automatically; refs from reachable nodes may not dangle.
-- **Atomic commits.** A failed commit leaves the store untouched.
+Nodes are schema-agnostic, client-independent, reachability-pruned, and
+committed atomically.
 
 This module is intentionally VTK-free and import-light so it can be used from
 both ``module/`` and ``widgets/`` and unit-tested without VTK installed.
@@ -45,17 +37,12 @@ def ref_manager_hashes(refs):
     hashes = set()
     for ref in refs or ():
         if ref.startswith(REF_CONTENT_PREFIX):
-            hashes.add(ref[len(REF_CONTENT_PREFIX):])
+            hashes.add(ref[len(REF_CONTENT_PREFIX) :])
         elif ref.startswith(REF_CELLS_PREFIX):
-            connectivity_hash, offsets_hash = ref[len(REF_CELLS_PREFIX):].split(":", 1)
+            connectivity_hash, offsets_hash = ref[len(REF_CELLS_PREFIX) :].split(":", 1)
             hashes.add(connectivity_hash)
             hashes.add(offsets_hash)
     return hashes
-
-
-# ---------------------------------------------------------------------------
-# Pure helpers over node dicts
-# ---------------------------------------------------------------------------
 
 
 def _canonical_refs(node_id, refs):
@@ -68,7 +55,9 @@ def _canonical_refs(node_id, refs):
             result[slot] = str(value)
         elif isinstance(value, Sequence):
             result[slot] = [
-                str(item) if isinstance(item, (str, int)) else _bad_ref(node_id, slot, item)
+                str(item)
+                if isinstance(item, (str, int))
+                else _bad_ref(node_id, slot, item)
                 for item in value
             ]
         else:
@@ -91,8 +80,7 @@ def _canonical_arrays(node_id, arrays):
     for key, entry in arrays.items():
         if not isinstance(entry, Mapping) or not isinstance(entry.get("ref"), str):
             raise ValueError(
-                f"node {node_id!r}: array {key!r} must be a mapping with a "
-                f"string 'ref'"
+                f"node {node_id!r}: array {key!r} must be a mapping with a string 'ref'"
             )
         result[key] = copy.deepcopy(dict(entry))
     return result
@@ -170,17 +158,13 @@ def _version_ref(node_id, key, version):
     return f"{REF_VERSION_PREFIX}{node_id}:{key}:{version}"
 
 
-# ---------------------------------------------------------------------------
-# Commit planning (pure: state in, new state + result out)
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class _StoreState:
     nodes: dict  # id -> canonical node (exactly the reachable set)
     seq: int
     array_versions: dict  # (id, key) -> int; survives node removal (id reuse)
-    touched: dict  # id -> seq of last op touching a live node
+    touched_structural: dict  # id -> seq of last upsert touching a live node
+    touched_array: dict  # id -> seq of last patchArray touching a live node
 
 
 def _plan_commit(state, root_id, upserts, patches):
@@ -259,18 +243,23 @@ def _plan_commit(state, root_id, upserts, patches):
     live_after = _live_refs(final_nodes)
 
     seq = state.seq + 1
-    touched = dict(state.touched)
+    touched_structural = dict(state.touched_structural)
+    touched_array = dict(state.touched_array)
     for op in ops:
-        if op["op"] != "remove":
-            touched[op["id"]] = seq
+        if op["op"] == "upsert":
+            touched_structural[op["id"]] = seq
+        elif op["op"] == "patchArray":
+            touched_array[op["id"]] = seq
     for node_id in removed_ids:
-        touched.pop(node_id, None)
+        touched_structural.pop(node_id, None)
+        touched_array.pop(node_id, None)
 
     new_state = _StoreState(
         nodes=final_nodes,
         seq=seq,
         array_versions=array_versions,
-        touched=touched,
+        touched_structural=touched_structural,
+        touched_array=touched_array,
     )
     result = {
         "base_seq": state.seq,
@@ -282,11 +271,6 @@ def _plan_commit(state, root_id, upserts, patches):
         "refs_leaving": frozenset(live_before - live_after),
     }
     return new_state, result
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 class SceneTransaction:
@@ -339,7 +323,13 @@ class SceneStore:
 
     def __init__(self, root_id):
         self._root_id = str(root_id)
-        self._state = _StoreState(nodes={}, seq=0, array_versions={}, touched={})
+        self._state = _StoreState(
+            nodes={},
+            seq=0,
+            array_versions={},
+            touched_structural={},
+            touched_array={},
+        )
 
     @property
     def root_id(self):
@@ -359,12 +349,24 @@ class SceneStore:
     def live_refs(self):
         return frozenset(_live_refs(self._state.nodes))
 
-    def last_seq_touching(self, node_id):
-        """Seq of the last op touching a live node; None if unknown/removed.
+    def last_seq_touching(self, node_id, strict=False):
+        """Seq relevant to event staleness for a live node.
 
-        Callers doing staleness checks must treat None as "stale".
+        By default only structural upserts count, so a drag's own array
+        confirmations cannot invalidate its in-flight events. ``strict=True``
+        includes array patches. Unknown or removed nodes return ``None`` and
+        must be treated as stale.
         """
-        return self._state.touched.get(str(node_id))
+        node_id = str(node_id)
+        structural = self._state.touched_structural.get(node_id)
+        if not strict:
+            return structural
+        array = self._state.touched_array.get(node_id)
+        if structural is None:
+            return array
+        if array is None:
+            return structural
+        return max(structural, array)
 
     def snapshot(self):
         """Wire-ready full state: ``{seq, root, nodes}`` (deep copy)."""
@@ -381,7 +383,8 @@ class SceneStore:
             nodes=state.nodes,
             seq=state.seq + 1,
             array_versions=state.array_versions,
-            touched=state.touched,
+            touched_structural=state.touched_structural,
+            touched_array=state.touched_array,
         )
         return state.seq, self._state.seq
 

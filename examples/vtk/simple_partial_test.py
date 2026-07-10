@@ -197,11 +197,11 @@ INIT_SCRIPT_JS = """
         if (initialized) return;
 
         const vtkViewRef = window.trame?.refs?.['vtkView'];
-        const vtkView = vtkViewRef?.initializeForSharedContext ? vtkViewRef :
+        const vtkView = vtkViewRef?.initializeForExternalContext ? vtkViewRef :
                        vtkViewRef?.$.exposed ? vtkViewRef.$.exposed :
                        vtkViewRef?.$.setupState;
 
-        if (!vtkView?.initializeForSharedContext) {
+        if (!vtkView?.initializeForExternalContext) {
             setTimeout(window.initVtkView, 100);
             return;
         }
@@ -229,13 +229,13 @@ INIT_SCRIPT_JS = """
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
 
-        vtkView.initializeForSharedContext(canvas, gl);
+        vtkView.initializeForExternalContext(canvas, gl);
 
         vtkView.onRenderRequested(() => {
             requestAnimationFrame(() => {
                 gl.clearColor(0.1, 0.1, 0.2, 1.0);
                 gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-                vtkView.renderShared({});
+                vtkView.renderExternal({});
             });
         });
 

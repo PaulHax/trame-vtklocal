@@ -84,10 +84,10 @@ JS_INIT = """
         if (mapInitialized) return;
 
         const vtkViewRef = window.trame?.refs?.vtkView;
-        const vtkView = vtkViewRef?.initializeForSharedContext ? vtkViewRef :
+        const vtkView = vtkViewRef?.initializeForExternalContext ? vtkViewRef :
                         vtkViewRef?.$.exposed || vtkViewRef;
 
-        if (!vtkView?.initializeForSharedContext || !window.maplibregl) {
+        if (!vtkView?.initializeForExternalContext || !window.maplibregl) {
             setTimeout(window.initMapVTK, 100);
             return;
         }
@@ -112,7 +112,7 @@ JS_INIT = """
             type: 'custom',
             renderingMode: '3d',
             onAdd(m, gl) {
-                vtkView.initializeForSharedContext(m.getCanvas(), gl);
+                vtkView.initializeForExternalContext(m.getCanvas(), gl);
             },
             render(gl, args) {
                 const projData = map.transform.getProjectionDataForCustomLayer?.() || args.defaultProjectionData;
@@ -173,11 +173,11 @@ JS_INIT = """
                 const rw = vtkView.getRenderWindow();
                 if (rw) {
                     const views = rw.getViews();
-                    if (views.length > 0 && views[0].renderShared) {
+                    if (views.length > 0 && views[0].renderExternal) {
                         // vtk.js renders with CCW winding; restore MapLibre's after
                         const previousFrontFace = gl.getParameter(gl.FRONT_FACE);
                         try {
-                            views[0].renderShared();
+                            views[0].renderExternal();
                         } finally {
                             gl.frontFace(previousFrontFace);
                         }

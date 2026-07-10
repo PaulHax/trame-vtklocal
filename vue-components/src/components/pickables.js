@@ -18,6 +18,12 @@ export function createPickableRegistry() {
   return new Map();
 }
 
+export function invalidatePickableProjectionCache(registry) {
+  for (const entry of registry?.values?.() || []) {
+    entry.projectionCache = null;
+  }
+}
+
 function isLiveInstance(instance) {
   return (
     !!instance &&
@@ -40,11 +46,25 @@ function normalizeConfig(config) {
   }
 
   const priority = Number(config.priority);
+  const preview = ["screen", "plane"].includes(config.preview)
+    ? config.preview
+    : null;
+  const plane =
+    preview === "plane" &&
+    Array.isArray(config.plane?.origin) &&
+    Array.isArray(config.plane?.normal)
+      ? {
+          origin: Array.from(config.plane.origin, Number),
+          normal: Array.from(config.plane.normal, Number),
+        }
+      : null;
   return {
     tags: config.tags && typeof config.tags === "object" ? config.tags : {},
     ids: Array.isArray(config.ids) ? config.ids : null,
     grabPx,
     priority: Number.isFinite(priority) ? priority : 0,
+    preview: preview === "plane" && !plane ? null : preview,
+    plane,
   };
 }
 
@@ -56,6 +76,8 @@ function configSignature(config) {
     config.priority,
     config.ids ? config.ids.join(",") : "",
     JSON.stringify(config.tags),
+    config.preview || "",
+    JSON.stringify(config.plane),
   ].join("|");
 }
 
@@ -78,6 +100,7 @@ export function applyPickableBlock(registry, nodeId, block, instance) {
   const previous = registry.get(id);
   if (previous && previous.signature === signature) {
     // Config unchanged; just refresh (re)resolution of the mapper instance.
+    if (previous.mapper !== live) previous.projectionCache = null;
     previous.mapper = live;
     previous.pending = !live;
     return registry;
@@ -87,6 +110,7 @@ export function applyPickableBlock(registry, nodeId, block, instance) {
     id,
     mapper: live,
     pending: !live,
+    projectionCache: null,
     signature,
     ...config,
   });
@@ -198,6 +222,7 @@ function resolvePickableMapper(entry, synchronizerContext) {
 
 // Nearest live glyph point of one pickable within its grab radius, or null.
 function nearestPickablePoint(
+  entry,
   mapper,
   worldToClip,
   width,
@@ -213,19 +238,54 @@ function nearestPickablePoint(
   }
 
   const grabSq = grabPx * grabPx;
-  const projected = [0, 0];
   const count = Math.floor(values.length / 3);
+  const signature = [
+    width,
+    height,
+    points?.getMTime?.() ?? "",
+    ...worldToClip,
+  ].join("|");
+  let cache = entry.projectionCache;
+  if (!cache || cache.signature !== signature || cache.count !== count) {
+    const css = new Float64Array(count * 2);
+    const projected = [0, 0];
+    for (let i = 0; i < count; i += 1) {
+      const offset = i * 3;
+      const cssOffset = i * 2;
+      if (
+        projectWorldToCss(
+          projected,
+          worldToClip,
+          values[offset],
+          values[offset + 1],
+          values[offset + 2],
+          width,
+          height,
+        )
+      ) {
+        css[cssOffset] = projected[0];
+        css[cssOffset + 1] = projected[1];
+      } else {
+        css[cssOffset] = NaN;
+        css[cssOffset + 1] = NaN;
+      }
+    }
+    cache = { signature, count, css };
+    entry.projectionCache = cache;
+  }
   let best = null;
   for (let i = 0; i < count; i += 1) {
     const offset = i * 3;
     const x = values[offset];
     const y = values[offset + 1];
     const z = values[offset + 2];
-    if (!projectWorldToCss(projected, worldToClip, x, y, z, width, height)) {
+    const projectedX = cache.css[i * 2];
+    const projectedY = cache.css[i * 2 + 1];
+    if (!Number.isFinite(projectedX) || !Number.isFinite(projectedY)) {
       continue;
     }
-    const dx = projected[0] - cssX;
-    const dy = projected[1] - cssY;
+    const dx = projectedX - cssX;
+    const dy = projectedY - cssY;
     const distSq = dx * dx + dy * dy;
     if (distSq <= grabSq && (!best || distSq < best.distSq)) {
       best = {
@@ -291,6 +351,7 @@ export function pickAt(
     }
 
     const near = nearestPickablePoint(
+      entry,
       mapper,
       worldToClip,
       metrics.width,
@@ -311,6 +372,10 @@ export function pickAt(
       pointIndex: near.pointIndex,
       pointId: entry.ids?.[near.pointIndex] ?? near.pointIndex,
       tags: entry.tags,
+      preview: entry.preview,
+      plane: entry.plane,
+      pointsNodeId:
+        synchronizerContext?.getInstanceId?.(mapper.getInputData?.(0)) ?? null,
       world: near.world,
       grabOffset: near.grabOffset,
     };
@@ -329,6 +394,12 @@ export function pickAt(
     pointIndex: best.pointIndex,
     pointId: best.pointId,
     tags: best.tags,
+    preview: best.preview,
+    plane: best.plane,
+    pointsNodeId:
+      best.pointsNodeId === null || best.pointsNodeId === undefined
+        ? null
+        : String(best.pointsNodeId),
     distancePx: Math.sqrt(best.distSq),
     world: best.world,
     grabOffset: best.grabOffset,
@@ -346,6 +417,7 @@ export function describePickableRegistry(registry) {
       pending: !!entry.pending,
       grabPx: entry.grabPx,
       priority: entry.priority,
+      preview: entry.preview,
       idCount: entry.ids ? entry.ids.length : null,
       mapperLive: isLiveInstance(entry.mapper),
     });
@@ -356,6 +428,7 @@ export function describePickableRegistry(registry) {
 export default {
   createPickableRegistry,
   applyPickableBlock,
+  invalidatePickableProjectionCache,
   pickAt,
   describePickableRegistry,
 };

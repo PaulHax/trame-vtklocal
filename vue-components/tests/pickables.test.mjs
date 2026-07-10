@@ -374,3 +374,70 @@ test("pickAt drops entries whose mapper instance was deleted", async () => {
   assert.equal(hit, null);
   assert.equal(registry.size, 0);
 });
+
+test("pickAt reuses projected positions until points or camera change", async () => {
+  const pickables = await loadPickables();
+  const vtk = await loadVtk();
+  const { mapper } = buildMapper(vtk, [0, 0, 0, 0.5, 0, 0]);
+  const registry = pickables.createPickableRegistry();
+  pickables.applyPickableBlock(
+    registry,
+    "m",
+    pickableBlock({ grabPx: 30 }),
+    mapper,
+  );
+  let matrix = IDENTITY;
+  const renderer = {
+    getActiveCamera: () => ({
+      getCompositeProjectionMatrix: () => transposeMatrix(matrix),
+    }),
+    getViewport: () => [0, 0, 1, 1],
+  };
+  const options = {
+    renderer,
+    renderWindow: { getViews: () => [{ getSize: () => [WIDTH, HEIGHT] }] },
+    synchronizerContext: contextFor(new Map([["m", mapper]])),
+  };
+
+  pickables.pickAt(registry, 400, 200, options);
+  const firstCache = registry.get("m").projectionCache;
+  pickables.pickAt(registry, 400, 200, options);
+  assert.equal(registry.get("m").projectionCache, firstCache);
+
+  matrix = [2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  pickables.pickAt(registry, 400, 200, options);
+  assert.notEqual(registry.get("m").projectionCache, firstCache);
+
+  pickables.invalidatePickableProjectionCache(registry);
+  assert.equal(registry.get("m").projectionCache, null);
+});
+
+test("preview metadata and bound points node id ride the pick result", async () => {
+  const pickables = await loadPickables();
+  const vtk = await loadVtk();
+  const { mapper, poly } = buildMapper(vtk, [0, 0, 0]);
+  const registry = pickables.createPickableRegistry();
+  pickables.applyPickableBlock(
+    registry,
+    "m",
+    {
+      grabPx: 20,
+      preview: "plane",
+      plane: { origin: [0, 0, 0], normal: [0, 0, 1] },
+    },
+    mapper,
+  );
+  const view = makeContext();
+  const hit = pickables.pickAt(registry, 400, 200, {
+    renderer: view.renderer,
+    renderWindow: view.renderWindow,
+    synchronizerContext: {
+      getInstance: () => mapper,
+      getInstanceId: (instance) => (instance === poly ? "poly" : null),
+    },
+  });
+
+  assert.equal(hit.preview, "plane");
+  assert.equal(hit.pointsNodeId, "poly");
+  assert.deepEqual(hit.plane, { origin: [0, 0, 0], normal: [0, 0, 1] });
+});

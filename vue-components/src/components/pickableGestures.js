@@ -26,6 +26,9 @@ export function createPickableGestures({
   readSeq = () => null,
   getCanvas = () => null,
   emit = noop,
+  onDragStart = noop,
+  onDragMove = noop,
+  onDragEnd = noop,
   windowRef = globalThis.window,
   emitBackgroundClick = true,
 } = {}) {
@@ -43,6 +46,11 @@ export function createPickableGestures({
   let drag = null; // { pick, grabOffset, pointerId, canvas, previousCursor }
   let pendingMove = null; // latest move payload (rAF-coalesced, last wins)
   let rafHandle = 0;
+  let hoverEnabled = false;
+  let hoverCanvas = null;
+  let hoveredPick = null;
+  let pendingHover = undefined;
+  let hoverRafHandle = 0;
 
   function requestFrame(cb) {
     return windowRef?.requestAnimationFrame
@@ -120,6 +128,7 @@ export function createPickableGestures({
     const payload = pendingMove;
     pendingMove = null;
     if (!drag || !payload) return;
+    onDragMove(payload);
     emit(payload);
   }
 
@@ -162,19 +171,19 @@ export function createPickableGestures({
     if (unresolved) flags.unresolved = true;
     // The terminal end is ALWAYS emitted so the server releases its capture and
     // clears its drag state, even when the pointer position can't be resolved.
-    emit(
-      buildPayload(
-        "target.drag.end",
-        cssPointer,
-        active.pick,
-        active.grabOffset,
-        flags,
-      ),
+    const payload = buildPayload(
+      "target.drag.end",
+      cssPointer,
+      active.pick,
+      active.grabOffset,
+      flags,
     );
+    onDragEnd(payload);
+    emit(payload);
 
     try {
       active.canvas?.releasePointerCapture?.(active.pointerId);
-    } catch (_error) {
+    } catch {
       // Capture may already be released (e.g. pointercancel); ignore.
     }
     setCursor(active.canvas, active.previousCursor || "");
@@ -210,16 +219,108 @@ export function createPickableGestures({
       canvas,
       previousCursor: canvas?.style?.cursor || "",
     };
+    hoveredPick = null;
+    pendingHover = undefined;
+    cancelFrame(hoverRafHandle);
+    hoverRafHandle = 0;
     stopEvent(event);
     try {
       canvas?.setPointerCapture?.(event?.pointerId);
-    } catch (_error) {
+    } catch {
       // No capture available (e.g. detached element); the drag still runs.
     }
     setCursor(canvas, "grabbing");
     addDragListeners();
-    emit(buildPayload("target.drag.start", cssPointer, pickResult, grabOffset));
+    const payload = buildPayload(
+      "target.drag.start",
+      cssPointer,
+      pickResult,
+      grabOffset,
+    );
+    onDragStart(payload);
+    emit(payload);
     return true;
+  }
+
+  function samePick(a, b) {
+    return (
+      a === b ||
+      (!!a &&
+        !!b &&
+        a.nodeId === b.nodeId &&
+        a.pointIndex === b.pointIndex)
+    );
+  }
+
+  function flushHover() {
+    hoverRafHandle = 0;
+    const cssPointer = pendingHover;
+    pendingHover = undefined;
+    if (!hoverEnabled || drag) return;
+    const next = cssPointer ? pick(cssPointer.x, cssPointer.y) : null;
+    if (samePick(next, hoveredPick)) return;
+    if (hoveredPick) {
+      emit(buildPayload("target.leave", cssPointer, hoveredPick, null));
+    }
+    if (next) {
+      emit(buildPayload("target.enter", cssPointer, next, null));
+    }
+    hoveredPick = next;
+  }
+
+  function scheduleHover(cssPointer) {
+    pendingHover = cssPointer;
+    if (!hoverRafHandle) {
+      hoverRafHandle = requestFrame(flushHover);
+    }
+  }
+
+  function onHoverMove(event) {
+    if (!hoverEnabled || drag) return;
+    const cssPointer = pointerToCanvasCss(event);
+    if (cssPointer) scheduleHover(cssPointer);
+  }
+
+  function onHoverLeave() {
+    if (hoverEnabled && !drag) scheduleHover(null);
+  }
+
+  function bindHoverCanvas() {
+    const canvas = getCanvas();
+    if (canvas === hoverCanvas) return;
+    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
+    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+    hoverCanvas = canvas;
+    if (hoverEnabled) {
+      hoverCanvas?.addEventListener?.("pointermove", onHoverMove);
+      hoverCanvas?.addEventListener?.("pointerleave", onHoverLeave);
+    }
+  }
+
+  function setHoverEnabled(enabled) {
+    hoverEnabled = !!enabled;
+    hoveredPick = null;
+    pendingHover = undefined;
+    cancelFrame(hoverRafHandle);
+    hoverRafHandle = 0;
+    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
+    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+    if (hoverEnabled) {
+      bindHoverCanvas();
+      hoverCanvas?.addEventListener?.("pointermove", onHoverMove);
+      hoverCanvas?.addEventListener?.("pointerleave", onHoverLeave);
+    }
+  }
+
+  function cancelForNode(nodeId) {
+    if (drag && drag.pick.nodeId === String(nodeId)) {
+      endDrag(null, { cancelled: true });
+      return true;
+    }
+    if (hoveredPick?.nodeId === String(nodeId)) {
+      hoveredPick = null;
+    }
+    return false;
   }
 
   // Pick at the pointer; emit target.click on a hit, or background.click on a
@@ -259,8 +360,15 @@ export function createPickableGestures({
     }
     removeDragListeners();
     cancelFrame(rafHandle);
+    cancelFrame(hoverRafHandle);
     rafHandle = 0;
     pendingMove = null;
+    pendingHover = undefined;
+    hoverRafHandle = 0;
+    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
+    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+    hoverCanvas = null;
+    hoveredPick = null;
   }
 
   return {
@@ -269,6 +377,10 @@ export function createPickableGestures({
     setPointerContext,
     setEmitBackgroundClick,
     setShouldGrab,
+    setHoverEnabled,
+    bindHoverCanvas,
+    cancelForNode,
+    getActivePick: () => drag?.pick || null,
     teardown,
   };
 }

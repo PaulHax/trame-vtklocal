@@ -26,8 +26,6 @@ import asyncio
 from collections.abc import Mapping
 from contextlib import contextmanager
 
-import numpy as np
-
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.camera_authority import validate_camera_authority
 from trame_vtklocal.module.node_translator import (
@@ -35,14 +33,20 @@ from trame_vtklocal.module.node_translator import (
     translate_object,
     translate_scene,
 )
-from trame_vtklocal.store import SceneStore, ref_manager_hashes
+from trame_vtklocal.module.state_cache import ParsedStateCache
+from trame_vtklocal.store import SceneStore
 from trame_vtklocal.widgets.blob_payloads import (
     attach_binary,
-    numpy_array_from_vtk_data,
+    nodes_reference_missing_blob,
     resolve_ref_payload,
 )
 from trame_vtklocal.widgets.dirty_tracker import DirtyTracker
-from trame_vtklocal.widgets.hot_arrays import HotArrayDiffer
+from trame_vtklocal.widgets.hot_arrays import (
+    DEFAULT_HOT_ARRAY_KEYS,
+    HotArrayDiffer,
+    live_dataset_array,
+)
+from trame_vtklocal.widgets.tick_timing import TickTiming
 
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
@@ -57,14 +61,13 @@ def _node_ref_ids(node):
             yield from value
 
 
-def event_is_current(store, event, node_id=None):
+def event_is_current(store, event, node_id=None, strict=False):
     """Whether a seq-stamped client event is current for the node it targets.
 
     The event's ``seq`` (the client's applied cursor when it built the event)
-    must be an int at or above the last seq that touched the node. ``node_id``
-    defaults to the picked node id inside ``event["pick"]``. Anything unknown
-    is stale: missing/non-int seq, no node id, or a node the store never saw
-    (or has removed) all return False.
+    must be an int at or above the node's structural cursor (or every touch in
+    strict mode). ``node_id`` defaults to the picked node id inside
+    ``event["pick"]``. Missing data and unknown/removed nodes are stale.
     """
     if not isinstance(event, Mapping):
         return False
@@ -76,7 +79,7 @@ def event_is_current(store, event, node_id=None):
         node_id = pick.get("nodeId") if isinstance(pick, Mapping) else None
     if node_id is None:
         return False
-    last_seq = store.last_seq_touching(node_id)
+    last_seq = store.last_seq_touching(node_id, strict=strict)
     if last_seq is None:
         return False
     return seq >= last_seq
@@ -102,6 +105,7 @@ class ScenePublisher:
         render_window,
         rw_id,
         camera_authority="server",
+        hot_array_keys=None,
     ):
         self._server = server
         self._api = object_manager_api
@@ -110,9 +114,17 @@ class ScenePublisher:
         self._rw_str = str(rw_id)
         self._camera_authority = validate_camera_authority(camera_authority)
         self._store = SceneStore(self._rw_str)
+        self._state_cache = ParsedStateCache()
+        self._class_names = {}
 
-        self._hot_arrays = HotArrayDiffer(self._live_hot_array)
+        self._hot_arrays = HotArrayDiffer(
+            self._live_hot_array,
+            hot_keys=(
+                DEFAULT_HOT_ARRAY_KEYS if hot_array_keys is None else hot_array_keys
+            ),
+        )
         self._pending_commands = []
+        self._retained_commands = {}
         self._resync_callbacks = []
         self._transaction_depth = 0
         self._publish_scheduled = False
@@ -125,9 +137,7 @@ class ScenePublisher:
         object_manager = self._object_manager
         for name in _REQUIRED_MANAGER_METHODS:
             if not hasattr(object_manager, name):
-                raise RuntimeError(
-                    f"Push sync requires vtkObjectManager.{name}"
-                )
+                raise RuntimeError(f"Push sync requires vtkObjectManager.{name}")
 
         self._tracker = DirtyTracker(
             object_manager, self._rw_id, on_dirty=self._schedule_publish
@@ -143,11 +153,8 @@ class ScenePublisher:
         self._refresh_window_states()
         self._store.transact().upsert_nodes(self._translate_full_scene()).commit()
         self._tracker.sync_observers()
+        self._refresh_translation_cache_index()
         self._notify_blob_registry(frozenset())
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def sync(self):
         """Force a publish now (includes an mtime sweep healing missed marks)."""
@@ -177,14 +184,25 @@ class ScenePublisher:
             if self._transaction_depth == 0 and not self._disposed:
                 self._publish_tick()
 
-    def send_command(self, name, payload=None):
+    def send_command(self, name, payload=None, *, retain=False, render=False):
         """Queue a command to ride the next broadcast, ordered with scene ops.
 
         If nothing else is pending, the next tick mints a seq via
         ``store.advance()`` and sends an empty-ops message.
         """
-        self._pending_commands.append({"name": str(name), "payload": payload})
+        command = {"name": str(name), "payload": payload}
+        if render:
+            command["render"] = True
+        self._pending_commands.append(command)
+        if retain:
+            if payload is None:
+                self._retained_commands.pop(command["name"], None)
+            else:
+                self._retained_commands[command["name"]] = dict(command)
         self._schedule_publish()
+
+    def clear_retained_command(self, name):
+        self._retained_commands.pop(str(name), None)
 
     def on_client_resync(self, callback):
         """Call ``callback(client_id)`` whenever ``scene.resync`` serves a
@@ -209,6 +227,8 @@ class ScenePublisher:
             "nodes": snapshot["nodes"],
             "blobs": blobs,
         }
+        if self._retained_commands:
+            payload["commands"] = list(self._retained_commands.values())
         self._attach_binary(payload)
         for callback in list(self._resync_callbacks):
             callback(client_id)
@@ -237,12 +257,12 @@ class ScenePublisher:
             },
         )
 
-    def last_seq_touching(self, node_id):
-        return self._store.last_seq_touching(node_id)
+    def last_seq_touching(self, node_id, strict=False):
+        return self._store.last_seq_touching(node_id, strict=strict)
 
-    def event_is_current(self, event, node_id=None):
+    def event_is_current(self, event, node_id=None, strict=False):
         """Whether a seq-stamped client event is current (see module helper)."""
-        return event_is_current(self._store, event, node_id)
+        return event_is_current(self._store, event, node_id, strict=strict)
 
     @property
     def camera_authority(self):
@@ -262,11 +282,10 @@ class ScenePublisher:
         self._api = None
         self._hot_arrays.clear()
         self._pending_commands.clear()
+        self._retained_commands.clear()
         self._resync_callbacks.clear()
-
-    # ------------------------------------------------------------------
-    # Scheduling
-    # ------------------------------------------------------------------
+        self._state_cache.clear()
+        self._class_names.clear()
 
     def _schedule_publish(self):
         if self._disposed or self._publish_scheduled:
@@ -287,10 +306,6 @@ class ScenePublisher:
         if not self._disposed:
             self._publish_tick()
 
-    # ------------------------------------------------------------------
-    # Publish tick
-    # ------------------------------------------------------------------
-
     def _publish_tick(self):
         if self._disposed or self._transaction_depth:
             return
@@ -301,25 +316,31 @@ class ScenePublisher:
         if not batch and not commands:
             return
 
-        result = self._commit_batch(batch) if batch else None
-        self._broadcast(result, commands)
+        timing = TickTiming(self._rw_str)
+        result = self._commit_batch(batch, timing) if batch else None
+        with timing.measure("broadcast"):
+            self._broadcast(result, commands)
         self._after_publish(batch, result)
+        timing.log()
 
-    def _commit_batch(self, batch):
+    def _commit_batch(self, batch, timing):
         # One serialization scope for the whole tick: the dtc bypass walks
         # every renderer's prop tree and rewires every dtc-fed mapper, so
         # entering it once (not per step) halves that walk and the rewire
         # MTime churn. Every VTK touch below is serialization work.
         with self._tracker_suppress():
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                self._update_pipeline_producers(batch.producers)
-                self._refresh_object_states(batch.refresh_ids)
-                nodes = self._translate_candidates(batch.candidates)
-        tx = self._store.transact()
-        for node_id, node in nodes.items():
-            self._hot_arrays.apply(node_id, node, self._store.get(node_id), tx)
-        tx.upsert_nodes(nodes)
-        return tx.commit()
+                with timing.measure("refresh"):
+                    self._update_pipeline_producers(batch.producers)
+                    self._refresh_object_states(batch.refresh_ids)
+                with timing.measure("translate"):
+                    nodes = self._translate_candidates(batch.candidates)
+        with timing.measure("diff"):
+            tx = self._store.transact()
+            for node_id, node in nodes.items():
+                self._hot_arrays.apply(node_id, node, self._store.get(node_id), tx)
+            tx.upsert_nodes(nodes)
+            return tx.commit()
 
     def _broadcast(self, result, commands):
         protocol = getattr(self._server, "protocol", None)
@@ -356,12 +377,14 @@ class ScenePublisher:
             for op in result["ops"]:
                 if op["op"] == "remove":
                     self._hot_arrays.drop(op["id"])
+                    self._state_cache.drop(op["id"])
         leaving = self._hot_arrays.take_released_refs()
         if result is not None:
             leaving |= result["refs_leaving"]
         self._notify_blob_registry(leaving)
         if batch and batch.structural:
             self._tracker.sync_observers()
+            self._refresh_translation_cache_index()
         elif batch:
             self._tracker.refresh_dataset_children(batch.candidates)
 
@@ -413,6 +436,7 @@ class ScenePublisher:
                 continue
         for object_id in sorted(manager_ids):
             object_manager.UpdateStateFromObject(object_id)
+            self._state_cache.drop(object_id)
         self._prune_object_manager()
 
     def _update_pipeline_producers(self, producers):
@@ -439,6 +463,8 @@ class ScenePublisher:
                     self._object_manager,
                     self._rw_id,
                     camera_authority=self._camera_authority,
+                    state_cache=self._state_cache,
+                    class_names=self._class_names,
                 )
 
     def _translate_candidates(self, candidate_ids):
@@ -448,7 +474,12 @@ class ScenePublisher:
         known = self._store.node_ids()
         nodes = {}
         pending = [str(object_id) for object_id in candidate_ids]
-        reader = scene_reader(object_manager, self._camera_authority)
+        reader = scene_reader(
+            object_manager,
+            self._camera_authority,
+            state_cache=self._state_cache,
+            class_names=self._class_names,
+        )
         while pending:
             node_id = pending.pop()
             if node_id in nodes:
@@ -480,49 +511,17 @@ class ScenePublisher:
         # content-addressed refs are unchanged, so the built nodes stay
         # valid — only the payloads they cite are repopulated.
         new_nodes = [node for node_id, node in nodes.items() if node_id not in known]
-        if new_nodes and self._nodes_reference_dropped_blob(new_nodes):
+        if new_nodes and nodes_reference_missing_blob(object_manager, new_nodes):
             object_manager.UpdateStatesFromObjects([self._rw_id])
         return nodes
 
-    def _nodes_reference_dropped_blob(self, nodes):
-        """True if a built node cites a content/cell blob the manager dropped.
+    def _refresh_translation_cache_index(self):
+        self._class_names.clear()
+        self._class_names.update(self._tracker.classes())
+        self._state_cache.retain(self._class_names)
 
-        A declared-non-empty ``c:``/``c2:`` array whose object-manager blob is
-        gone (``None`` or zero bytes) would broadcast an empty payload and leave
-        the client caching an empty array. See :meth:`_translate_candidates`.
-        """
-        object_manager = self._object_manager
-
-        def _blob_empty(hash_value):
-            blob = object_manager.GetBlob(hash_value)
-            if blob is None:
-                return True
-            try:
-                return memoryview(blob).nbytes == 0
-            except (TypeError, ValueError):
-                return False
-
-        for node in nodes:
-            for entry in (node.get("arrays") or {}).values():
-                if not isinstance(entry, dict) or not entry.get("size"):
-                    continue
-                ref = entry.get("ref")
-                if ref and any(_blob_empty(h) for h in ref_manager_hashes([ref])):
-                    return True
-        return False
-
-    def _live_hot_array(self, node_id):
-        """Flat numpy view of the live points data array, or None."""
-        vtk_object = self._object_manager.GetObjectAtId(int(node_id))
-        if vtk_object is None or not hasattr(vtk_object, "GetPoints"):
-            return None
-        points = vtk_object.GetPoints()
-        if points is None:
-            return None
-        data = points.GetData()
-        if data is None:
-            return None
-        return np.asarray(numpy_array_from_vtk_data(data)).reshape(-1)
+    def _live_hot_array(self, node_id, key):
+        return live_dataset_array(self._object_manager, node_id, key)
 
     # ------------------------------------------------------------------
     # Blob payloads (see widgets/blob_payloads.py)

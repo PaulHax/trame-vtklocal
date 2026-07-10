@@ -339,11 +339,11 @@ INIT_SCRIPT_JS = """
         if (initialized) return;
 
         const vtkViewRef = window.trame?.refs?.['vtkView'];
-        vtkView = vtkViewRef?.initializeForSharedContext ? vtkViewRef :
+        vtkView = vtkViewRef?.initializeForExternalContext ? vtkViewRef :
                   vtkViewRef?.$.exposed ? vtkViewRef.$.exposed :
                   vtkViewRef?.$.setupState;
 
-        if (!vtkView?.initializeForSharedContext || !window.maplibregl) {
+        if (!vtkView?.initializeForExternalContext || !window.maplibregl) {
             setTimeout(window.initMapLibreVTK, 100);
             return;
         }
@@ -374,7 +374,7 @@ INIT_SCRIPT_JS = """
             renderingMode: '3d',
             onAdd: function(mapInstance, gl) {
                 const canvas = mapInstance.getCanvas();
-                vtkView.initializeForSharedContext(canvas, gl);
+                vtkView.initializeForExternalContext(canvas, gl);
             },
             render: function(gl, args) {
                 if (pendingOrbitCamera) {
@@ -448,11 +448,11 @@ INIT_SCRIPT_JS = """
                 const rw = vtkView.getRenderWindow();
                 if (rw) {
                     const views = rw.getViews();
-                    if (views.length > 0 && views[0].renderShared) {
+                    if (views.length > 0 && views[0].renderExternal) {
                         // vtk.js renders with CCW winding; restore MapLibre's after
                         const previousFrontFace = gl.getParameter(gl.FRONT_FACE);
                         try {
-                            views[0].renderShared();
+                            views[0].renderExternal();
                         } finally {
                             gl.frontFace(previousFrontFace);
                         }

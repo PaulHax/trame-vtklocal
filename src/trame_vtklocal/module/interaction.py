@@ -16,15 +16,30 @@ _PICKABLE_CONFIGS = weakref.WeakKeyDictionary()
 
 
 def _copy_config(config):
-    return {
+    copied = {
         "tags": dict(config["tags"]),
         "ids": list(config["ids"]) if config["ids"] is not None else None,
         "grabPx": config["grabPx"],
         "priority": config["priority"],
+        "preview": config["preview"],
     }
+    if config["plane"] is not None:
+        copied["plane"] = {
+            "origin": list(config["plane"]["origin"]),
+            "normal": list(config["plane"]["normal"]),
+        }
+    return copied
 
 
-def make_pickable(mapper, tags=None, ids=None, grab_px=None, priority=0):
+def make_pickable(
+    mapper,
+    tags=None,
+    ids=None,
+    grab_px=None,
+    priority=0,
+    preview=None,
+    plane=None,
+):
     """Mark ``mapper`` pickable and stamp its opaque hit-test metadata.
 
     ``tags`` (dict) and ``ids`` (list, one entry per glyph point) are opaque to
@@ -38,12 +53,32 @@ def make_pickable(mapper, tags=None, ids=None, grab_px=None, priority=0):
     grab = float(grab_px) if grab_px is not None else float("nan")
     if not math.isfinite(grab) or grab <= 0:
         raise ValueError("grab_px must be a positive number")
+    if preview not in (None, "screen", "plane"):
+        raise ValueError("preview must be None, 'screen', or 'plane'")
+    normalized_plane = None
+    if plane is not None:
+        if not isinstance(plane, dict):
+            raise ValueError("plane must contain origin and normal vectors")
+        origin = [float(value) for value in plane.get("origin", ())]
+        normal = [float(value) for value in plane.get("normal", ())]
+        if (
+            len(origin) != 3
+            or len(normal) != 3
+            or not all(math.isfinite(value) for value in (*origin, *normal))
+            or sum(value * value for value in normal) == 0
+        ):
+            raise ValueError("plane must contain finite 3D origin and normal vectors")
+        normalized_plane = {"origin": origin, "normal": normal}
+    if preview == "plane" and normalized_plane is None:
+        raise ValueError("preview='plane' requires a plane")
 
     config = {
         "tags": dict(tags) if tags else {},
         "ids": list(ids) if ids is not None else None,
         "grabPx": grab,
         "priority": int(priority),
+        "preview": preview,
+        "plane": normalized_plane,
     }
     if _PICKABLE_CONFIGS.get(mapper) != config:
         _PICKABLE_CONFIGS[mapper] = config
@@ -61,4 +96,3 @@ def pickable_config(mapper):
         return None
     config = _PICKABLE_CONFIGS.get(mapper)
     return _copy_config(config) if config else None
-

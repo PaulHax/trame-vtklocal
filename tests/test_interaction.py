@@ -83,6 +83,23 @@ def test_marked_mapper_stamps_the_pickable_block():
     assert block["ids"] == ["a", "b"]
     assert block["grabPx"] == 36.0
     assert block["priority"] == 2
+    assert block["preview"] is None
+
+
+def test_pickable_preview_configuration_round_trips():
+    api, _rw, mapper, render_window_id = _make_scene()
+    plane = {"origin": [0, 0, 2], "normal": [0, 0, 1]}
+    pick.make_pickable(
+        mapper,
+        grab_px=12,
+        preview="plane",
+        plane=plane,
+    )
+
+    (node,) = _find_pickable_nodes(_translate(api, render_window_id))
+    block = node["blocks"][pick.PICKABLE_STATE_KEY]
+    assert block["preview"] == "plane"
+    assert block["plane"] == plane
 
 
 def test_retag_bumps_mtime_and_reaches_the_state():
@@ -163,3 +180,7 @@ def test_validation_errors():
         pick.make_pickable(mapper, grab_px=-5)
     with pytest.raises(ValueError):
         pick.make_pickable(mapper, grab_px=float("nan"))
+    with pytest.raises(ValueError, match="preview"):
+        pick.make_pickable(mapper, grab_px=1, preview="depth")
+    with pytest.raises(ValueError, match="requires a plane"):
+        pick.make_pickable(mapper, grab_px=1, preview="plane")

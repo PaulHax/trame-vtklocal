@@ -5,6 +5,7 @@ import {
   getPrimaryRenderer,
   getSyncedRenderers,
   applyCameraParams,
+  extractCameraParams,
 } from "./vtkJsSync";
 import { createMirrorStore } from "./engine/mirrorStore";
 import { createReconciler } from "./engine/reconcile";
@@ -23,10 +24,12 @@ import {
   describePickableRegistry,
   getDevicePixelRatio,
   getViewportMetrics,
+  invalidatePickableProjectionCache,
   pickAt as pickAtRegistry,
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
 import { createPickableGestures } from "./pickableGestures";
+import { createDragPreview } from "./dragPreview";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
@@ -57,6 +60,10 @@ export function useSceneSync(
   let syncedRootId = null;
   let renderedCamera = null;
   let clientCamera = null;
+  let cameraInteractionActive = false;
+  let cameraReportOptions = { during: "none", terminal: true };
+  let pendingCameraReport = false;
+  let cameraReportFrame = 0;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
 
@@ -160,18 +167,22 @@ export function useSceneSync(
     return engine?.getDiagnostics?.().bufferLength ?? 0;
   }
 
-  // State applies on message arrival; update() survives as a render request
-  // for callers that used it to flush the v1 queue.
-  function update() {
-    renderRequestCallback?.();
-    return Promise.resolve(false);
-  }
-
   function setCamera(params) {
     const { camera } = bindPrimaryCameraToRenderers();
     if (!camera) return;
+    renderedCamera = null;
     applyCameraParams(camera, params);
     renderScene?.();
+  }
+
+  function applyCameraIntent(params) {
+    const { camera } = bindPrimaryCameraToRenderers();
+    if (!camera || !params) return false;
+    reconciler?.flushDeferredProps?.();
+    renderedCamera = null;
+    applyCameraParams(camera, params);
+    camera.modified?.();
+    return true;
   }
 
   function matrixCopy16(value) {
@@ -233,8 +244,18 @@ export function useSceneSync(
   function resetCamera() {
     const { renderer } = bindPrimaryCameraToRenderers();
     if (!renderer) return;
+    renderedCamera = null;
     renderer.resetCamera();
     renderScene?.();
+  }
+
+  function applyCameraResetIntent() {
+    const { renderer } = bindPrimaryCameraToRenderers();
+    if (!renderer) return false;
+    reconciler?.flushDeferredProps?.();
+    renderedCamera = null;
+    renderer.resetCamera();
+    return true;
   }
 
   function cleanupSyncContext() {
@@ -248,6 +269,9 @@ export function useSceneSync(
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
+    cameraInteractionActive = false;
+    renderedCamera = null;
+    cancelCameraReport();
     distanceToCameraGlyphs.clear();
     pickables.clear();
     managedSyncContext?.cleanup?.();
@@ -279,12 +303,21 @@ export function useSceneSync(
       objectManager: vtkObjectManagerImpl,
       rootId: syncedRootId,
       rootInstance: syncRenderWindow,
+      shouldDeferProps: (_id, node) =>
+        cameraAuthority === "server" &&
+        cameraInteractionActive &&
+        node?.type === "vtkCamera",
     });
 
     reconciler.registerBlockHandler(
       PICKABLE_BLOCK_KEY,
-      (nodeId, block, instance) =>
-        applyPickableBlock(pickables, nodeId, block, instance),
+      (nodeId, block, instance) => {
+        if (!block) {
+          gestures.cancelForNode(nodeId);
+          if (dragPreview.targets(nodeId)) dragPreview.end();
+        }
+        return applyPickableBlock(pickables, nodeId, block, instance);
+      },
     );
     reconciler.registerBlockHandler(
       DISTANCE_TO_CAMERA_BLOCK_KEY,
@@ -325,22 +358,33 @@ export function useSceneSync(
           if (disposed) return;
           bindPrimaryCameraToRenderers();
           updateDistanceToCameraGlyphsForRender();
+          dragPreview.reapply();
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
-          renderRequestCallback?.();
+          if (!snapshot.commands?.some((command) => command?.render === true)) {
+            renderRequestCallback?.();
+          }
         },
         onApplied(message) {
           if (disposed) return;
           bindPrimaryCameraToRenderers();
           updateDistanceToCameraGlyphsForRender();
+          dragPreview.reapply();
           noteMessageApplied(message);
-          renderRequestCallback?.();
+          if (!Array.isArray(message?.ops) || message.ops.length) {
+            renderRequestCallback?.();
+          }
+        },
+        onRenderRequested() {
+          if (!disposed) renderRequestCallback?.();
         },
         onCommand(name, payload) {
           if (!disposed) emit?.("command", { name, payload });
         },
       },
     });
+    engine.onCommand("camera.set", applyCameraIntent);
+    engine.onCommand("camera.reset", applyCameraResetIntent);
     for (const registration of commandRegistrations) {
       registration.detach = engine.onCommand(
         registration.name,
@@ -348,6 +392,7 @@ export function useSceneSync(
       );
     }
     engine.start();
+    gestures.bindHoverCanvas();
   }
 
   function cleanup() {
@@ -355,6 +400,8 @@ export function useSceneSync(
     // Force-end any drag in flight so its window listeners and pointer capture
     // don't outlive the view.
     gestures.teardown();
+    cancelCameraReport();
+    dragPreview.end();
     // The GL context is shared across views and outlives this one, so its
     // textures must be deleted explicitly, before the render window goes away.
     peekExternalTextures(getRenderWindow?.() || null)?.clear();
@@ -410,6 +457,7 @@ export function useSceneSync(
   }
 
   function updateDistanceToCameraGlyphsForRender() {
+    invalidatePickableProjectionCache(pickables);
     return updateDistanceToCameraGlyphs(distanceToCameraGlyphs, {
       renderer: getRenderer(),
       renderWindow: getRenderWindow?.(),
@@ -433,11 +481,21 @@ export function useSceneSync(
   // gesture payload is self-contained — it carries its own frame.
   function readGestureCamera() {
     const rendered = getRenderedCamera();
-    if (!rendered) return null;
-    return {
-      viewMatrix: rendered.viewMatrix,
-      projectionMatrix: rendered.projectionMatrix,
-    };
+    if (rendered) {
+      return {
+        viewMatrix: rendered.viewMatrix,
+        projectionMatrix: rendered.projectionMatrix,
+      };
+    }
+    const camera = bindPrimaryCameraToRenderers().camera;
+    const metrics = getViewportMetrics(getRenderer(), getRenderWindow?.());
+    const view = matrixCopy16(camera?.getViewMatrix?.());
+    const projection = matrixCopy16(
+      camera?.getProjectionMatrix?.(metrics?.aspect ?? 1, -1, 1),
+    );
+    return view && projection
+      ? { viewMatrix: view, projectionMatrix: projection }
+      : null;
   }
 
   // The applied scene seq (the engine's cursor). Stamped onto every upstream
@@ -464,6 +522,80 @@ export function useSceneSync(
     return view?.getCanvas?.() ?? null;
   }
 
+  function requestFrame(callback) {
+    return globalThis.window?.requestAnimationFrame?.(callback) || 0;
+  }
+
+  function cancelCameraReport() {
+    if (cameraReportFrame) {
+      globalThis.window?.cancelAnimationFrame?.(cameraReportFrame);
+    }
+    cameraReportFrame = 0;
+    pendingCameraReport = false;
+  }
+
+  function emitCameraReport(terminal = false) {
+    const camera = bindPrimaryCameraToRenderers().camera;
+    if (!camera) return false;
+    emit?.("camera", {
+      ...extractCameraParams(camera),
+      seq: getSeq(),
+      viewport: readGestureViewport(),
+      terminal: !!terminal,
+    });
+    return true;
+  }
+
+  function flushCameraReport() {
+    cameraReportFrame = 0;
+    if (!pendingCameraReport) return;
+    pendingCameraReport = false;
+    emitCameraReport(false);
+  }
+
+  function reportCamera({ terminal = false } = {}) {
+    if (terminal) {
+      cancelCameraReport();
+      return cameraReportOptions.terminal ? emitCameraReport(true) : false;
+    }
+    if (cameraReportOptions.during !== "interaction") return false;
+    pendingCameraReport = true;
+    if (!cameraReportFrame) cameraReportFrame = requestFrame(flushCameraReport);
+    return true;
+  }
+
+  function enableCameraReports({ during = "none", terminal = true } = {}) {
+    if (!["interaction", "none"].includes(during)) {
+      throw new Error("camera report 'during' must be 'interaction' or 'none'");
+    }
+    cameraReportOptions = { during, terminal: !!terminal };
+    if (during === "none") cancelCameraReport();
+  }
+
+  function beginCameraInteraction() {
+    cameraInteractionActive = true;
+  }
+
+  function cameraInteraction() {
+    if (cameraInteractionActive) reportCamera();
+  }
+
+  function endCameraInteraction() {
+    reportCamera({ terminal: true });
+    cameraInteractionActive = false;
+    reconciler?.flushDeferredProps?.();
+    renderRequestCallback?.();
+  }
+
+  const dragPreview = createDragPreview({
+    getCamera: () => bindPrimaryCameraToRenderers().camera,
+    getViewportMetrics: () =>
+      getViewportMetrics(getRenderer(), getRenderWindow?.()),
+    getBoundArray: (id, key) => reconciler?.getBoundArray?.(id, key),
+    getInstance,
+    requestRender: () => renderRequestCallback?.(),
+  });
+
   // The drag/click gesture state machine. It emits semantic pointer events as a
   // Vue "pointerEvent"; each payload carries the pick, the pointer (grab-offset
   // applied on drags), and the camera/viewport/seq it was measured against.
@@ -474,12 +606,14 @@ export function useSceneSync(
     readSeq: getSeq,
     getCanvas: getViewCanvas,
     emit: (payload) => emit?.("pointerEvent", payload),
+    onDragStart: dragPreview.start,
+    onDragMove: dragPreview.move,
+    onDragEnd: dragPreview.end,
   });
 
   return {
     initialize,
     cleanup,
-    update,
     requestResync,
     getQueueLength,
     getRenderWindow,
@@ -489,6 +623,11 @@ export function useSceneSync(
     setRenderedCamera,
     getRenderedCamera,
     resetCamera,
+    enableCameraReports,
+    reportCamera,
+    beginCameraInteraction,
+    cameraInteraction,
+    endCameraInteraction,
     onSceneApplied,
     onCommand,
     getInstance,
@@ -500,6 +639,7 @@ export function useSceneSync(
     setPointerContext: gestures.setPointerContext,
     setEmitBackgroundClick: gestures.setEmitBackgroundClick,
     setShouldGrab: gestures.setShouldGrab,
+    setHoverEnabled: gestures.setHoverEnabled,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,

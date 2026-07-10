@@ -6,7 +6,7 @@ Maps the store's array-ref namespaces to wire bytes:
 - ``c2:<connHash>:<offHash>`` — packed vtk.js Uint32 cell array derived from
   the two int64 blobs (per-cell ``size, ids...`` layout).
 - ``v:<id>:<key>:<n>`` — versioned identity; content comes from the live VTK
-  array (only hot points arrays receive region patches).
+  array selected by the publisher's hot-array resolver.
 
 Plus the wslink attachment encoding for payloads riding a message.
 """
@@ -19,8 +19,8 @@ from trame_vtklocal.store import (
     REF_CELLS_PREFIX,
     REF_CONTENT_PREFIX,
     REF_VERSION_PREFIX,
+    ref_manager_hashes,
 )
-from trame_vtklocal.widgets.hot_arrays import HOT_ARRAY_KEY
 
 try:
     from vtkmodules.util.numpy_support import vtk_to_numpy
@@ -61,24 +61,45 @@ def pack_cell_array_payload(vtk_object_manager, cells_ref):
 
 
 def resolve_ref_payload(object_manager, ref, live_hot_array):
-    """Wire bytes for one array ref (``live_hot_array(node_id)`` -> flat
+    """Wire bytes for one array ref (``live_hot_array(node_id, key)`` -> flat
     numpy view or None, for ``v:`` refs)."""
     if ref.startswith(REF_CONTENT_PREFIX):
-        blob = object_manager.GetBlob(ref[len(REF_CONTENT_PREFIX):])
+        blob = object_manager.GetBlob(ref[len(REF_CONTENT_PREFIX) :])
         if blob is None:
             raise RuntimeError(f"missing object-manager blob for {ref!r}")
         return bytes(memoryview(blob))
     if ref.startswith(REF_CELLS_PREFIX):
         return pack_cell_array_payload(object_manager, ref)
     if ref.startswith(REF_VERSION_PREFIX):
-        _prefix, node_id, key, _version = ref.split(":")
-        if key != HOT_ARRAY_KEY:
-            raise RuntimeError(f"unsupported versioned array ref {ref!r}")
-        current = live_hot_array(node_id)
+        node_id, remainder = ref[len(REF_VERSION_PREFIX) :].split(":", 1)
+        key, _version = remainder.rsplit(":", 1)
+        current = live_hot_array(node_id, key)
         if current is None:
             raise RuntimeError(f"cannot resolve {ref!r} from live objects")
         return current.tobytes()
     raise RuntimeError(f"unresolvable array ref {ref!r}")
+
+
+def nodes_reference_missing_blob(object_manager, nodes):
+    """Whether non-empty content arrays cite a missing manager blob."""
+
+    def blob_empty(hash_value):
+        blob = object_manager.GetBlob(hash_value)
+        if blob is None:
+            return True
+        try:
+            return memoryview(blob).nbytes == 0
+        except (TypeError, ValueError):
+            return False
+
+    for node in nodes:
+        for entry in (node.get("arrays") or {}).values():
+            if not isinstance(entry, dict) or not entry.get("size"):
+                continue
+            ref = entry.get("ref")
+            if ref and any(blob_empty(value) for value in ref_manager_hashes([ref])):
+                return True
+    return False
 
 
 def attach_binary(api, message):

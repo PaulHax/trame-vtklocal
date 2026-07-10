@@ -79,6 +79,7 @@ export function createSceneEngine({
   }
 
   function dispatchCommands(commands) {
+    let renderRequested = false;
     for (const command of commands || []) {
       const name = command?.name;
       const handlers = commandHandlers.get(name);
@@ -95,7 +96,9 @@ export function createSceneEngine({
         }
       }
       callbacks.onCommand?.(name, command?.payload);
+      renderRequested = renderRequested || command?.render === true;
     }
+    return renderRequested;
   }
 
   function applyOpsMessage(message) {
@@ -110,8 +113,11 @@ export function createSceneEngine({
     }
     mySeq = message.seq;
     recordLastOp(ops);
-    dispatchCommands(message.commands);
+    const renderRequested = dispatchCommands(message.commands);
     callbacks.onApplied?.(message);
+    if (renderRequested) {
+      callbacks.onRenderRequested?.(message);
+    }
   }
 
   function routeMessage(message) {
@@ -205,6 +211,11 @@ export function createSceneEngine({
       }
 
       callbacks.onSnapshotApplied?.(snapshot);
+      // Retained commands describe client-owned state layered on top of the
+      // snapshot, so dispatch only after the scene and cursor are current.
+      if (dispatchCommands(snapshot.commands)) {
+        callbacks.onRenderRequested?.(snapshot);
+      }
       live = true;
       const pending = buffer;
       buffer = [];

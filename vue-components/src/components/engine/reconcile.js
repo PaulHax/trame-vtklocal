@@ -65,11 +65,13 @@ export function createReconciler({
   objectManager,
   rootId,
   rootInstance,
+  shouldDeferProps = () => false,
 }) {
   const blockHandlers = new Map();
   // nodeId -> Map(arrayKey -> { array: vtk data array, ref }) — the client's
   // record of which blob each bound array holds, for rebinds and patches.
   const bindings = new Map();
+  const deferredProps = new Map(); // id -> latest server props
   let rootAttached = false;
 
   // The root render window is widget-owned, never built. Register it so
@@ -355,7 +357,12 @@ export function createReconciler({
     if (id === rootId) {
       rootAttached = true;
     }
-    applyPropsDiff(instance, node.props || {}, prev?.props || {}, isNew);
+    if (shouldDeferProps(id, node)) {
+      deferredProps.set(id, { instance, props: node.props || {} });
+    } else {
+      deferredProps.delete(id);
+      applyPropsDiff(instance, node.props || {}, prev?.props || {}, isNew);
+    }
     applyRefsDiff(instance, node.refs || {}, prev?.refs || {});
     applyArraysDiff(instance, id, node.arrays || {}, prev?.arrays || {}, cache);
     applyBlocksDiff(instance, id, node.blocks || {}, prev?.blocks || {}, isNew);
@@ -409,6 +416,7 @@ export function createReconciler({
       blockHandlers.get(key)?.(id, null, instance);
     }
     bindings.delete(id);
+    deferredProps.delete(id);
     if (instance) {
       synchronizerContext.unregisterInstance?.(id);
       if (isLiveInstance(instance)) {
@@ -526,8 +534,19 @@ export function createReconciler({
     return bindings.get(String(id))?.get(key)?.array ?? null;
   }
 
+  function flushDeferredProps() {
+    for (const [id, deferred] of deferredProps) {
+      const instance = liveInstanceFor(id) || deferred.instance;
+      if (isLiveInstance(instance)) {
+        instance.set(deferred.props);
+      }
+    }
+    deferredProps.clear();
+  }
+
   function teardown() {
     bindings.clear();
+    deferredProps.clear();
     blockHandlers.clear();
   }
 
@@ -537,6 +556,7 @@ export function createReconciler({
     applySnapshot,
     reset,
     getBoundArray,
+    flushDeferredProps,
     teardown,
   };
 }

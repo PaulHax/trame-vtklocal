@@ -41,9 +41,22 @@ export function createDragPreview({
   getViewportMetrics,
   getBoundArray,
   getInstance,
+  getPickableIds,
   requestRender,
 } = {}) {
   let active = null;
+
+  // Where does the grabbed point live in the bound array right now? The app
+  // may reorder or re-bucket points mid-drag (e.g. selecting the grabbed
+  // point moves it between render buckets), so the pick-time index can go
+  // stale while the array keeps its size. The pickable block's ids name the
+  // point at each index; follow the grabbed id when they're available, and
+  // return -1 when the point left this node entirely.
+  function currentPointIndex() {
+    const ids = getPickableIds?.(active.pick.nodeId);
+    if (!Array.isArray(ids)) return active.pick.pointIndex;
+    return ids.indexOf(active.pick.pointId);
+  }
 
   function previewWorld(payload) {
     const pointer = payload?.pointer;
@@ -75,10 +88,23 @@ export function createDragPreview({
     if (!active || !world) return false;
     const array = getBoundArray?.(active.pointsNodeId, "points");
     const values = array?.getData?.();
-    const offset = active.pick.pointIndex * 3;
-    if (!values || offset < 0 || offset + 2 >= values.length) {
+    const pointIndex = currentPointIndex();
+    const offset = pointIndex * 3;
+    if (pointIndex < 0 || !values || offset + 2 >= values.length) {
+      // The grabbed point left this node (re-bucketed by the app) or the
+      // array shrank past it: writing through a stale index would move a
+      // DIFFERENT point. Stop previewing; server confirmations own the rest
+      // of the drag.
       active = null;
       return false;
+    }
+    if (values.length !== active.expectedLength) {
+      if (active.expectedLength !== null && !Array.isArray(getPickableIds?.(active.pick.nodeId))) {
+        // Structural change with no point identities to re-target by.
+        active = null;
+        return false;
+      }
+      active.expectedLength = values.length;
     }
     values[offset] = world[0];
     values[offset + 1] = world[1];
@@ -101,6 +127,7 @@ export function createDragPreview({
       pick,
       pointsNodeId: String(pick.pointsNodeId),
       world: null,
+      expectedLength: null,
     };
     return true;
   }

@@ -593,6 +593,7 @@ export function useSceneSync(
       getViewportMetrics(getRenderer(), getRenderWindow?.()),
     getBoundArray: (id, key) => reconciler?.getBoundArray?.(id, key),
     getInstance,
+    getPickableIds: (nodeId) => pickables.get(nodeId)?.ids ?? null,
     requestRender: () => renderRequestCallback?.(),
   });
 

@@ -65,6 +65,98 @@ test("screen drag preview updates one bound point and remains an overlay", async
   assert.equal(preview.targets("mapper"), false);
 });
 
+test("preview ends when the bound points array is structurally replaced", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  // Two points [A, B]; the drag grabs A (index 0). Mid-drag the app
+  // re-buckets A to another node, shrinking this array to [B]. With no point
+  // identities available, writing through the stale index would move B.
+  let values = new Float32Array([0, 0, 0, 9, 9, 9]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({
+    getCamera: () => ({
+      getCompositeProjectionMatrix: () => IDENTITY,
+      getDirectionOfProjection: () => [0, 0, -1],
+    }),
+    getViewportMetrics: () => ({ width: 100, height: 100, aspect: 1 }),
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    world: [0, 0, 0],
+    preview: "screen",
+  };
+
+  assert.equal(preview.start({ pick }), true);
+  assert.equal(preview.move({ pointer: { x: 75, y: 50 } }), true);
+  assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
+
+  values = new Float32Array([9, 9, 9]); // shrunk: index 0 is now B
+  assert.equal(preview.reapply(), false);
+  assert.deepEqual(Array.from(values), [9, 9, 9]);
+  assert.equal(preview.isActive(), false);
+  assert.equal(preview.move({ pointer: { x: 80, y: 50 } }), false);
+});
+
+test("preview follows the grabbed point id through same-size re-buckets", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  // Bucket holds [A, B]; the drag grabs A (index 0, id "A"). Mid-drag the
+  // app selects A away and backfills: the bucket becomes [B, C] — same
+  // size, new membership. The stale index 0 now addresses B; the id list
+  // says "A" is gone, so the preview must stop without touching B.
+  const values = new Float32Array([0, 0, 0, 9, 9, 9]);
+  const array = { getData: () => values, modified() {} };
+  let ids = ["A", "B"];
+  const preview = createDragPreview({
+    getCamera: () => ({
+      getCompositeProjectionMatrix: () => IDENTITY,
+      getDirectionOfProjection: () => [0, 0, -1],
+    }),
+    getViewportMetrics: () => ({ width: 100, height: 100, aspect: 1 }),
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    getPickableIds: () => ids,
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    pointId: "A",
+    world: [0, 0, 0],
+    preview: "screen",
+  };
+
+  assert.equal(preview.start({ pick }), true);
+  assert.equal(preview.move({ pointer: { x: 75, y: 50 } }), true);
+  assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
+
+  // Same-size membership swap: A left, C joined. Index 0 is now B.
+  ids = ["B", "C"];
+  values.set([9, 9, 9, 8, 8, 8]);
+  assert.equal(preview.reapply(), false);
+  assert.deepEqual(Array.from(values), [9, 9, 9, 8, 8, 8]);
+  assert.equal(preview.isActive(), false);
+
+  // Reorder WITHOUT eviction re-targets instead of ending: grab A again,
+  // then swap A to index 1 — the preview writes A's new slot, not B's.
+  ids = ["A", "B"];
+  values.set([0, 0, 0, 9, 9, 9]);
+  assert.equal(preview.start({ pick }), true);
+  ids = ["B", "A"];
+  values.set([9, 9, 9, 0, 0, 0]);
+  assert.equal(preview.move({ pointer: { x: 75, y: 50 } }), true);
+  assert.deepEqual(Array.from(values.slice(0, 3)), [9, 9, 9]);
+  assert.ok(Math.abs(values[3] - 0.5) < 1e-6);
+});
+
 test("plane drag preview honors vtk.js row-major composite matrices", async () => {
   const { createDragPreview } = await loadModule(
     "/src/components/dragPreview.js",

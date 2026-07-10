@@ -10,6 +10,8 @@
 // The block (`tags`, `ids`, `grabPx`, `priority`) is opaque here — the fork
 // never interprets tag meaning; it round-trips them verbatim in the result.
 
+import { getWorldToClipMatrix } from "./cameraMatrix";
+
 export const PICKABLE_BLOCK_KEY = "pickable";
 
 const BEHIND_CAMERA_EPSILON = 1e-9;
@@ -146,38 +148,6 @@ export function getViewportMetrics(renderer, renderWindow) {
   }
 
   return { width, height, aspect: width / height };
-}
-
-function transposeMatrix(matrix) {
-  return [
-    matrix[0],
-    matrix[4],
-    matrix[8],
-    matrix[12],
-    matrix[1],
-    matrix[5],
-    matrix[9],
-    matrix[13],
-    matrix[2],
-    matrix[6],
-    matrix[10],
-    matrix[14],
-    matrix[3],
-    matrix[7],
-    matrix[11],
-    matrix[15],
-  ];
-}
-
-function getWorldToClipMatrix(camera, aspect) {
-  // getCompositeProjectionMatrix already folds in user projection matrices and
-  // physicalScale, so picking follows the actual rendered transform (including
-  // lock zoom/pan). Transpose to the row-major layout projectWorldToCss reads.
-  const matrix = camera?.getCompositeProjectionMatrix?.(aspect, -1, 1);
-  if (!matrix || matrix.length !== 16) {
-    return null;
-  }
-  return transposeMatrix(matrix);
 }
 
 // Project a world point [x,y,z] to canvas CSS px (top-left origin), or null

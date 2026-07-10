@@ -2,6 +2,7 @@
 // this module rewrites only the rendered bound points array while a drag lives.
 
 import { mat4 } from "../glMatrix";
+import { getWorldToClipMatrix } from "./cameraMatrix";
 
 const EPSILON = 1e-9;
 
@@ -16,18 +17,6 @@ function unproject(inverse, x, y, z) {
     (inverse[0] * x + inverse[4] * y + inverse[8] * z + inverse[12]) / w,
     (inverse[1] * x + inverse[5] * y + inverse[9] * z + inverse[13]) / w,
     (inverse[2] * x + inverse[6] * y + inverse[10] * z + inverse[14]) / w,
-  ];
-}
-
-// vtk.js hands composite matrices back row-major; unproject reads the
-// OpenGL column-major layout (the same convention the pick projection in
-// pickables.js transposes into), so flip before inverting.
-function transposed(matrix) {
-  return [
-    matrix[0], matrix[4], matrix[8], matrix[12],
-    matrix[1], matrix[5], matrix[9], matrix[13],
-    matrix[2], matrix[6], matrix[10], matrix[14],
-    matrix[3], matrix[7], matrix[11], matrix[15],
   ];
 }
 
@@ -61,15 +50,11 @@ export function createDragPreview({
     const camera = getCamera?.();
     const metrics = getViewportMetrics?.();
     if (!pointer || !camera || !metrics) return null;
-    const composite = camera.getCompositeProjectionMatrix?.(
-      metrics.aspect,
-      -1,
-      1,
-    );
+    // The same world->clip the pick projection reads, inverted for the
+    // pointer-ray unprojection — preview and hit-test share one convention.
+    const worldToClip = getWorldToClipMatrix(camera, metrics.aspect);
     const inverse =
-      composite &&
-      composite.length === 16 &&
-      mat4.invert(new Float64Array(16), transposed(composite));
+      worldToClip && mat4.invert(new Float64Array(16), worldToClip);
     if (!inverse) return null;
     const ndcX = (pointer.x / metrics.width) * 2 - 1;
     const ndcY = 1 - (pointer.y / metrics.height) * 2;

@@ -64,3 +64,46 @@ test("screen drag preview updates one bound point and remains an overlay", async
   assert.equal(values[0], 2);
   assert.equal(preview.targets("mapper"), false);
 });
+
+test("plane drag preview honors vtk.js row-major composite matrices", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  // vtk.js returns composites row-major: a world->clip translation of +5 in x
+  // carries its offset at index 3, not 12. An identity matrix (the test
+  // above) cannot see a transpose mistake; this one can.
+  const ROW_MAJOR_TRANSLATE_X = [
+    1, 0, 0, 5,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ];
+  const values = new Float32Array([-5, 0, 0]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({
+    getCamera: () => ({
+      getCompositeProjectionMatrix: () => ROW_MAJOR_TRANSLATE_X,
+      getDirectionOfProjection: () => [0, 0, -1],
+    }),
+    getViewportMetrics: () => ({ width: 100, height: 100, aspect: 1 }),
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    world: [-5, 0, 0],
+    preview: "plane",
+    plane: { origin: [0, 0, 0], normal: [0, 0, 1] },
+  };
+
+  assert.equal(preview.start({ pick }), true);
+  // Pointer at canvas center unprojects through the translated frustum to
+  // world x = -5; a column-major misread of the matrix lands near x = 0.
+  assert.equal(preview.move({ pointer: { x: 50, y: 50 } }), true);
+  assert.ok(Math.abs(values[0] + 5) < 1e-6, `x was ${values[0]}`);
+  assert.ok(Math.abs(values[1]) < 1e-6, `y was ${values[1]}`);
+  assert.ok(Math.abs(values[2]) < 1e-6, `z was ${values[2]}`);
+});

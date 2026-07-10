@@ -19,6 +19,18 @@ function unproject(inverse, x, y, z) {
   ];
 }
 
+// vtk.js hands composite matrices back row-major; unproject reads the
+// OpenGL column-major layout (the same convention the pick projection in
+// pickables.js transposes into), so flip before inverting.
+function transposed(matrix) {
+  return [
+    matrix[0], matrix[4], matrix[8], matrix[12],
+    matrix[1], matrix[5], matrix[9], matrix[13],
+    matrix[2], matrix[6], matrix[10], matrix[14],
+    matrix[3], matrix[7], matrix[11], matrix[15],
+  ];
+}
+
 function intersectPlane(near, far, origin, normal) {
   const direction = far.map((value, index) => value - near[index]);
   const denominator = direction.reduce(
@@ -54,7 +66,10 @@ export function createDragPreview({
       -1,
       1,
     );
-    const inverse = composite && mat4.invert(new Float64Array(16), composite);
+    const inverse =
+      composite &&
+      composite.length === 16 &&
+      mat4.invert(new Float64Array(16), transposed(composite));
     if (!inverse) return null;
     const ndcX = (pointer.x / metrics.width) * 2 - 1;
     const ndcY = 1 - (pointer.y / metrics.height) * 2;

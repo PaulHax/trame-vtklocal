@@ -59,7 +59,7 @@ export function useSceneSync(
   let syncedRootId = null;
   let renderedCamera = null;
   let clientCamera = null;
-  let cameraInteractionActive = false;
+  let cameraInteractionDepth = 0;
   let cameraReportOptions = { during: "none", terminal: true };
   let pendingCameraReport = false;
   let cameraReportFrame = 0;
@@ -268,7 +268,7 @@ export function useSceneSync(
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
-    cameraInteractionActive = false;
+    cameraInteractionDepth = 0;
     renderedCamera = null;
     cancelCameraReport();
     distanceToCameraGlyphs.clear();
@@ -304,7 +304,7 @@ export function useSceneSync(
       rootInstance: syncRenderWindow,
       shouldDeferProps: (_id, node) =>
         cameraAuthority === "server" &&
-        cameraInteractionActive &&
+        cameraInteractionDepth > 0 &&
         node?.type === "vtkCamera",
     });
 
@@ -575,17 +575,23 @@ export function useSceneSync(
     if (during === "none") cancelCameraReport();
   }
 
+  // Camera interaction is reference-counted: overlapping gesture sources (e.g.
+  // a wheel-idle timer and a drag) each begin/end independently, and the shared
+  // camera channel must stay live until the LAST one ends. A boolean would let
+  // one source's end silence another's in-flight reports.
   function beginCameraInteraction() {
-    cameraInteractionActive = true;
+    cameraInteractionDepth += 1;
   }
 
   function cameraInteraction() {
-    if (cameraInteractionActive) reportCamera();
+    if (cameraInteractionDepth > 0) reportCamera();
   }
 
   function endCameraInteraction() {
+    if (cameraInteractionDepth === 0) return;
+    cameraInteractionDepth -= 1;
+    if (cameraInteractionDepth > 0) return;
     reportCamera({ terminal: true });
-    cameraInteractionActive = false;
     reconciler?.flushDeferredProps?.();
     renderRequestCallback?.();
   }

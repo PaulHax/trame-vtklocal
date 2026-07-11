@@ -178,6 +178,52 @@ test("camera reports coalesce moves and force a terminal report", async () => {
   }
 });
 
+test("camera interaction is reference-counted across overlapping sources", async () => {
+  const previousWindow = globalThis.window;
+  const fakeWindow = makeWindow();
+  globalThis.window = fakeWindow;
+  try {
+    const { scene, events } = await makeScene();
+    scene.enableCameraReports({ during: "interaction", terminal: true });
+
+    // Two overlapping sources begin; one ends while the other is still active.
+    scene.beginCameraInteraction();
+    scene.beginCameraInteraction();
+    scene.endCameraInteraction();
+
+    // The inner end must NOT emit a terminal report — depth is still > 0.
+    assert.equal(
+      events.filter((event) => event.name === "camera").length,
+      0,
+    );
+
+    // The still-active source keeps reporting after the inner end.
+    scene.cameraInteraction();
+    fakeWindow.flush();
+    assert.equal(
+      events.filter((event) => event.name === "camera").length,
+      1,
+    );
+
+    // The outermost end emits exactly one terminal report.
+    scene.endCameraInteraction();
+    fakeWindow.flush();
+    const cameraEvents = events.filter((event) => event.name === "camera");
+    assert.equal(cameraEvents.length, 2);
+    assert.equal(cameraEvents[1].payload.terminal, true);
+
+    // An unmatched extra end at depth 0 is a no-op — no terminal report.
+    scene.endCameraInteraction();
+    fakeWindow.flush();
+    assert.equal(
+      events.filter((event) => event.name === "camera").length,
+      2,
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("gesture payload derives camera matrices from the live local camera", async () => {
   const { scene, events } = await makeScene();
   scene.emitTargetClick({ clientX: 10, clientY: 20 });

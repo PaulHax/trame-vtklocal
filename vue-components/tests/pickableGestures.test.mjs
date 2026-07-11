@@ -420,6 +420,70 @@ test("hover emits enter/leave once, disables cleanly, and pauses during drag", a
   assert.equal(h.events.length, countAfterStart);
 });
 
+test("grabbing while hovering emits the balancing target.leave", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h);
+  g.setHoverEnabled(true);
+
+  h.canvas.dispatch("pointermove", pointerEvent(50, 20));
+  h.windowRef.flushRaf();
+  assert.deepEqual(
+    h.events.map((event) => event.type),
+    ["target.enter"],
+  );
+
+  assert.equal(g.startTargetDrag(pointerEvent(50, 20)), true);
+  assert.deepEqual(
+    h.events.map((event) => event.type),
+    ["target.enter", "target.leave", "target.drag.start"],
+  );
+  assert.equal(h.events[1].pick.nodeId, "m");
+});
+
+test("cancelForNode on the hovered target emits the balancing target.leave", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h);
+  g.setHoverEnabled(true);
+
+  h.canvas.dispatch("pointermove", pointerEvent(50, 20));
+  h.windowRef.flushRaf();
+  assert.deepEqual(
+    h.events.map((event) => event.type),
+    ["target.enter"],
+  );
+
+  assert.equal(g.cancelForNode("m"), false); // no drag to cancel
+  assert.deepEqual(
+    h.events.map((event) => event.type),
+    ["target.enter", "target.leave"],
+  );
+});
+
+test("hover identity follows pointId through same-size re-buckets", async () => {
+  const h = makeHarness();
+  // Stationary pointer; the app re-buckets so the same (nodeId, pointIndex)
+  // slot holds a DIFFERENT point. The hover stream must hand off A -> B.
+  let pointId = "A";
+  const pick = () => ({ ...h.pickResult, nodeId: "m", pointIndex: 0, pointId });
+  const g = await createGestures(h, { pick });
+  g.setHoverEnabled(true);
+
+  h.canvas.dispatch("pointermove", pointerEvent(50, 20));
+  h.windowRef.flushRaf();
+  pointId = "B";
+  h.canvas.dispatch("pointermove", pointerEvent(50, 20));
+  h.windowRef.flushRaf();
+
+  assert.deepEqual(
+    h.events.map((event) => [event.type, event.pick?.pointId]),
+    [
+      ["target.enter", "A"],
+      ["target.leave", "A"],
+      ["target.enter", "B"],
+    ],
+  );
+});
+
 test("removing the active target emits a terminal cancelled drag end", async () => {
   const h = makeHarness();
   const g = await createGestures(h);

@@ -219,10 +219,7 @@ export function createPickableGestures({
       canvas,
       previousCursor: canvas?.style?.cursor || "",
     };
-    hoveredPick = null;
-    pendingHover = undefined;
-    cancelFrame(hoverRafHandle);
-    hoverRafHandle = 0;
+    clearHover();
     stopEvent(event);
     try {
       canvas?.setPointerCapture?.(event?.pointerId);
@@ -243,13 +240,30 @@ export function createPickableGestures({
   }
 
   function samePick(a, b) {
-    return (
-      a === b ||
-      (!!a &&
-        !!b &&
-        a.nodeId === b.nodeId &&
-        a.pointIndex === b.pointIndex)
-    );
+    if (a === b) return true;
+    if (!a || !b || a.nodeId !== b.nodeId) return false;
+    // Identity over index: a same-size re-bucket can put a different point
+    // at the hovered index. Id-less pickables carry the index as pointId,
+    // so the comparison stays valid for them too.
+    if (a.pointId != null && b.pointId != null) return a.pointId === b.pointId;
+    return a.pointIndex === b.pointIndex;
+  }
+
+  function dropHover() {
+    hoveredPick = null;
+    pendingHover = undefined;
+    cancelFrame(hoverRafHandle);
+    hoverRafHandle = 0;
+  }
+
+  // Dropping the hovered pick mid-stream owes the app a terminal leave —
+  // enter/leave must stay balanced or a highlight sticks forever. (Turning
+  // hover off via setHoverEnabled/teardown stays silent: the app asked.)
+  function clearHover() {
+    if (hoveredPick) {
+      emit(buildPayload("target.leave", null, hoveredPick, null));
+    }
+    dropHover();
   }
 
   function flushHover() {
@@ -299,10 +313,7 @@ export function createPickableGestures({
 
   function setHoverEnabled(enabled) {
     hoverEnabled = !!enabled;
-    hoveredPick = null;
-    pendingHover = undefined;
-    cancelFrame(hoverRafHandle);
-    hoverRafHandle = 0;
+    dropHover();
     hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
     hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
     if (hoverEnabled) {
@@ -318,7 +329,7 @@ export function createPickableGestures({
       return true;
     }
     if (hoveredPick?.nodeId === String(nodeId)) {
-      hoveredPick = null;
+      clearHover();
     }
     return false;
   }
@@ -360,15 +371,12 @@ export function createPickableGestures({
     }
     removeDragListeners();
     cancelFrame(rafHandle);
-    cancelFrame(hoverRafHandle);
     rafHandle = 0;
     pendingMove = null;
-    pendingHover = undefined;
-    hoverRafHandle = 0;
+    dropHover();
     hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
     hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
     hoverCanvas = null;
-    hoveredPick = null;
   }
 
   return {

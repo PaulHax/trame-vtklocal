@@ -157,6 +157,57 @@ test("preview follows the grabbed point id through same-size re-buckets", async 
   assert.ok(Math.abs(values[3] - 0.5) < 1e-6);
 });
 
+test("index-fallback pick survives ids arriving mid-drag", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  // The pickable had no ids at pick time, so pointId is the numeric index
+  // fallback (0). If the app publishes an ids block mid-drag, indexOf(0)
+  // over string ids would return -1 and kill the preview — the pick must
+  // stay on the index path instead.
+  const values = new Float32Array([0, 0, 0, 9, 9, 9]);
+  const array = { getData: () => values, modified() {} };
+  let ids = null;
+  const preview = createDragPreview({
+    getCamera: () => ({
+      getCompositeProjectionMatrix: () => IDENTITY,
+      getDirectionOfProjection: () => [0, 0, -1],
+    }),
+    getViewportMetrics: () => ({ width: 100, height: 100, aspect: 1 }),
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    getPickableIds: () => ids,
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    pointId: 0, // numeric fallback: no ids block at pick time
+    world: [0, 0, 0],
+    preview: "screen",
+  };
+
+  assert.equal(preview.start({ pick }), true);
+  assert.equal(preview.move({ pointer: { x: 75, y: 50 } }), true);
+  assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
+
+  // Ids arrive mid-drag (re-bucketing added identities); the index-fallback
+  // pick keeps following index 0.
+  ids = ["A", "B"];
+  assert.equal(preview.move({ pointer: { x: 80, y: 50 } }), true);
+  assert.ok(Math.abs(values[0] - 0.6) < 1e-6);
+  assert.equal(preview.isActive(), true);
+
+  // But a structural size change still ends it: without a pick-time id
+  // there is no identity to re-target by, ids or not.
+  const grown = new Float32Array([1, 1, 1, 9, 9, 9, 8, 8, 8]);
+  array.getData = () => grown;
+  assert.equal(preview.move({ pointer: { x: 85, y: 50 } }), false);
+  assert.equal(preview.isActive(), false);
+  assert.deepEqual(Array.from(grown), [1, 1, 1, 9, 9, 9, 8, 8, 8]);
+});
+
 test("plane drag preview honors vtk.js row-major composite matrices", async () => {
   const { createDragPreview } = await loadModule(
     "/src/components/dragPreview.js",

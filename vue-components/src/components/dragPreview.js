@@ -49,10 +49,12 @@ export function createDragPreview({
   // Where does the grabbed point live in the bound array right now? The app
   // may reorder or re-bucket points mid-drag (e.g. selecting the grabbed
   // point moves it between render buckets), so the pick-time index can go
-  // stale while the array keeps its size. The pickable block's ids name the
-  // point at each index; follow the grabbed id when they're available, and
-  // return -1 when the point left this node entirely.
+  // stale while the array keeps its size. When the pick was made against an
+  // ids block, follow the grabbed id (returning -1 when the point left this
+  // node). An index-fallback pointId is just a number that ids arriving
+  // mid-drag would never contain, so those picks stay on the index path.
   function currentPointIndex() {
+    if (!active.trackById) return active.pick.pointIndex;
     const ids = getPickableIds?.(active.pick.nodeId);
     if (!Array.isArray(ids)) return active.pick.pointIndex;
     return ids.indexOf(active.pick.pointId);
@@ -99,8 +101,8 @@ export function createDragPreview({
       return false;
     }
     if (values.length !== active.expectedLength) {
-      if (active.expectedLength !== null && !Array.isArray(getPickableIds?.(active.pick.nodeId))) {
-        // Structural change with no point identities to re-target by.
+      if (active.expectedLength !== null && !active.trackById) {
+        // Structural change with no point identity to re-target by.
         active = null;
         return false;
       }
@@ -123,9 +125,14 @@ export function createDragPreview({
       active = null;
       return false;
     }
+    const ids = getPickableIds?.(String(pick.nodeId));
     active = {
       pick,
       pointsNodeId: String(pick.pointsNodeId),
+      // Identity tracking only holds when the pick actually carries an id
+      // from the pickable's ids block; otherwise pointId is the numeric
+      // index fallback and ids can never resolve it.
+      trackById: Array.isArray(ids) && ids[pick.pointIndex] != null,
       world: null,
       expectedLength: null,
     };

@@ -114,9 +114,8 @@ export default {
       });
 
       interactor = vtkRenderWindowInteractor.newInstance();
-      interactor.setInteractorStyle(
-        vtkInteractorStyleTrackballCamera.newInstance(),
-      );
+      const interactorStyle = vtkInteractorStyleTrackballCamera.newInstance();
+      interactor.setInteractorStyle(interactorStyle);
       interactor.setView(openGLRenderWindow);
       interactor.initialize();
       interactor.bindEvents(container.value);
@@ -125,11 +124,13 @@ export default {
         () => scene.updateDistanceToCameraGlyphs(),
       );
       scene.enableCameraReports({ during: "interaction", terminal: true });
+      // The Start/End/InteractionEvent trio fires on the interactor STYLE;
+      // the interactor's .d.ts declares them but its runtime never does.
       cameraSubscriptions = [
-        interactor.onStartInteractionEvent?.(scene.beginCameraInteraction),
-        interactor.onInteractionEvent?.(scene.cameraInteraction),
-        interactor.onEndInteractionEvent?.(scene.endCameraInteraction),
-      ].filter(Boolean);
+        interactorStyle.onStartInteractionEvent(scene.beginCameraInteraction),
+        interactorStyle.onInteractionEvent(scene.cameraInteraction),
+        interactorStyle.onEndInteractionEvent(scene.endCameraInteraction),
+      ];
 
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(container.value);

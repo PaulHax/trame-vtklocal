@@ -63,7 +63,7 @@ async def loop():
         if actor:
             renderer.RemoveActor(actor)
             print(f"Step {step}: removed")
-            html_view.update()
+            html_view.sync()
             await asyncio.sleep(1)
 
         # Add new actor
@@ -72,7 +72,7 @@ async def loop():
         renderer.AddActor(actor)
         renderer.ResetCamera()
         print(f"Step {step}: added {color}")
-        html_view.update()
+        html_view.sync()
         html_view.reset_camera()
         step += 1
         await asyncio.sleep(1)

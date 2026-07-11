@@ -63,7 +63,7 @@ class VtkJsDemo:
     def on_resolution_change(self, resolution, **kwargs):
         self.cone.SetResolution(int(resolution))
         if self.html_view:
-            self.html_view.update()
+            self.html_view.sync()
 
     @change("color")
     def on_color_change(self, color, **kwargs):
@@ -75,7 +75,7 @@ class VtkJsDemo:
         }
         self.actor.GetProperty().SetColor(*colors.get(color, (1, 1, 1)))
         if self.html_view:
-            self.html_view.update()
+            self.html_view.sync()
 
     def reset_camera(self):
         if self.html_view:

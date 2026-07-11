@@ -96,13 +96,13 @@ class LayeredRendererDemo:
     def on_preserve_depth_change(self, preserve_depth, **_kwargs):
         self.scene_renderer.SetPreserveDepthBuffer(bool(preserve_depth))
         if self.html_view:
-            self.html_view.update()
+            self.html_view.sync()
 
     def reset_camera(self):
         if self.html_view:
             # Re-send the deliberately framed server camera. A generic client
             # reset would fit only the primary renderer's annotation bounds.
-            self.html_view.update(push_camera=True)
+            self.html_view.set_camera()
 
     def _ui(self):
         with DivLayout(self.server) as layout:

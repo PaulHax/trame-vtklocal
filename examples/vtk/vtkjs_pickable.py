@@ -186,7 +186,7 @@ def on_ready():
 def on_retag():
     _revision[0] += 1
     tag_pickable()
-    view.update()
+    view.sync()
     view.set_pointer_context({"demo": "pickable", "revision": _revision[0]})
     print(f"[pickable] re-tagged at revision {_revision[0]} (patch op)")
 

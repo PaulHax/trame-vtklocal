@@ -51,16 +51,13 @@ def _changed_spans(changed, gap_elements):
     """Inclusive changed-index groups separated by more than ``gap_elements``."""
     if changed.size == 0:
         return []
-    spans = []
-    first = previous = int(changed[0])
-    for value in changed[1:]:
-        current = int(value)
-        if current - previous > gap_elements:
-            spans.append((first, previous - first + 1))
-            first = current
-        previous = current
-    spans.append((first, previous - first + 1))
-    return spans
+    breaks = np.flatnonzero(np.diff(changed) > gap_elements)
+    firsts = changed[np.concatenate(([0], breaks + 1))]
+    lasts = changed[np.concatenate((breaks, [changed.size - 1]))]
+    return [
+        (int(first), int(last) - int(first) + 1)
+        for first, last in zip(firsts, lasts)
+    ]
 
 
 class HotArrayDiffer:
@@ -160,6 +157,13 @@ class HotArrayDiffer:
         if changed.size == 0:
             entry["ref"] = stored_entry["ref"]
             self._note_orphan(cache_key, fresh_ref, stored_entry["ref"])
+            return
+
+        # Spans only widen the patch beyond the changed elements, so half the
+        # array changed already decides full-resend without assembling spans.
+        if changed.size * 2 >= current.size:
+            self._retained[cache_key] = current.copy()
+            self._note_orphan(cache_key, fresh_ref, fresh_ref)
             return
 
         spans = _changed_spans(changed, self._gap_elements)

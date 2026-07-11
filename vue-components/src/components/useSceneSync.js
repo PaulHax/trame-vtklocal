@@ -24,7 +24,6 @@ import {
   describePickableRegistry,
   getDevicePixelRatio,
   getViewportMetrics,
-  invalidatePickableProjectionCache,
   pickAt as pickAtRegistry,
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
@@ -457,7 +456,11 @@ export function useSceneSync(
   }
 
   function updateDistanceToCameraGlyphsForRender() {
-    invalidatePickableProjectionCache(pickables);
+    // No cache invalidation here: the pickable projection cache is keyed on
+    // viewport size, points mtime, and the world-to-clip matrix, so a render
+    // that changed any of them misses the cache on its own — and a render
+    // that changed none of them (server playback under a hovering pointer)
+    // must keep the hit-test cache warm.
     return updateDistanceToCameraGlyphs(distanceToCameraGlyphs, {
       renderer: getRenderer(),
       renderWindow: getRenderWindow?.(),

@@ -121,8 +121,12 @@ class VtkJsBaseView(HtmlElement):
         """Batch mutations (and commands) into one commit + broadcast."""
         return self._publisher.transaction()
 
-    def send_command(self, name, payload=None, *, retain=False, render=False):
-        """Send a named command ordered atomically with pending scene ops."""
+    def send_command(self, name, payload=None, *, retain=False, render=True):
+        """Send a named command ordered atomically with pending scene ops.
+
+        ``render=False`` skips the client repaint after the command's
+        handlers run — for commands that change nothing visible.
+        """
         if self._publisher:
             self._publisher.send_command(name, payload, retain=retain, render=render)
 
@@ -135,10 +139,12 @@ class VtkJsBaseView(HtmlElement):
         if self._publisher:
             self._publisher.request_resync()
 
-    def event_is_current(self, event, node_id=None, strict=False):
+    def event_is_current(self, event, node_id=None, strict=True):
         """Whether a seq-stamped client event is current for its target node.
 
-        Array confirmations are ignored unless ``strict=True``. ``node_id``
+        Array patches count by default (they move the picked points);
+        ``strict=False`` counts structural upserts only, for mid-gesture
+        events whose own confirmations ride the same channel. ``node_id``
         defaults to ``event["pick"]["nodeId"]``; unknown/removed is stale.
         """
         if not self._publisher:
@@ -172,12 +178,21 @@ class VtkJsBaseView(HtmlElement):
             "clippingRange": list(cam.GetClippingRange()),
         }
 
-    def reset_camera(self, *, retain=True):
+    def _retain_camera_commands(self):
+        # Retention exists for camera_authority="client", where commands are
+        # the only camera a resyncing client gets. In "server" mode the camera
+        # is a synced node — the snapshot already carries the current pose, and
+        # a retained command would replay a stale one on top of it.
+        return self._camera_authority == "client"
+
+    def reset_camera(self, *, retain=None):
+        retain = self._retain_camera_commands() if retain is None else retain
         if retain and self._publisher:
             self._publisher.clear_retained_command("camera.set")
         self.send_command("camera.reset", {}, retain=retain, render=True)
 
-    def set_camera(self, params=None, *, retain=True):
+    def set_camera(self, params=None, *, retain=None):
+        retain = self._retain_camera_commands() if retain is None else retain
         params = self._camera_params() if params is None else params
         if params is not None:
             if retain and self._publisher:

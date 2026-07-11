@@ -61,13 +61,14 @@ def _node_ref_ids(node):
             yield from value
 
 
-def event_is_current(store, event, node_id=None, strict=False):
+def event_is_current(store, event, node_id=None, strict=True):
     """Whether a seq-stamped client event is current for the node it targets.
 
     The event's ``seq`` (the client's applied cursor when it built the event)
-    must be an int at or above the node's structural cursor (or every touch in
-    strict mode). ``node_id`` defaults to the picked node id inside
-    ``event["pick"]``. Missing data and unknown/removed nodes are stale.
+    must be an int at or above the node's last touch — array patches count,
+    they move the points a pick measures (``strict=False`` skips them, for
+    mid-gesture events whose own confirmations ride this channel).
+    ``node_id`` defaults to the picked node id; unknown/removed is stale.
     """
     if not isinstance(event, Mapping):
         return False
@@ -184,11 +185,11 @@ class ScenePublisher:
             if self._transaction_depth == 0 and not self._disposed:
                 self._publish_tick()
 
-    def send_command(self, name, payload=None, *, retain=False, render=False):
+    def send_command(self, name, payload=None, *, retain=False, render=True):
         """Queue a command to ride the next broadcast, ordered with scene ops.
 
-        If nothing else is pending, the next tick mints a seq via
-        ``store.advance()`` and sends an empty-ops message.
+        If nothing else is pending, the next tick mints a seq and sends an
+        empty-ops message; ``render=False`` skips the client repaint.
         """
         command = {"name": str(name), "payload": payload}
         if render:
@@ -257,10 +258,10 @@ class ScenePublisher:
             },
         )
 
-    def last_seq_touching(self, node_id, strict=False):
+    def last_seq_touching(self, node_id, strict=True):
         return self._store.last_seq_touching(node_id, strict=strict)
 
-    def event_is_current(self, event, node_id=None, strict=False):
+    def event_is_current(self, event, node_id=None, strict=True):
         """Whether a seq-stamped client event is current (see module helper)."""
         return event_is_current(self._store, event, node_id, strict=strict)
 

@@ -322,7 +322,7 @@ def test_last_seq_touching_tracks_ops_and_forgets_removed_nodes():
     assert store.last_seq_touching("4") is None
 
 
-def test_array_patches_do_not_advance_default_staleness_cursor():
+def test_array_patches_advance_the_default_staleness_cursor():
     store, _ = committed_store()
     before = store.last_seq_touching("5")
 
@@ -330,13 +330,15 @@ def test_array_patches_do_not_advance_default_staleness_cursor():
         "5", "points", 0, b"\x00" * 12, "Float32Array"
     ).commit()
 
-    assert store.last_seq_touching("5") == before
-    assert store.last_seq_touching("5", strict=True) == store.seq
+    # Patches move the picked points, so they count by default; mid-gesture
+    # callers pass strict=False so their own confirmations don't stale them.
+    assert store.last_seq_touching("5") == store.seq
+    assert store.last_seq_touching("5", strict=False) == before
 
     node = store.get("5")
     node["props"] = {"structuralRevision": 2}
     store.transact().upsert("5", node).commit()
-    assert store.last_seq_touching("5") == store.seq
+    assert store.last_seq_touching("5", strict=False) == store.seq
 
 
 def test_snapshot_is_isolated_from_store_mutation():

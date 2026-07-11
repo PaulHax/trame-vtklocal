@@ -349,13 +349,14 @@ class SceneStore:
     def live_refs(self):
         return frozenset(_live_refs(self._state.nodes))
 
-    def last_seq_touching(self, node_id, strict=False):
+    def last_seq_touching(self, node_id, strict=True):
         """Seq relevant to event staleness for a live node.
 
-        By default only structural upserts count, so a drag's own array
-        confirmations cannot invalidate its in-flight events. ``strict=True``
-        includes array patches. Unknown or removed nodes return ``None`` and
-        must be treated as stale.
+        By default every touch counts — array patches move points, so a pick
+        measured against pre-patch geometry is stale. ``strict=False`` counts
+        only structural upserts, for callers validating events mid-gesture
+        whose own array confirmations ride the same channel. Unknown or
+        removed nodes return ``None`` and must be treated as stale.
         """
         node_id = str(node_id)
         structural = self._state.touched_structural.get(node_id)

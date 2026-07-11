@@ -396,7 +396,7 @@ def test_oracle_commands_ride_ops_and_order_with_scene_changes():
         publisher.sync()
         ((_topic, message),) = server.protocol.drain()
         assert message["ops"]
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 1}}]
+        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 1}, "render": True}]
         assert client.apply(message) == "applied"
 
         # Command with no pending ops: empty-ops message with a fresh seq.

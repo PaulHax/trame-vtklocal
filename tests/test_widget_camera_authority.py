@@ -41,9 +41,11 @@ def test_vtkjs_views_forward_camera_authority_to_the_client():
         shared_view.cleanup()
 
 
-def test_camera_methods_enqueue_ordered_retained_render_commands():
+def test_camera_methods_retain_commands_under_client_authority():
     server = get_server("widget-camera-commands", client_type="vue3")
-    view = VtkJsLocalView(_render_window(), trame_server=server)
+    view = VtkJsLocalView(
+        _render_window(), camera_authority="client", trame_server=server
+    )
     try:
         view.set_camera({"parallelScale": 3})
         view.reset_camera()
@@ -57,6 +59,27 @@ def test_camera_methods_enqueue_ordered_retained_render_commands():
             {"name": "camera.reset", "payload": {}, "render": True},
         ]
         assert set(view._publisher._retained_commands) == {"camera.reset"}
+    finally:
+        view.cleanup()
+
+
+def test_camera_methods_do_not_retain_under_server_authority():
+    # In server mode the camera is a synced node: the snapshot already carries
+    # the current pose, so a retained command would replay a stale one on
+    # every resync.
+    server = get_server("widget-camera-commands-server", client_type="vue3")
+    view = VtkJsLocalView(
+        _render_window(), camera_authority="server", trame_server=server
+    )
+    try:
+        view.set_camera({"parallelScale": 3})
+        view.reset_camera()
+
+        assert [cmd["name"] for cmd in view._publisher._pending_commands] == [
+            "camera.set",
+            "camera.reset",
+        ]
+        assert view._publisher._retained_commands == {}
     finally:
         view.cleanup()
 

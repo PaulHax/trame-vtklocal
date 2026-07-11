@@ -345,7 +345,7 @@ def test_transaction_batches_mutations_into_one_broadcast():
         assert (
             str(object_manager.GetId(scene.handles["actor"].GetProperty())) in upserted
         )
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}}]
+        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}, "render": True}]
     finally:
         publisher.cleanup()
 
@@ -389,7 +389,7 @@ def test_settled_flushes_queued_commands():
 
     run_coroutine(scenario())
     ((_topic, message),) = server.protocol.drain()
-    assert message["commands"] == [{"name": "ping", "payload": None}]
+    assert message["commands"] == [{"name": "ping", "payload": None, "render": True}]
     assert message["ops"] == []
 
 
@@ -555,7 +555,7 @@ def test_commands_and_request_resync_ignore_camera_authority():
         publisher.send_command("mapCamera", {"frame": 3})
         publisher.sync()
         ((_topic, message),) = server.protocol.drain()
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}}]
+        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}, "render": True}]
         assert message["ops"] == []
 
         seq_before = publisher.store.seq
@@ -651,7 +651,9 @@ def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
         publisher.cleanup()
 
 
-def test_patch_array_confirmation_does_not_stale_an_inflight_event(publisher_env):
+def test_patch_array_staleness_counts_by_default_and_relaxes_mid_gesture(
+    publisher_env,
+):
     scene, publisher, server = publisher_env
     _start_retention(scene, publisher, server)
     dataset_id = _dataset_id(scene)
@@ -661,8 +663,10 @@ def test_patch_array_confirmation_does_not_stale_an_inflight_event(publisher_env
     publisher.sync()
     server.protocol.drain()
 
-    assert publisher.event_is_current(event)
-    assert not publisher.event_is_current(event, strict=True)
+    # The patch moved the very points the pick was measured against.
+    assert not publisher.event_is_current(event)
+    # Mid-gesture callers opt out so their own confirmations don't stale them.
+    assert publisher.event_is_current(event, strict=False)
 
 
 def test_parsed_state_cache_skips_unchanged_referenced_states():

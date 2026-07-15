@@ -41,7 +41,9 @@ POINT_GAUSSIAN_ONLY = {
     "emissive",
     "boundScale",
     "lowpassMatrix",
+    "opacityArray",
     "anisotropic",
+    "scaleArray",
     "opacityArrayComponent",
     "opacityTableSize",
     "scaleArrayComponent",
@@ -49,7 +51,7 @@ POINT_GAUSSIAN_ONLY = {
 }
 
 
-def _point_cloud_scene(user_matrix=None):
+def _point_cloud_scene(user_matrix=None, native_array_names=False):
     api = ObjectManagerAPI()
     om = api.vtk_object_manager
     render_window = vtkRenderWindow()
@@ -70,6 +72,9 @@ def _point_cloud_scene(user_matrix=None):
     mapper.SetScalarVisibility(True)
     mapper.SetColorModeToDirectScalars()
     mapper.SetStatic(True)
+    if native_array_names:
+        mapper.SetScaleArray("radius")
+        mapper.SetOpacityArray("opacity")
 
     actor = vtkActor()
     actor.SetMapper(mapper)
@@ -113,6 +118,14 @@ def test_native_mapper_maps_to_the_client_point_gaussian_type():
 
     # No native OpenGL class name survives anywhere in the scene.
     assert all(node["type"] != "vtkOpenGLPointGaussianMapper" for node in nodes.values())
+
+
+def test_native_scale_and_opacity_array_names_do_not_cross_the_wire():
+    nodes, _ = _point_cloud_scene(native_array_names=True)
+    props = _only(nodes, "vtkPointGaussianMapper").get("props", {})
+
+    assert "scaleArray" not in props
+    assert "opacityArray" not in props
 
 
 def test_polydata_is_topology_free():

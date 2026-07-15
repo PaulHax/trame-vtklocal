@@ -309,8 +309,10 @@ MAPPER_SKIP_PROPERTIES = {
     "boundScale",
     "emissive",
     "lowpassMatrix",
+    "opacityArray",
     "opacityArrayComponent",
     "opacityTableSize",
+    "scaleArray",
     "scaleArrayComponent",
     "scaleTableSize",
 }
@@ -405,11 +407,32 @@ CLASS_TO_DATATYPE = {
 }
 
 
-def js_datatype(class_name, data_type):
-    """JS typed-array constructor for a VTK array: prefer the concrete class
-    name, fall back to the numeric GetDataType() id, default Float32Array."""
-    return CLASS_TO_DATATYPE.get(class_name) or VTK_DATATYPE_MAP.get(
-        data_type, "Float32Array"
+def js_datatype(class_name, data_type, *, missing_default=None):
+    """JS typed-array constructor for a VTK array.
+
+    A concrete VTK class wins over its numeric id.  Unknown numeric ids must
+    not silently reinterpret their payload as Float32.  Callers handling
+    genuinely absent serializer metadata can deliberately provide a default.
+    """
+    class_type = CLASS_TO_DATATYPE.get(class_name)
+    if class_type is not None:
+        return class_type
+
+    numeric_type = VTK_DATATYPE_MAP.get(data_type)
+    if numeric_type is not None:
+        return numeric_type
+
+    if data_type is None and missing_default is not None:
+        return missing_default
+
+    if data_type is None:
+        raise ValueError(
+            "VTK array datatype metadata is missing "
+            f"for class {class_name!r}; no client typed-array contract is available"
+        )
+    raise ValueError(
+        "unsupported VTK numeric array datatype "
+        f"{data_type!r} for class {class_name!r}"
     )
 
 

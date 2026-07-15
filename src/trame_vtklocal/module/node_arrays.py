@@ -14,7 +14,7 @@ import hashlib
 import weakref
 
 import numpy as np
-from vtkmodules.util.numpy_support import numpy_to_vtk
+from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
 from trame_vtklocal.module.vtkjs_translator import (
     ATTRIBUTE_REGISTRATIONS,
@@ -33,7 +33,9 @@ def _data_array_entry(data_state):
         return None
 
     js_type = js_datatype(
-        data_state.get("ClassName", ""), data_state.get("DataType", 10)
+        data_state.get("ClassName", ""),
+        data_state.get("DataType"),
+        missing_default="Float32Array",
     )
     components = data_state.get("NumberOfComponents", 1)
     entry = {
@@ -125,7 +127,20 @@ def _register_field_array_blob(object_manager, array, location):
         if _blob_present(object_manager, hash_value):
             return entry
 
-    flat = np.array(array).ravel()
+    # ``np.array(vtkBitArray)`` exposes VTK's packed backing bytes instead of
+    # its tuple values.  vtk.js receives an ordinary Uint8Array, so publish one
+    # byte per bit rather than advertising a logical value count for a shorter
+    # packed payload.  ``vtk_to_numpy`` correctly exposes all other numeric
+    # VTK arrays without relying on the Python array protocol.
+    if array.GetClassName() == "vtkBitArray":
+        flat = np.fromiter(
+            (array.GetValue(index) for index in range(array.GetNumberOfValues())),
+            dtype=np.uint8,
+            count=array.GetNumberOfValues(),
+        )
+    else:
+        flat = vtk_to_numpy(array)
+    flat = np.ascontiguousarray(flat).reshape(-1)
     raw_bytes = flat.view(np.uint8)
     content_hash = hashlib.md5(raw_bytes).hexdigest()
     # RegisterBlob requires a vtkTypeUInt8Array (= vtkUnsignedCharArray).

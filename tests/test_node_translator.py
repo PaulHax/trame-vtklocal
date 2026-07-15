@@ -29,7 +29,7 @@ from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
-from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
+from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES, js_datatype
 from trame_vtklocal.store import SceneStore, ref_manager_hashes
 from trame_vtklocal.widgets.blob_payloads import (
     pack_cell_array_payload,
@@ -188,7 +188,7 @@ def make_verts_scene(name="verts"):
 
 
 def make_typed_field_scene(np_array, array_name="values", name="typed_field"):
-    """Polydata carrying one named point-data array of a chosen numpy dtype.
+    """Polydata carrying one named numeric point-data array.
 
     Exercises array-datatype translation end to end: ``numpy_to_vtk`` yields the
     concrete ``vtkType*Array`` the app's loaders produce, and the emitted field
@@ -200,8 +200,14 @@ def make_typed_field_scene(np_array, array_name="values", name="typed_field"):
     from vtkmodules.vtkCommonDataModel import vtkPolyData
     from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
 
-    values = np.ascontiguousarray(np_array)
-    n = int(values.shape[0])
+    vtk_array = None
+    if hasattr(np_array, "GetDataType"):
+        vtk_array = np_array
+        values = None
+        n = vtk_array.GetNumberOfTuples()
+    else:
+        values = np.ascontiguousarray(np_array)
+        n = int(values.shape[0])
 
     api = _ObjectManagerApiNoAttachments()
     render_window = vtkRenderWindow()
@@ -215,7 +221,8 @@ def make_typed_field_scene(np_array, array_name="values", name="typed_field"):
     polydata = vtkPolyData()
     polydata.SetPoints(points)
 
-    vtk_array = numpy_to_vtk(values, deep=True)
+    if vtk_array is None:
+        vtk_array = numpy_to_vtk(values, deep=True)
     vtk_array.SetName(array_name)
     polydata.GetPointData().AddArray(vtk_array)
 
@@ -810,6 +817,9 @@ def test_field_array_datatype_matches_the_concrete_vtk_class(np_dtype, expected_
     payload = resolve_ref_payload(
         scene.api.vtk_object_manager, entry["ref"], lambda *_: None
     )
+    assert len(payload) == entry["size"] * np.dtype(
+        NUMPY_BY_JS_DATATYPE[entry["dataType"]]
+    ).itemsize
     decoded = np.frombuffer(payload, dtype=NUMPY_BY_JS_DATATYPE[entry["dataType"]])
     assert decoded.tolist() == values.tolist()
 
@@ -841,3 +851,34 @@ def test_uint8_rgb_survives_as_a_uint8_contract():
     ).reshape(colors.shape)
     assert decoded.tolist() == colors.tolist()
     assert {0, 127, 128, 255} <= set(decoded.ravel().tolist())
+
+
+def test_bit_array_publishes_one_uint8_per_logical_value():
+    """A real vtkBitArray must not leak VTK's packed backing bytes."""
+    from vtkmodules.vtkCommonCore import vtkBitArray
+
+    values = [1, 0, 1, 0, 1, 1, 0, 0, 1]
+    bit_array = vtkBitArray()
+    bit_array.SetName("Mask")
+    bit_array.SetNumberOfComponents(3)
+    bit_array.SetNumberOfTuples(3)
+    for index, value in enumerate(values):
+        bit_array.SetValue(index, value)
+
+    scene = make_typed_field_scene(bit_array, array_name="Mask")
+    arrays = translate(scene)[oid(scene, scene.handles["polydata"])]["arrays"]
+    entry = arrays["field:pointData:Mask"]
+
+    assert entry["dataType"] == "Uint8Array"
+    assert entry["numberOfComponents"] == 3
+    assert entry["size"] == 9
+    payload = resolve_ref_payload(
+        scene.api.vtk_object_manager, entry["ref"], lambda *_: None
+    )
+    assert len(payload) == entry["size"]
+    assert np.frombuffer(payload, dtype=np.uint8).tolist() == values
+
+
+def test_unknown_numeric_array_type_is_rejected():
+    with pytest.raises(ValueError, match="unsupported VTK numeric array datatype 999"):
+        js_datatype("vtkFutureNumericArray", 999)

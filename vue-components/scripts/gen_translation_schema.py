@@ -8,7 +8,11 @@ lists, class-name mapping, dependency relations, and array-extraction config.
 Static lookup tables live in ``vtkjs_translator`` as module-level
 dicts/sets/literals. This generator parses the source as an AST and pulls
 those constants out via ``ast.literal_eval`` — it does *not* import the
-translator, so the npm build job runs without VTK / numpy on the path.
+translator, so the npm build job runs without the compiled VTK / numpy on the
+path. The one exception is the numeric datatype map: the translator resolves
+it from ``vtkConstants`` at runtime (keyed by constant name), so this script
+resolves the same names via the pure-Python ``vtkmodules.util.vtkConstants``
+module to emit an id-keyed JS mirror that matches the runtime map exactly.
 
 Imperative special cases (polydata field-array extraction, mapper input list
 handling, camera property allowlist, renderer background-alpha merge,
@@ -42,7 +46,7 @@ WANTED_NAMES = {
     "MAPPER_SKIP_PROPERTIES",
     "PROPERTY_SKIP_PROPERTIES",
     "CAMERA_PROPERTIES",
-    "VTK_DATATYPE_MAP",
+    "VTK_DATATYPE_JS_BY_NAME",
     "VTK_LIGHT_TYPE_MAP",
     "CLASS_TO_DATATYPE",
 }
@@ -111,6 +115,24 @@ def _polydata_arrays(raw):
     }
 
 
+def _numeric_datatype_map(js_by_name):
+    """Id-keyed datatype map mirroring the translator's runtime construction.
+
+    Resolves each VTK type constant name to its numeric id through the
+    pure-Python ``vtkConstants`` module — the same names and ids the translator
+    uses, so the JS mirror never drifts from the server map.
+    """
+    from vtkmodules.util import vtkConstants
+
+    resolved = {
+        getattr(vtkConstants, name): js_type
+        for name, js_type in js_by_name.items()
+        if getattr(vtkConstants, name, None) is not None
+    }
+    # Canonical id order so reordering the by-name source never churns the file.
+    return {str(key): resolved[key] for key in sorted(resolved)}
+
+
 def build_schema():
     c = extract_constants()
     return {
@@ -128,7 +150,7 @@ def build_schema():
         "mapperSkipProperties": sorted(c["MAPPER_SKIP_PROPERTIES"]),
         "propertySkipProperties": sorted(c["PROPERTY_SKIP_PROPERTIES"]),
         "cameraProperties": sorted(c["CAMERA_PROPERTIES"]),
-        "vtkDataTypeMap": {str(k): v for k, v in c["VTK_DATATYPE_MAP"].items()},
+        "vtkDataTypeMap": _numeric_datatype_map(c["VTK_DATATYPE_JS_BY_NAME"]),
         "vtkLightTypeMap": {str(k): v for k, v in c["VTK_LIGHT_TYPE_MAP"].items()},
         "classToDataType": dict(c["CLASS_TO_DATATYPE"]),
     }

@@ -9,6 +9,8 @@ emit the JS mirror (``translationSchema.js``) — table edits must re-run
 ``npm run gen-schema``.
 """
 
+from vtkmodules.util import vtkConstants
+
 CLASS_NAME_MAP = {
     "vtkXOpenGLRenderWindow": "vtkRenderWindow",
     "vtkCocoaRenderWindow": "vtkRenderWindow",
@@ -28,6 +30,7 @@ CLASS_NAME_MAP = {
     "vtkCompositePolyDataMapper2": "vtkMapper",
     "vtkDataSetMapper": "vtkMapper",
     "vtkOpenGLGlyph3DMapper": "vtkGlyph3DMapper",
+    "vtkOpenGLPointGaussianMapper": "vtkPointGaussianMapper",
     "vtkPVDiscretizableColorTransferFunction": "vtkColorTransferFunction",
     "vtkOpenGLImageSliceMapper": "vtkImageMapper",
     "vtkFixedPointVolumeRayCastMapper": "vtkVolumeMapper",
@@ -299,6 +302,17 @@ MAPPER_SKIP_PROPERTIES = {
     "resolveCoincidentTopologyLineOffsetParameters",
     "resolveCoincidentTopologyPolygonOffsetFaces",
     "resolveCoincidentTopologyPolygonOffsetParameters",
+    # vtkPointGaussianMapper-only fields the client mapper does not implement
+    # (it keeps only scaleFactor + the shared vtkMapper surface). These exist on
+    # no other mapper, so skipping them here is a no-op elsewhere.
+    "anisotropic",
+    "boundScale",
+    "emissive",
+    "lowpassMatrix",
+    "opacityArrayComponent",
+    "opacityTableSize",
+    "scaleArrayComponent",
+    "scaleTableSize",
 }
 
 PROPERTY_SKIP_PROPERTIES = {
@@ -325,22 +339,33 @@ CAMERA_PROPERTIES = {
     "physicalViewUp",
 }
 
+# JS typed-array constructor per VTK scalar type, keyed by the type *constant
+# name*; the numeric GetDataType() ids are resolved from vtkConstants below,
+# never hand-written (VTK 9.x transposes them — UNSIGNED_CHAR=3, SHORT=4,
+# UNSIGNED_SHORT=5, SIGNED_CHAR=15 — and a stale literal advertised uint8 RGB as
+# Int8Array). gen_translation_schema.py resolves the same names for the JS mirror.
+VTK_DATATYPE_JS_BY_NAME = {
+    "VTK_BIT": "Uint8Array",  # packed bits; unsigned storage on the client
+    "VTK_CHAR": "Int8Array",
+    "VTK_SIGNED_CHAR": "Int8Array",
+    "VTK_UNSIGNED_CHAR": "Uint8Array",
+    "VTK_SHORT": "Int16Array",
+    "VTK_UNSIGNED_SHORT": "Uint16Array",
+    "VTK_INT": "Int32Array",
+    "VTK_UNSIGNED_INT": "Uint32Array",
+    "VTK_LONG": "BigInt64Array",
+    "VTK_UNSIGNED_LONG": "BigUint64Array",
+    "VTK_FLOAT": "Float32Array",
+    "VTK_DOUBLE": "Float64Array",
+    "VTK_ID_TYPE": "BigInt64Array",
+    "VTK_LONG_LONG": "BigInt64Array",
+    "VTK_UNSIGNED_LONG_LONG": "BigUint64Array",
+}
+
 VTK_DATATYPE_MAP = {
-    1: "Int8Array",  # VTK_BIT (approximate)
-    2: "Int8Array",  # VTK_CHAR
-    3: "Int8Array",  # VTK_SIGNED_CHAR
-    4: "Uint8Array",  # VTK_UNSIGNED_CHAR
-    5: "Int16Array",  # VTK_SHORT
-    6: "Int32Array",  # VTK_INT
-    7: "Uint32Array",  # VTK_UNSIGNED_INT
-    8: "BigInt64Array",  # VTK_LONG
-    9: "BigUint64Array",  # VTK_UNSIGNED_LONG
-    10: "Float32Array",  # VTK_FLOAT
-    11: "Float64Array",  # VTK_DOUBLE
-    12: "BigInt64Array",  # VTK_ID_TYPE
-    15: "Uint16Array",  # VTK_UNSIGNED_SHORT
-    16: "BigInt64Array",  # VTK_LONG_LONG
-    17: "BigUint64Array",  # VTK_UNSIGNED_LONG_LONG
+    getattr(vtkConstants, name): js_type
+    for name, js_type in VTK_DATATYPE_JS_BY_NAME.items()
+    if hasattr(vtkConstants, name)
 }
 
 VTK_LIGHT_TYPE_MAP = {
@@ -349,6 +374,9 @@ VTK_LIGHT_TYPE_MAP = {
     3: "SceneLight",
 }
 
+# Concrete VTK array class -> JS typed array; preferred over the numeric map
+# (unambiguous, version-independent). numpy_to_vtk emits the fixed-width
+# vtkType* classes (uint8 RGB -> vtkTypeUInt8Array), so keep them all present.
 CLASS_TO_DATATYPE = {
     "vtkFloatArray": "Float32Array",
     "vtkDoubleArray": "Float64Array",
@@ -364,13 +392,25 @@ CLASS_TO_DATATYPE = {
     "vtkLongLongArray": "BigInt64Array",
     "vtkUnsignedLongLongArray": "BigUint64Array",
     "vtkIdTypeArray": "BigInt64Array",
-    "vtkTypeInt64Array": "BigInt64Array",
-    "vtkTypeUInt64Array": "BigUint64Array",
+    "vtkTypeInt8Array": "Int8Array",
+    "vtkTypeUInt8Array": "Uint8Array",
+    "vtkTypeInt16Array": "Int16Array",
+    "vtkTypeUInt16Array": "Uint16Array",
     "vtkTypeInt32Array": "Int32Array",
     "vtkTypeUInt32Array": "Uint32Array",
+    "vtkTypeInt64Array": "BigInt64Array",
+    "vtkTypeUInt64Array": "BigUint64Array",
     "vtkTypeFloat32Array": "Float32Array",
     "vtkTypeFloat64Array": "Float64Array",
 }
+
+
+def js_datatype(class_name, data_type):
+    """JS typed-array constructor for a VTK array: prefer the concrete class
+    name, fall back to the numeric GetDataType() id, default Float32Array."""
+    return CLASS_TO_DATATYPE.get(class_name) or VTK_DATATYPE_MAP.get(
+        data_type, "Float32Array"
+    )
 
 
 def map_class_name(class_name):

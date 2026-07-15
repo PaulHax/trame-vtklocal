@@ -31,7 +31,10 @@ from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
 from trame_vtklocal.store import SceneStore, ref_manager_hashes
-from trame_vtklocal.widgets.blob_payloads import pack_cell_array_payload
+from trame_vtklocal.widgets.blob_payloads import (
+    pack_cell_array_payload,
+    resolve_ref_payload,
+)
 
 
 # ----------------------------------------------------------------------
@@ -180,6 +183,53 @@ def make_verts_scene(name="verts"):
         "mapper": mapper,
         "polydata": polydata,
         "points": points,
+    }
+    return _wrap_scene(name, api, render_window, handles)
+
+
+def make_typed_field_scene(np_array, array_name="values", name="typed_field"):
+    """Polydata carrying one named point-data array of a chosen numpy dtype.
+
+    Exercises array-datatype translation end to end: ``numpy_to_vtk`` yields the
+    concrete ``vtkType*Array`` the app's loaders produce, and the emitted field
+    entry's ``dataType`` is exactly what the client uses to reinterpret the raw
+    bytes — a wrong label silently corrupts values (e.g. uint8 as int8).
+    """
+    from vtkmodules.util.numpy_support import numpy_to_vtk
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkPolyData
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+
+    values = np.ascontiguousarray(np_array)
+    n = int(values.shape[0])
+
+    api = _ObjectManagerApiNoAttachments()
+    render_window = vtkRenderWindow()
+    render_window.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    render_window.AddRenderer(renderer)
+
+    points = vtkPoints()
+    for index in range(n):
+        points.InsertNextPoint(float(index), 0.0, 0.0)
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+
+    vtk_array = numpy_to_vtk(values, deep=True)
+    vtk_array.SetName(array_name)
+    polydata.GetPointData().AddArray(vtk_array)
+
+    actor, mapper = add_actor(renderer, polydata)
+    renderer.ResetCamera()
+
+    handles = {
+        "renderer": renderer,
+        "actor": actor,
+        "mapper": mapper,
+        "polydata": polydata,
+        "points": points,
+        "array_name": array_name,
+        "values": values,
     }
     return _wrap_scene(name, api, render_window, handles)
 
@@ -708,3 +758,86 @@ def test_cell_arrays_pack_to_the_vtkjs_layout(scene_factory, key, expected_packe
 
     packed = pack_cell_array_payload(scene.api.vtk_object_manager, entry["ref"])
     assert np.frombuffer(packed, dtype=np.uint32).tolist() == expected_packed
+
+
+# ----------------------------------------------------------------------
+# Array datatype translation (VTK GetDataType()/class -> JS typed array)
+# ----------------------------------------------------------------------
+
+# The client reinterprets the raw blob bytes through the advertised dataType,
+# so the JS constructor must be exact for every VTK scalar type the loaders
+# can emit. Keyed by JS constructor name for the payload-decode contract below.
+NUMPY_BY_JS_DATATYPE = {
+    "Int8Array": np.int8,
+    "Uint8Array": np.uint8,
+    "Int16Array": np.int16,
+    "Uint16Array": np.uint16,
+    "Int32Array": np.int32,
+    "Uint32Array": np.uint32,
+    "BigInt64Array": np.int64,
+    "BigUint64Array": np.uint64,
+    "Float32Array": np.float32,
+    "Float64Array": np.float64,
+}
+
+NUMERIC_DATATYPE_CASES = [
+    (np.int8, "Int8Array"),
+    (np.uint8, "Uint8Array"),
+    (np.int16, "Int16Array"),
+    (np.uint16, "Uint16Array"),
+    (np.int32, "Int32Array"),
+    (np.uint32, "Uint32Array"),
+    (np.int64, "BigInt64Array"),
+    (np.uint64, "BigUint64Array"),
+    (np.float32, "Float32Array"),
+    (np.float64, "Float64Array"),
+]
+
+
+@pytest.mark.parametrize(("np_dtype", "expected_js"), NUMERIC_DATATYPE_CASES)
+def test_field_array_datatype_matches_the_concrete_vtk_class(np_dtype, expected_js):
+    values = np.arange(4, dtype=np_dtype)
+    scene = make_typed_field_scene(values, array_name="values")
+    arrays = translate(scene)[oid(scene, scene.handles["polydata"])]["arrays"]
+
+    entry = arrays["field:pointData:values"]
+    assert entry["dataType"] == expected_js
+    assert entry["numberOfComponents"] == 1
+    assert entry["size"] == 4
+
+    # Decoding the payload through the advertised dtype recovers the input:
+    # a mislabeled type (the VTK 9.x char/short id transposition) would not.
+    payload = resolve_ref_payload(
+        scene.api.vtk_object_manager, entry["ref"], lambda *_: None
+    )
+    decoded = np.frombuffer(payload, dtype=NUMPY_BY_JS_DATATYPE[entry["dataType"]])
+    assert decoded.tolist() == values.tolist()
+
+
+def test_uint8_rgb_survives_as_a_uint8_contract():
+    """Full-range RGB advertises Uint8Array and round-trips every channel.
+
+    The datatype-map bug labeled ``vtkTypeUInt8Array`` (GetDataType()=3) as
+    ``Int8Array``, so the client read 128 as -128 and 255 as -1. This asserts
+    both the contract and the below/above-127 payload values from the plan.
+    """
+    colors = np.array(
+        [[0, 127, 128], [255, 0, 127], [128, 255, 0], [127, 128, 255]],
+        dtype=np.uint8,
+    )
+    scene = make_typed_field_scene(colors, array_name="RGB")
+    arrays = translate(scene)[oid(scene, scene.handles["polydata"])]["arrays"]
+
+    entry = arrays["field:pointData:RGB"]
+    assert entry["dataType"] == "Uint8Array"
+    assert entry["numberOfComponents"] == 3
+    assert entry["size"] == colors.size
+
+    payload = resolve_ref_payload(
+        scene.api.vtk_object_manager, entry["ref"], lambda *_: None
+    )
+    decoded = np.frombuffer(
+        payload, dtype=NUMPY_BY_JS_DATATYPE[entry["dataType"]]
+    ).reshape(colors.shape)
+    assert decoded.tolist() == colors.tolist()
+    assert {0, 127, 128, 255} <= set(decoded.ravel().tolist())

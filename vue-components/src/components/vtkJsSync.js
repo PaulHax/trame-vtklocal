@@ -2,6 +2,8 @@ import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/Synchr
 // Registers vtkProjectedTextureMapper with the scene graph and the state-sync
 // type mapping on import so serialized scenes can carry the type.
 import "./projectedTextureMapper";
+// Registers the dense-point vtkPointGaussianMapper state-sync type mapping.
+import "./pointGaussianMapper";
 
 export function isLiveInstance(instance) {
   return (

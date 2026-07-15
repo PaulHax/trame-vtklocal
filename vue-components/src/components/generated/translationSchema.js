@@ -27,6 +27,7 @@ export const CLASS_NAME_MAP = {
   "vtkCompositePolyDataMapper2": "vtkMapper",
   "vtkDataSetMapper": "vtkMapper",
   "vtkOpenGLGlyph3DMapper": "vtkGlyph3DMapper",
+  "vtkOpenGLPointGaussianMapper": "vtkPointGaussianMapper",
   "vtkPVDiscretizableColorTransferFunction": "vtkColorTransferFunction",
   "vtkOpenGLImageSliceMapper": "vtkImageMapper",
   "vtkFixedPointVolumeRayCastMapper": "vtkVolumeMapper"
@@ -343,17 +344,25 @@ export const LOOKUPTABLE_SKIP_PROPERTIES = new Set([
   "tableValue"
 ]);
 export const MAPPER_SKIP_PROPERTIES = new Set([
+  "anisotropic",
+  "boundScale",
   "clamping",
   "cullingAndLOD",
+  "emissive",
   "lODColoring",
+  "lowpassMatrix",
   "masking",
   "numberOfPieces",
+  "opacityArrayComponent",
+  "opacityTableSize",
   "range",
   "relativeCoincidentTopologyLineOffsetParameters",
   "relativeCoincidentTopologyPolygonOffsetParameters",
   "resolveCoincidentTopologyLineOffsetParameters",
   "resolveCoincidentTopologyPolygonOffsetFaces",
   "resolveCoincidentTopologyPolygonOffsetParameters",
+  "scaleArrayComponent",
+  "scaleTableSize",
   "selectionColorId",
   "sourceIndexing",
   "useSelectionIds",
@@ -377,11 +386,11 @@ export const CAMERA_PROPERTIES = new Set([
   "viewUp"
 ]);
 export const VTK_DATATYPE_MAP = {
-  "1": "Int8Array",
+  "1": "Uint8Array",
   "2": "Int8Array",
-  "3": "Int8Array",
-  "4": "Uint8Array",
-  "5": "Int16Array",
+  "3": "Uint8Array",
+  "4": "Int16Array",
+  "5": "Uint16Array",
   "6": "Int32Array",
   "7": "Uint32Array",
   "8": "BigInt64Array",
@@ -389,7 +398,7 @@ export const VTK_DATATYPE_MAP = {
   "10": "Float32Array",
   "11": "Float64Array",
   "12": "BigInt64Array",
-  "15": "Uint16Array",
+  "15": "Int8Array",
   "16": "BigInt64Array",
   "17": "BigUint64Array"
 };
@@ -413,10 +422,14 @@ export const CLASS_TO_DATATYPE = {
   "vtkLongLongArray": "BigInt64Array",
   "vtkUnsignedLongLongArray": "BigUint64Array",
   "vtkIdTypeArray": "BigInt64Array",
-  "vtkTypeInt64Array": "BigInt64Array",
-  "vtkTypeUInt64Array": "BigUint64Array",
+  "vtkTypeInt8Array": "Int8Array",
+  "vtkTypeUInt8Array": "Uint8Array",
+  "vtkTypeInt16Array": "Int16Array",
+  "vtkTypeUInt16Array": "Uint16Array",
   "vtkTypeInt32Array": "Int32Array",
   "vtkTypeUInt32Array": "Uint32Array",
+  "vtkTypeInt64Array": "BigInt64Array",
+  "vtkTypeUInt64Array": "BigUint64Array",
   "vtkTypeFloat32Array": "Float32Array",
   "vtkTypeFloat64Array": "Float64Array"
 };

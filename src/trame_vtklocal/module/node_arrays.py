@@ -18,11 +18,10 @@ from vtkmodules.util.numpy_support import numpy_to_vtk
 
 from trame_vtklocal.module.vtkjs_translator import (
     ATTRIBUTE_REGISTRATIONS,
-    CLASS_TO_DATATYPE,
     FIELD_DATA_GETTERS,
     POLYDATA_ARRAYS,
-    VTK_DATATYPE_MAP,
     get_ref_id,
+    js_datatype,
     to_camel_case,
 )
 from trame_vtklocal.store import REF_CELLS_PREFIX, REF_CONTENT_PREFIX
@@ -33,9 +32,8 @@ def _data_array_entry(data_state):
     if not hash_value:
         return None
 
-    class_name = data_state.get("ClassName", "")
-    js_type = CLASS_TO_DATATYPE.get(class_name) or VTK_DATATYPE_MAP.get(
-        data_state.get("DataType", 10), "Float32Array"
+    js_type = js_datatype(
+        data_state.get("ClassName", ""), data_state.get("DataType", 10)
     )
     components = data_state.get("NumberOfComponents", 1)
     entry = {
@@ -136,7 +134,7 @@ def _register_field_array_blob(object_manager, array, location):
     components = array.GetNumberOfComponents()
     entry = {
         "ref": REF_CONTENT_PREFIX + content_hash,
-        "dataType": VTK_DATATYPE_MAP.get(array.GetDataType(), "Float32Array"),
+        "dataType": js_datatype(array.GetClassName(), array.GetDataType()),
         "size": array.GetNumberOfTuples() * components,
         "numberOfComponents": components,
         "name": array.GetName() or "",

@@ -55,7 +55,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pip install build
+          set -o pipefail
+          pip install build vtk
           ./release.sh --publish | tee /tmp/release.out
           {
             echo '### Fork wheel published :package:'

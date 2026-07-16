@@ -65,8 +65,12 @@ function stubFetch() {
 function makeSceneStubs() {
   const anchorMapper = { isDeleted: () => false };
   const anchorActor = {
+    // Server-synced actors carry visibility as 0/1 ints, not booleans.
+    visibility: 1,
     getMapper: () => anchorMapper,
-    getVisibility: () => true,
+    getVisibility() {
+      return this.visibility;
+    },
     getUserMatrix: () => null,
     getProperty: () => ({ getPointSize: () => 3 }),
   };
@@ -88,7 +92,7 @@ function makeSceneStubs() {
     getViewport: () => [0, 0, 1, 1],
   };
   const renderWindow = { getViews: () => [{ getSize: () => [200, 100] }] };
-  return { anchorMapper, renderer, renderWindow, added, removed };
+  return { anchorMapper, anchorActor, renderer, renderWindow, added, removed };
 }
 
 async function settle(rounds = 12) {
@@ -101,7 +105,7 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
   const { applyPointCloudLodBlock, updatePointCloudLods, disposePointCloudLods } =
     await loadLodModule();
   const fetchCalls = stubFetch();
-  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+  const { anchorMapper, anchorActor, renderer, renderWindow, added } = makeSceneStubs();
 
   let renders = 0;
   const scheduleRender = () => {
@@ -126,6 +130,14 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
   assert.ok(renders > 0, "renders were scheduled");
   // Anchor point size fanned out to the streamed tile actor.
   assert.equal(added[0].getProperty().getPointSize(), 3);
+
+  // Visibility fans out with the server's int encoding: 0 hides, 1 shows.
+  anchorActor.visibility = 0;
+  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  assert.equal(added[0].getVisibility(), false, "int 0 hides streamed tiles");
+  anchorActor.visibility = 1;
+  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  assert.equal(added[0].getVisibility(), true, "int 1 shows streamed tiles");
 
   disposePointCloudLods(registry);
   assert.equal(registry.size, 0);

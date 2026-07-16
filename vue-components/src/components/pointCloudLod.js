@@ -216,7 +216,10 @@ function updateEntry(entry, renderer, renderWindow, scheduleRender) {
   const actor = findAnchorActor(entry, renderer);
   if (actor) {
     entry.adapter.setBaseMatrix(actor.getUserMatrix?.() ?? null);
-    entry.adapter.setVisible(actor.getVisibility?.() !== false);
+    // Server-synced actors carry visibility as 0/1 ints, not booleans; only
+    // a missing getter defaults to visible.
+    const anchorVisible = actor.getVisibility?.();
+    entry.adapter.setVisible(anchorVisible === undefined ? true : !!anchorVisible);
     const pointSize = actor.getProperty?.()?.getPointSize?.();
     if (isPositiveFinite(pointSize)) {
       entry.adapter.setPointSize(pointSize);

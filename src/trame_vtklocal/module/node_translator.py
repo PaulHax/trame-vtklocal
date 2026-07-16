@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
+from trame_vtklocal.module import point_cloud_lod as pcl
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_arrays import polydata_array_entries
 from trame_vtklocal.module.state_cache import SceneReader
@@ -309,6 +310,9 @@ def _translate_mapper(reader, state, vtkjs_type):
     if projected_texture:
         node_type = ptx.PROJECTED_TEXTURE_TYPE
         blocks["projectedTexture"] = projected_texture
+    if point_cloud_lod := pcl.point_cloud_lod_config(vtk_mapper):
+        node_type = pcl.POINT_CLOUD_LOD_TYPE
+        blocks[pcl.POINT_CLOUD_LOD_BLOCK] = point_cloud_lod
 
     return _make_node(node_type, props, refs, {}, blocks)
 

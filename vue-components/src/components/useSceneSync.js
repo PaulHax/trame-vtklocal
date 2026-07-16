@@ -27,6 +27,12 @@ import {
   pickAt as pickAtRegistry,
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
+import {
+  applyPointCloudLodBlock,
+  disposePointCloudLods,
+  updatePointCloudLods,
+  POINT_CLOUD_LOD_BLOCK_KEY,
+} from "./pointCloudLod";
 import { createPickableGestures } from "./pickableGestures";
 import { createDragPreview } from "./dragPreview";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
@@ -65,6 +71,7 @@ export function useSceneSync(
   let cameraReportFrame = 0;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
+  const pointCloudLods = new Map();
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -273,6 +280,7 @@ export function useSceneSync(
     cancelCameraReport();
     distanceToCameraGlyphs.clear();
     pickables.clear();
+    disposePointCloudLods(pointCloudLods);
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -339,6 +347,13 @@ export function useSceneSync(
         }
       },
     );
+    reconciler.registerBlockHandler(
+      POINT_CLOUD_LOD_BLOCK_KEY,
+      (nodeId, block, instance) =>
+        applyPointCloudLodBlock(pointCloudLods, nodeId, block, instance, () =>
+          renderRequestCallback?.(),
+        ),
+    );
 
     engine = createSceneEngineImpl({
       client,
@@ -357,6 +372,7 @@ export function useSceneSync(
           if (disposed) return;
           bindPrimaryCameraToRenderers();
           updateDistanceToCameraGlyphsForRender();
+          updatePointCloudLodsForRender();
           dragPreview.reapply();
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
@@ -368,6 +384,7 @@ export function useSceneSync(
           if (disposed) return;
           bindPrimaryCameraToRenderers();
           updateDistanceToCameraGlyphsForRender();
+          updatePointCloudLodsForRender();
           dragPreview.reapply();
           noteMessageApplied(message);
           if (!Array.isArray(message?.ops) || message.ops.length) {
@@ -465,6 +482,17 @@ export function useSceneSync(
       renderer: getRenderer(),
       renderWindow: getRenderWindow?.(),
       synchronizerContext: managedSyncContext?.synchronizerContext,
+    });
+  }
+
+  function updatePointCloudLodsForRender() {
+    // Camera + anchor-actor fan-out for streamed LOD point clouds; the
+    // controller debounces selection internally, so per-message and
+    // per-interactor-render calls stay cheap.
+    return updatePointCloudLods(pointCloudLods, {
+      renderer: getRenderer(),
+      renderWindow: getRenderWindow?.(),
+      scheduleRender: () => renderRequestCallback?.(),
     });
   }
 
@@ -651,6 +679,7 @@ export function useSceneSync(
     setShouldGrab: gestures.setShouldGrab,
     setHoverEnabled: gestures.setHoverEnabled,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
+    updatePointCloudLods: updatePointCloudLodsForRender,
     getSyncDiagnostics,
     getAppliedSceneState,
   };

@@ -121,7 +121,10 @@ export default {
       interactor.bindEvents(container.value);
       interactorRenderSubscription = bindDistanceToCameraInteractorRenderEvent(
         interactor,
-        () => scene.updateDistanceToCameraGlyphs(),
+        () => {
+          scene.updateDistanceToCameraGlyphs();
+          scene.updatePointCloudLods();
+        },
       );
       scene.enableCameraReports({ during: "interaction", terminal: true });
       // The Start/End/InteractionEvent trio fires on the interactor STYLE;

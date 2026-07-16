@@ -4,6 +4,8 @@ import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/Synchr
 import "./projectedTextureMapper";
 // Registers the dense-point vtkPointGaussianMapper state-sync type mapping.
 import "./pointGaussianMapper";
+// Registers the streamed point-cloud LOD anchor state-sync type mapping.
+import "./pointCloudLodMapper";
 
 export function isLiveInstance(instance) {
   return (

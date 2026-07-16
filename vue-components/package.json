@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@kitware/vtk-wasm": "^1.5.0",
-    "jszip": "3.10.1"
+    "jszip": "3.10.1",
+    "vtk-pointcloud-lod": "file:../../vtk-pointcloud-lod"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",

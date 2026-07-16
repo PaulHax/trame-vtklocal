@@ -59,6 +59,7 @@ export default {
         return;
       }
       scene.updateDistanceToCameraGlyphs();
+      scene.updatePointCloudLods();
       externalRenderWindow?.renderExternal?.();
     }
 
@@ -119,6 +120,7 @@ export default {
     //     is a synchronous CPU/GPU stall). Omit to let vtk.js query.
     function renderExternal(options = {}) {
       scene.updateDistanceToCameraGlyphs();
+      scene.updatePointCloudLods();
       const hostState =
         "framebuffer" in options
           ? {
@@ -132,10 +134,10 @@ export default {
     function onRenderRequested(callback) {
       renderRequestedCallbackWithDistanceToCamera =
         typeof callback === "function"
-          ? createDistanceToCameraRenderCallback(
-              () => scene.updateDistanceToCameraGlyphs(),
-              callback,
-            )
+          ? createDistanceToCameraRenderCallback(() => {
+              scene.updateDistanceToCameraGlyphs();
+              scene.updatePointCloudLods();
+            }, callback)
           : null;
       externalRenderWindow?.setRenderCallback?.(
         renderRequestedCallbackWithDistanceToCamera,

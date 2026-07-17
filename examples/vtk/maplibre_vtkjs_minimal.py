@@ -155,15 +155,21 @@ JS_INIT = """
                 );
 
                 const viewUp = computeViewUp(map.transform);
-                const viewMatrix = new Float64Array(16);
-                mat4.lookAt(viewMatrix,
+                // NOT mat4.lookAt: it bails to the identity matrix when
+                // |eye - center| < 1e-6 per axis, and that absolute epsilon
+                // is ~31 real meters in normalized Mercator units — a
+                // close-zoom nadir camera silently loses its view matrix.
+                // targetTo builds the same basis with no epsilon and yields
+                // the camera-to-world matrix the projection needs anyway.
+                const inverseView = new Float64Array(16);
+                mat4.targetTo(inverseView,
                     [cameraMercator.x, cameraMercator.y, cameraMercator.z],
                     [targetMercator.x, targetMercator.y, targetMercator.z],
                     viewUp
                 );
-                const inverseView = new Float64Array(16);
+                const viewMatrix = new Float64Array(16);
                 const projectionMatrix = new Float64Array(16);
-                mat4.invert(inverseView, viewMatrix);
+                mat4.invert(viewMatrix, inverseView);
                 mat4.multiply(projectionMatrix, projMatrix, inverseView);
 
                 camera.setViewMatrix(viewMatrix);

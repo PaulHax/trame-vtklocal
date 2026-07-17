@@ -19,7 +19,7 @@ after(async () => {
 // --- gl-matrix passthrough is exposed --------------------------------------
 
 test("exports the gl-matrix mat4/vec3 helpers used by the map camera math", () => {
-  for (const fn of ["lookAt", "invert", "multiply"]) {
+  for (const fn of ["targetTo", "invert", "multiply"]) {
     assert.equal(typeof mat4[fn], "function", `mat4.${fn}`);
   }
   for (const fn of ["rotateZ", "rotateX", "normalize"]) {
@@ -44,6 +44,13 @@ test("publishes { mat4, vec3 } on the shared trameVtklocal namespace", () => {
 // (out first), its column-major layout, and its default Float32Array
 // ARRAY_TYPE — the new computeViewUp keeps a Float64Array temp so precision
 // matches the old plain-number math.
+//
+// The look-at is built as invert(targetTo), NOT mat4.lookAt: lookAt bails to
+// the identity matrix when |eye - center| < 1e-6 per axis, and that absolute
+// epsilon is ~31 real meters in normalized Web-Mercator units — a close-zoom
+// nadir camera silently lost its view matrix (the original chunk-A7 swap to
+// mat4.lookAt shipped exactly that regression because this test only compared
+// at a ~4e-4 span; the sub-epsilon case below keeps it from coming back).
 
 const MAPLIBRE_NORTH_UP = [0, -1, 0];
 
@@ -244,48 +251,81 @@ function assertClose(actual, expected, label, tol = 1e-9) {
   );
 }
 
+// The map-camera pipeline as map_init.js builds it today: the camera-to-world
+// matrix from targetTo, the view matrix as its inverse, and the projection
+// decomposition reusing the camera-to-world matrix directly.
+function newPipeline(transform, eye, center, B, P) {
+  const viewUp = newComputeViewUp(transform);
+  const inverseLook = mat4.targetTo(new Float64Array(16), eye, center, viewUp);
+  const look = mat4.invert(new Float64Array(16), inverseLook);
+  const view = mat4.multiply(new Float64Array(16), look, B);
+  const proj = mat4.multiply(new Float64Array(16), P, inverseLook);
+  return { viewUp, look, inverseLook, view, proj };
+}
+
+function oldPipeline(transform, eye, center, B, P) {
+  const viewUp = oldComputeViewUp(transform);
+  const look = oldLookAt(new Float64Array(16), eye, center, viewUp);
+  const inverseLook = oldInvert(new Float64Array(16), look);
+  const view = oldMultiply(look, B);
+  const proj = oldMultiply(P, inverseLook);
+  return { viewUp, look, inverseLook, view, proj };
+}
+
+function assertPipelinesMatch(actual, expected, label, tol) {
+  assertClose(actual.viewUp, expected.viewUp, `${label} viewUp`, tol);
+  assertClose(actual.look, expected.look, `${label} lookAt`, tol);
+  assertClose(actual.view, expected.view, `${label} viewMatrix`, tol);
+  assertClose(actual.inverseLook, expected.inverseLook, `${label} invLookAt`, tol);
+  assertClose(actual.proj, expected.proj, `${label} projectionMatrix`, tol);
+}
+
+const TRANSFORM = {
+  bearingInRadians: 0.6,
+  pitchInRadians: 0.5,
+  rollInRadians: 0.1,
+};
+// Stand-ins for localEnuToMercator (B) and a MapLibre projection (P), both
+// column-major like the real matrices.
+const B = [2e-6, 0, 0, 0, 0, -2e-6, 0, 0, 0, 0, 3e-6, 0, 0.5, 0.5, 0.001, 1];
+const P = [1.2, 0, 0, 0, 0, 1.5, 0, 0, 0.1, 0.2, -1.001, -1, 0, 0, -0.2, 0];
+
 test("gl-matrix reproduces the deleted map-camera matrix pipeline", () => {
-  const transform = {
-    bearingInRadians: 0.6,
-    pitchInRadians: 0.5,
-    rollInRadians: 0.1,
-  };
   const eye = [0.5001, 0.50021, 0.00031];
   const center = [0.5, 0.5, 0.0];
-  // Stand-ins for localEnuToMercator (B) and a MapLibre projection (P), both
-  // column-major like the real matrices.
-  const B = [
-    2e-6, 0, 0, 0, 0, -2e-6, 0, 0, 0, 0, 3e-6, 0, 0.5, 0.5, 0.001, 1,
-  ];
-  const P = [
-    1.2, 0, 0, 0, 0, 1.5, 0, 0, 0.1, 0.2, -1.001, -1, 0, 0, -0.2, 0,
-  ];
 
-  // Old hand-rolled path.
-  const oldViewUp = oldComputeViewUp(transform);
-  const oldLook = oldLookAt(new Float64Array(16), eye, center, oldViewUp);
-  const oldView = oldMultiply(oldLook, B);
-  const oldInv = oldInvert(new Float64Array(16), oldLook);
-  const oldProj = oldMultiply(P, oldInv);
-
-  // New gl-matrix path (arg order: out first; multiply is a*b, column-major).
-  const newViewUp = newComputeViewUp(transform);
-  const newLook = mat4.lookAt(new Float64Array(16), eye, center, newViewUp);
-  const newView = mat4.multiply(new Float64Array(16), newLook, B);
-  const newInv = mat4.invert(new Float64Array(16), newLook);
-  const newProj = mat4.multiply(new Float64Array(16), P, newInv);
+  const oldOut = oldPipeline(TRANSFORM, eye, center, B, P);
+  const newOut = newPipeline(TRANSFORM, eye, center, B, P);
 
   // gl-matrix path matches the freshly recomputed old path...
-  assertClose(newViewUp, oldViewUp, "viewUp vs old-impl");
-  assertClose(newLook, oldLook, "lookAt vs old-impl");
-  assertClose(newView, oldView, "viewMatrix vs old-impl");
-  assertClose(newInv, oldInv, "invLookAt vs old-impl");
-  assertClose(newProj, oldProj, "projectionMatrix vs old-impl");
+  assertPipelinesMatch(newOut, oldOut, "vs old-impl", 1e-9);
 
   // ...and the captured numeric anchors, guarding against silent drift.
-  assertClose(newViewUp, OLD.viewUp, "viewUp vs captured", 1e-9);
-  assertClose(newLook, OLD.lookAt, "lookAt vs captured", 1e-9);
-  assertClose(newView, OLD.viewMatrix, "viewMatrix vs captured", 1e-9);
-  assertClose(newInv, OLD.invLookAt, "invLookAt vs captured", 1e-9);
-  assertClose(newProj, OLD.projectionMatrix, "projectionMatrix vs captured", 1e-9);
+  assertClose(newOut.viewUp, OLD.viewUp, "viewUp vs captured", 1e-9);
+  assertClose(newOut.look, OLD.lookAt, "lookAt vs captured", 1e-9);
+  assertClose(newOut.view, OLD.viewMatrix, "viewMatrix vs captured", 1e-9);
+  assertClose(newOut.inverseLook, OLD.invLookAt, "invLookAt vs captured", 1e-9);
+  assertClose(newOut.proj, OLD.projectionMatrix, "projectionMatrix vs captured", 1e-9);
+});
+
+test("look-at pipeline survives sub-epsilon eye-center spans (close zoom)", () => {
+  // A nadir camera ~19 m above its target in normalized-Mercator units:
+  // every |eye - center| component is below gl-matrix's 1e-6 EPSILON, the
+  // regime where mat4.lookAt silently returns the identity matrix.
+  const eye = [0.5, 0.50002, 6e-7];
+  const center = [0.5, 0.50002, 0.0];
+
+  const oldOut = oldPipeline(TRANSFORM, eye, center, B, P);
+  const newOut = newPipeline(TRANSFORM, eye, center, B, P);
+  assertPipelinesMatch(newOut, oldOut, "sub-epsilon vs old-impl", 1e-9);
+
+  // Document the trap this test exists to block: mat4.lookAt degenerates
+  // to identity here, so it must never rejoin the pipeline.
+  const viewUp = newComputeViewUp(TRANSFORM);
+  const bailed = mat4.lookAt(new Float64Array(16), eye, center, viewUp);
+  assertClose(bailed, mat4.identity(new Float64Array(16)), "lookAt identity bail");
+  assert.ok(
+    Math.abs(bailed[12] - newOut.look[12]) > 0.1,
+    "identity bail diverges from the real view matrix",
+  );
 });

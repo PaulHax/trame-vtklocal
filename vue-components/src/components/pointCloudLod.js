@@ -2,7 +2,7 @@
 // per-render update pass.
 //
 // A block arrival creates a registry entry keyed by the anchor mapper's node
-// id; the entry lazily builds a vtk-pointcloud-lod HttpTileSource + LOD
+// id; the entry lazily builds a pointcloud-lod HttpTileSource + LOD
 // controller + renderer adapter once the anchor actor is found (actor access
 // resolves lazily at update time, mirroring distanceToCameraGlyphs: block
 // application order inside a message is arbitrary, so the anchor actor may
@@ -23,7 +23,7 @@ import {
   createHttpTileSource,
   createLodController,
   createRendererAdapter,
-} from "vtk-pointcloud-lod";
+} from "pointcloud-lod";
 
 import { isLiveInstance } from "./vtkJsSync";
 

@@ -2,7 +2,7 @@
 
 Marking a server-side mapper makes the translator emit its serialized node
 with type "vtkPointCloudLodMapper" plus a ``pointCloudLod`` feature block, so
-the client instantiates an octree LOD controller (the vtk-pointcloud-lod
+the client instantiates an octree LOD controller (the pointcloud-lod
 library) that streams tiles over HTTP instead of receiving point arrays
 through this channel. The marked mapper should carry an empty dataset — the
 full-resolution cloud never rides the scene payload; only this small config

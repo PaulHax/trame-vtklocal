@@ -11,7 +11,7 @@ export async function loadModule(modulePath) {
       root: process.cwd(),
       // Match vite.config.js so a bare "gl-matrix" import resolves to vtk.js's
       // copy under ssrLoadModule too, and linked packages with vtk.js as an
-      // optional peer (vtk-pointcloud-lod) resolve this package's vtk.js.
+      // optional peer (pointcloud-lod) resolve this package's vtk.js.
       resolve: {
         alias: {
           "gl-matrix": glMatrixDir,

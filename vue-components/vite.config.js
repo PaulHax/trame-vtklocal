@@ -4,7 +4,7 @@ export default {
   base: "./",
   // Resolve the bare "gl-matrix" specifier (used by src/glMatrix.js and vtk.js
   // itself) to the single copy vtk.js depends on. Dedupe @kitware/vtk.js so
-  // linked packages (vtk-pointcloud-lod) resolve the same build this package
+  // linked packages (pointcloud-lod) resolve the same build this package
   // uses — the fork symlinked at node_modules/@kitware/vtk.js — instead of a
   // copy in their own tree.
   resolve: {

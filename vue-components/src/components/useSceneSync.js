@@ -490,7 +490,7 @@ export function useSceneSync(
     // controller debounces selection internally, so per-message and
     // per-interactor-render calls stay cheap.
     return updatePointCloudLods(pointCloudLods, {
-      renderer: getRenderer(),
+      renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),
       scheduleRender: () => renderRequestCallback?.(),
     });

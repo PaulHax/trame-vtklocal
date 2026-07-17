@@ -3,14 +3,18 @@
 //
 // A block arrival creates a registry entry keyed by the anchor mapper's node
 // id; the entry lazily builds a vtk-pointcloud-lod HttpTileSource + LOD
-// controller + renderer adapter once a renderer is available (renderer/actor
-// access resolves lazily at update time, mirroring distanceToCameraGlyphs:
-// block application order inside a message is arbitrary, so the anchor actor
-// may not be wired to the renderer yet when the block lands). Camera state
-// feeds the controller on every applied message and interactor render; anchor
-// actor state (UserMatrix correction, visibility, point size) fans out to the
-// streamed tile actors on the same cadence. Streaming, budgets, cancellation,
-// and caching all live in the library — this module is only the wiring.
+// controller + renderer adapter once the anchor actor is found (actor access
+// resolves lazily at update time, mirroring distanceToCameraGlyphs: block
+// application order inside a message is arbitrary, so the anchor actor may
+// not be wired to a renderer yet when the block lands). The anchor may live
+// in ANY of the view's synced renderers — views layer world geometry, video
+// underlay, and annotations as separate VTK renderers — and the streamed tile
+// actors are hosted in the same renderer as the anchor so they depth-composite
+// in the anchor's layer. Camera state feeds the controller on every applied
+// message and interactor render; anchor actor state (UserMatrix correction,
+// visibility, point size) fans out to the streamed tile actors on the same
+// cadence. Streaming, budgets, cancellation, and caching all live in the
+// library — this module is only the wiring.
 //
 // Renders are requested exclusively through the view's coalescing render
 // callback; nothing here calls renderWindow.render().
@@ -107,22 +111,35 @@ function readCameraView(renderer, renderWindow) {
   };
 }
 
-function findAnchorActor(entry, renderer) {
+// Resolve the anchor actor and the renderer hosting it. The anchor can live
+// in any synced renderer, so the search spans them all; the cached hit is
+// revalidated against its cached renderer first.
+function findAnchor(entry, renderers) {
   const cached = entry.actor;
   if (
     isLiveInstance(cached) &&
     cached.getMapper?.() === entry.mapper &&
-    renderer.getActors?.().includes(cached)
+    entry.hostRenderer?.getActors?.().includes(cached) &&
+    renderers.includes(entry.hostRenderer)
   ) {
-    return cached;
+    return { actor: cached, renderer: entry.hostRenderer };
   }
-  entry.actor =
-    renderer
+  for (const renderer of renderers) {
+    const actor = renderer
       .getActors?.()
       ?.find(
-        (actor) => isLiveInstance(actor) && actor.getMapper?.() === entry.mapper,
-      ) ?? null;
-  return entry.actor;
+        (candidate) =>
+          isLiveInstance(candidate) && candidate.getMapper?.() === entry.mapper,
+      );
+    if (actor) {
+      entry.actor = actor;
+      entry.hostRenderer = renderer;
+      return { actor, renderer };
+    }
+  }
+  entry.actor = null;
+  entry.hostRenderer = null;
+  return null;
 }
 
 function disposeEntry(entry) {
@@ -164,21 +181,50 @@ export function applyPointCloudLodBlock(
       id,
       mapper: isLiveInstance(instance) ? instance : null,
       actor: null,
+      hostRenderer: null,
       config,
       appliedEndpoint: null,
       appliedBudget: null,
       controller: null,
       adapter: null,
+      adapterRenderer: null,
     });
   }
   return registry;
 }
 
-function updateEntry(entry, renderer, renderWindow, scheduleRender) {
+// Drop the streaming stack so it can rebuild against a new host renderer.
+function resetStreaming(entry) {
+  entry.controller?.dispose();
+  entry.adapter?.dispose();
+  entry.controller = null;
+  entry.adapter = null;
+  entry.adapterRenderer = null;
+  entry.appliedEndpoint = null;
+  entry.appliedBudget = null;
+}
+
+function updateEntry(entry, renderers, renderWindow, scheduleRender) {
   const { config } = entry;
 
+  const anchor = findAnchor(entry, renderers);
+  if (!anchor) {
+    // The block can land before the anchor actor is wired to its renderer
+    // (block application order inside a message is arbitrary) — retry on the
+    // next applied message / interactor render.
+    return;
+  }
+  const { actor, renderer } = anchor;
+
+  // Tile actors depth-composite in the anchor's renderer, so an anchor that
+  // migrated renderers (the server re-staged the layer) rebuilds the
+  // streaming stack in its new home.
+  if (entry.adapter && entry.adapterRenderer !== renderer) {
+    resetStreaming(entry);
+  }
   if (!entry.adapter) {
     entry.adapter = createRendererAdapter({ renderer, scheduleRender });
+    entry.adapterRenderer = renderer;
   }
 
   if (entry.appliedEndpoint !== config.endpoint) {
@@ -193,10 +239,10 @@ function updateEntry(entry, renderer, renderWindow, scheduleRender) {
     if (entry.controller) {
       entry.controller.setSource(source);
     } else {
-      const adapter = entry.adapter;
       entry.controller = createLodController({
         source,
-        onTiles: (batch) => adapter.applyBatch(batch),
+        // Late-bound: the adapter is replaced when the anchor migrates.
+        onTiles: (batch) => entry.adapter?.applyBatch(batch),
         scheduleRender,
         ...(config.pointBudget !== undefined
           ? { pointBudget: config.pointBudget }
@@ -213,17 +259,14 @@ function updateEntry(entry, renderer, renderWindow, scheduleRender) {
     entry.appliedBudget = budget;
   }
 
-  const actor = findAnchorActor(entry, renderer);
-  if (actor) {
-    entry.adapter.setBaseMatrix(actor.getUserMatrix?.() ?? null);
-    // Server-synced actors carry visibility as 0/1 ints, not booleans; only
-    // a missing getter defaults to visible.
-    const anchorVisible = actor.getVisibility?.();
-    entry.adapter.setVisible(anchorVisible === undefined ? true : !!anchorVisible);
-    const pointSize = actor.getProperty?.()?.getPointSize?.();
-    if (isPositiveFinite(pointSize)) {
-      entry.adapter.setPointSize(pointSize);
-    }
+  entry.adapter.setBaseMatrix(actor.getUserMatrix?.() ?? null);
+  // Server-synced actors carry visibility as 0/1 ints, not booleans; only
+  // a missing getter defaults to visible.
+  const anchorVisible = actor.getVisibility?.();
+  entry.adapter.setVisible(anchorVisible === undefined ? true : !!anchorVisible);
+  const pointSize = actor.getProperty?.()?.getPointSize?.();
+  if (isPositiveFinite(pointSize)) {
+    entry.adapter.setPointSize(pointSize);
   }
 
   const view = readCameraView(renderer, renderWindow);
@@ -234,16 +277,18 @@ function updateEntry(entry, renderer, renderWindow, scheduleRender) {
 
 // Per-render update: feed the camera and mirror anchor-actor state. Called on
 // every applied sync message and on interactor renders (camera interaction).
+// `renderers` is the view's synced renderers; the anchor (and its tiles) may
+// live in any of them.
 export function updatePointCloudLods(registry, context) {
   if (!registry || registry.size === 0) {
     return;
   }
-  const { renderer, renderWindow, scheduleRender } = context || {};
-  if (!renderer || !renderWindow) {
+  const { renderers, renderWindow, scheduleRender } = context || {};
+  if (!renderers?.length || !renderWindow) {
     return;
   }
   for (const entry of registry.values()) {
-    updateEntry(entry, renderer, renderWindow, scheduleRender ?? (() => {}));
+    updateEntry(entry, renderers, renderWindow, scheduleRender ?? (() => {}));
   }
 }
 

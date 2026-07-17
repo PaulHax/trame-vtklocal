@@ -115,7 +115,7 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
   applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
   assert.equal(registry.size, 1);
 
-  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
   await settle();
 
   assert.ok(
@@ -133,15 +133,47 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
 
   // Visibility fans out with the server's int encoding: 0 hides, 1 shows.
   anchorActor.visibility = 0;
-  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
   assert.equal(added[0].getVisibility(), false, "int 0 hides streamed tiles");
   anchorActor.visibility = 1;
-  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
   assert.equal(added[0].getVisibility(), true, "int 1 shows streamed tiles");
 
   disposePointCloudLods(registry);
   assert.equal(registry.size, 0);
   assert.equal(added.length, 0, "tile actors removed on dispose");
+});
+
+test("tiles are hosted in the renderer containing the anchor, not the first", async () => {
+  const { applyPointCloudLodBlock, updatePointCloudLods, disposePointCloudLods } =
+    await loadLodModule();
+  stubFetch();
+  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+  // A synced renderer ahead of the anchor's (e.g. the annotation layer).
+  const otherAdded = [];
+  const otherRenderer = {
+    ...renderer,
+    getActors: () => [...otherAdded],
+    addActor: (actor) => otherAdded.push(actor),
+    removeActor: (actor) => {
+      const at = otherAdded.indexOf(actor);
+      if (at >= 0) otherAdded.splice(at, 1);
+    },
+  };
+
+  const registry = new Map();
+  const scheduleRender = () => {};
+  applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
+  updatePointCloudLods(registry, {
+    renderers: [otherRenderer, renderer],
+    renderWindow,
+    scheduleRender,
+  });
+  await settle();
+
+  assert.equal(added.length, 1, "tile actor hosted with the anchor");
+  assert.equal(otherAdded.length, 0, "no tile actors in the other renderer");
+  disposePointCloudLods(registry);
 });
 
 test("a null block disposes the entry and its actors", async () => {
@@ -153,7 +185,7 @@ test("a null block disposes the entry and its actors", async () => {
   const registry = new Map();
   const scheduleRender = () => {};
   applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
-  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
   await settle();
   assert.equal(added.length, 1);
 
@@ -171,7 +203,7 @@ test("a revision change swaps the tile source endpoint", async () => {
   const registry = new Map();
   const scheduleRender = () => {};
   applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
-  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
   await settle();
 
   applyPointCloudLodBlock(
@@ -181,7 +213,7 @@ test("a revision change swaps the tile source endpoint", async () => {
     anchorMapper,
     scheduleRender,
   );
-  updatePointCloudLods(registry, { renderer, renderWindow, scheduleRender });
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
   await settle();
 
   assert.ok(

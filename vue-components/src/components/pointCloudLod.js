@@ -22,12 +22,25 @@
 import {
   createHttpTileSource,
   createLodController,
+  createMemoryPool,
   createRendererAdapter,
 } from "pointcloud-lod";
 
 import { isLiveInstance } from "./vtkJsSync";
 
 export const POINT_CLOUD_LOD_BLOCK_KEY = "pointCloudLod";
+
+// One memory pool per page: every LOD controller — across all views and
+// registries — renders on the same GPU, so resident tile bytes come out of
+// one device-sized budget divided among the active clouds. Without this, N
+// clouds would each claim a full budget and multiply GPU memory by N.
+let sharedMemoryPool = null;
+function getSharedMemoryPool() {
+  if (!sharedMemoryPool) {
+    sharedMemoryPool = createMemoryPool();
+  }
+  return sharedMemoryPool;
+}
 
 const DEG_TO_RAD = Math.PI / 180;
 
@@ -36,9 +49,9 @@ function isPositiveFinite(value) {
 }
 
 // The adaptive-quality block (Phase 5). `adaptive` truthy enables the library's
-// render-duration-driven budget loop; the config pointBudget is then the
-// ceiling (the user quality control). The tuning fields are optional — the
-// library supplies defaults for anything omitted.
+// render-duration-driven budget loop; frame time and the shared GPU-memory
+// pool govern the budget — there is no configured point ceiling. The tuning
+// fields are optional — the library supplies defaults for anything omitted.
 function normalizeAdaptive(block) {
   if (!block || !block.adaptive) {
     return false;
@@ -267,10 +280,12 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
         // Late-bound: the adapter is replaced when the anchor migrates.
         onTiles: (batch) => entry.adapter?.applyBatch(batch),
         scheduleRender,
-        // The config pointBudget is the ceiling; adaptive (when enabled) moves
-        // the effective budget below it toward a target frame time. Frame
-        // durations arrive via recordPointCloudLodFrame.
+        // With adaptive enabled the budget tracks a target frame time (frame
+        // durations arrive via recordPointCloudLodFrame) under the shared
+        // memory pool's byte cap; the config pointBudget only applies as the
+        // fixed budget when adaptive is off.
         adaptive: config.adaptive,
+        memory: getSharedMemoryPool(),
         ...(config.pointBudget !== undefined
           ? { pointBudget: config.pointBudget }
           : {}),

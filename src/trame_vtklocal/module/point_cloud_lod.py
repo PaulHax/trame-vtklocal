@@ -14,7 +14,6 @@ import weakref
 
 POINT_CLOUD_LOD_TYPE = "vtkPointCloudLodMapper"
 POINT_CLOUD_LOD_BLOCK = "pointCloudLod"
-DEFAULT_POINT_BUDGET = 2_000_000
 
 _MAPPER_CONFIGS = weakref.WeakKeyDictionary()
 
@@ -44,7 +43,7 @@ def mark_point_cloud_lod(
     root_spacing,
     point_count,
     has_rgb=True,
-    point_budget=DEFAULT_POINT_BUDGET,
+    point_budget=None,
     adaptive=False,
     min_budget=None,
     stationary_target_ms=None,
@@ -59,11 +58,13 @@ def mark_point_cloud_lod(
     approximate point spacing at level 0 in the same units.
 
     With ``adaptive`` set, the client adapts the visible-point budget to
-    measured render duration (Phase 5): ``point_budget`` becomes the ceiling
-    (the user quality control) and the client keeps the effective budget at or
-    below it, tracking a target frame time. ``min_budget`` /
-    ``stationary_target_ms`` / ``interaction_target_ms`` tune the loop; omit
-    them to use the client defaults.
+    measured render duration (Phase 5), capped only by the client's shared
+    GPU-memory budget — there is no configured point ceiling, and
+    ``point_budget`` is ignored. ``min_budget`` / ``stationary_target_ms`` /
+    ``interaction_target_ms`` tune the loop; omit them to use the client
+    defaults. Without ``adaptive``, ``point_budget`` is the fixed
+    visible-point budget (client default 2,000,000), still capped by the
+    memory budget.
 
     With ``world_size_factor`` set, tile splats are sized in world units —
     diameter = octree node point spacing times the factor — so coarse tiles
@@ -83,9 +84,6 @@ def mark_point_cloud_lod(
     point_count = int(point_count)
     if point_count < 0:
         raise ValueError(f"point_count must be >= 0, got {point_count}")
-    point_budget = int(point_budget)
-    if not point_budget > 0:
-        raise ValueError(f"point_budget must be > 0, got {point_budget}")
 
     config = {
         "assetId": str(asset_id),
@@ -95,9 +93,13 @@ def mark_point_cloud_lod(
         "rootSpacing": root_spacing,
         "pointCount": point_count,
         "hasRgb": bool(has_rgb),
-        "pointBudget": point_budget,
         "adaptive": bool(adaptive),
     }
+    if point_budget is not None:
+        point_budget = int(point_budget)
+        if not point_budget > 0:
+            raise ValueError(f"point_budget must be > 0, got {point_budget}")
+        config["pointBudget"] = point_budget
     if min_budget is not None:
         min_budget = int(min_budget)
         if not min_budget > 0:

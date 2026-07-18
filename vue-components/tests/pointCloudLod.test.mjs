@@ -308,8 +308,9 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
 
   const registry = new Map();
   const scheduleRender = () => {};
-  // adaptive: true makes the config pointBudget the ceiling; minBudget is
-  // parsed through. The happy path must be unaffected.
+  // adaptive: true enables the frame-time budget loop under the shared
+  // GPU-memory pool's cap; minBudget is parsed through. The happy path must
+  // be unaffected.
   applyPointCloudLodBlock(
     registry,
     "42",

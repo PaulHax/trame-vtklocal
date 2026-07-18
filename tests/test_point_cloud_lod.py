@@ -73,7 +73,9 @@ def test_marked_mapper_translates_with_type_and_block():
     assert block["rootSpacing"] == 2.5
     assert block["pointCount"] == 9_128_231
     assert block["hasRgb"] is True
-    assert block["pointBudget"] == pcl.DEFAULT_POINT_BUDGET
+    # No configured point budget: the client default applies (fixed mode) and
+    # adaptive mode has no point ceiling at all.
+    assert "pointBudget" not in block
     # Adaptive quality is off by default and carries no tuning fields.
     assert block["adaptive"] is False
     assert "minBudget" not in block
@@ -100,8 +102,9 @@ def test_adaptive_config_reaches_the_wire():
     (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
     block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
     assert block["adaptive"] is True
-    # pointBudget stays the ceiling (the user quality control).
-    assert block["pointBudget"] == pcl.DEFAULT_POINT_BUDGET
+    # Adaptive mode carries no point ceiling: frame time and the client's
+    # GPU-memory budget govern.
+    assert "pointBudget" not in block
     assert block["minBudget"] == 250_000
     assert block["stationaryTargetMs"] == 16.0
     assert block["interactionTargetMs"] == 33.0

@@ -74,8 +74,35 @@ def test_marked_mapper_translates_with_type_and_block():
     assert block["pointCount"] == 9_128_231
     assert block["hasRgb"] is True
     assert block["pointBudget"] == pcl.DEFAULT_POINT_BUDGET
+    # Adaptive quality is off by default and carries no tuning fields.
+    assert block["adaptive"] is False
+    assert "minBudget" not in block
+    assert "stationaryTargetMs" not in block
+    assert "interactionTargetMs" not in block
     # Config props ride the block, never the mapper props.
     assert "assetId" not in node.get("props", {})
+
+
+def test_adaptive_config_reaches_the_wire():
+    api, rw, mapper, render_window_id = _make_scene()
+    pcl.mark_point_cloud_lod(
+        mapper,
+        **CONFIG,
+        adaptive=True,
+        min_budget=250_000,
+        stationary_target_ms=16.0,
+        interaction_target_ms=33.0,
+    )
+    state = _translate(api, rw, render_window_id)
+
+    (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
+    block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
+    assert block["adaptive"] is True
+    # pointBudget stays the ceiling (the user quality control).
+    assert block["pointBudget"] == pcl.DEFAULT_POINT_BUDGET
+    assert block["minBudget"] == 250_000
+    assert block["stationaryTargetMs"] == 16.0
+    assert block["interactionTargetMs"] == 33.0
 
 
 def test_unmarked_point_gaussian_mapper_is_unaffected():
@@ -143,3 +170,15 @@ def test_validation_errors():
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "root_spacing": 0})
     with pytest.raises(ValueError):
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "point_budget": 0})
+    with pytest.raises(ValueError):
+        pcl.mark_point_cloud_lod(
+            mapper, **{**CONFIG, "adaptive": True, "min_budget": 0}
+        )
+    with pytest.raises(ValueError):
+        pcl.mark_point_cloud_lod(
+            mapper, **{**CONFIG, "adaptive": True, "stationary_target_ms": 0}
+        )
+    with pytest.raises(ValueError):
+        pcl.mark_point_cloud_lod(
+            mapper, **{**CONFIG, "adaptive": True, "interaction_target_ms": -1}
+        )

@@ -235,3 +235,51 @@ test("malformed blocks are ignored", async () => {
   );
   assert.equal(registry.size, 0);
 });
+
+test("recordPointCloudLodFrame is a safe no-op on empty or invalid input", async () => {
+  const { recordPointCloudLodFrame } = await loadLodModule();
+  // No throw on missing registry, empty registry, null controller, or a
+  // non-finite/negative duration.
+  recordPointCloudLodFrame(null, 12);
+  recordPointCloudLodFrame(new Map(), 12);
+  const registry = new Map();
+  registry.set("x", { controller: null });
+  recordPointCloudLodFrame(registry, Number.NaN);
+  recordPointCloudLodFrame(registry, -5);
+  recordPointCloudLodFrame(registry, 12);
+});
+
+test("an adaptive block streams tiles and accepts frame timings", async () => {
+  const {
+    applyPointCloudLodBlock,
+    updatePointCloudLods,
+    recordPointCloudLodFrame,
+    disposePointCloudLods,
+  } = await loadLodModule();
+  stubFetch();
+  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+
+  const registry = new Map();
+  const scheduleRender = () => {};
+  // adaptive: true makes the config pointBudget the ceiling; minBudget is
+  // parsed through. The happy path must be unaffected.
+  applyPointCloudLodBlock(
+    registry,
+    "42",
+    { ...BLOCK, adaptive: true, minBudget: 50000, interactionTargetMs: 33 },
+    anchorMapper,
+    scheduleRender,
+  );
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
+  await settle();
+  assert.equal(added.length, 1, "adaptive cloud still streams a tile");
+
+  // Feeding paint durations reaches the controller's recordFrame without error.
+  for (let i = 0; i < 30; i += 1) recordPointCloudLodFrame(registry, 40);
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
+  await settle();
+  assert.equal(added.length, 1, "still streaming after adaptive frame feedback");
+
+  disposePointCloudLods(registry);
+  assert.equal(registry.size, 0);
+});

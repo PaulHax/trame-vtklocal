@@ -57,7 +57,13 @@ export default {
 
     function renderScene() {
       scene.updateDistanceToCameraGlyphs();
-      renderWindow?.render?.();
+      // Measure the paint's wall-time for the adaptive-quality budget loop.
+      const start = performance.now();
+      try {
+        renderWindow?.render?.();
+      } finally {
+        scene.recordFrameDuration(performance.now() - start);
+      }
     }
 
     const scene = useSceneSync({

@@ -35,6 +35,25 @@ function isPositiveFinite(value) {
   return Number.isFinite(value) && value > 0;
 }
 
+// The adaptive-quality block (Phase 5). `adaptive` truthy enables the library's
+// render-duration-driven budget loop; the config pointBudget is then the
+// ceiling (the user quality control). The tuning fields are optional — the
+// library supplies defaults for anything omitted.
+function normalizeAdaptive(block) {
+  if (!block || !block.adaptive) {
+    return false;
+  }
+  const options = {};
+  if (isPositiveFinite(block.minBudget)) options.minBudget = Number(block.minBudget);
+  if (isPositiveFinite(block.stationaryTargetMs)) {
+    options.stationaryTargetMs = Number(block.stationaryTargetMs);
+  }
+  if (isPositiveFinite(block.interactionTargetMs)) {
+    options.interactionTargetMs = Number(block.interactionTargetMs);
+  }
+  return options;
+}
+
 function normalizeConfig(block) {
   if (!block || typeof block !== "object") {
     return null;
@@ -60,6 +79,7 @@ function normalizeConfig(block) {
     rootSpacing: Number(rootSpacing),
     pointCount: Number.isFinite(pointCount) ? Number(pointCount) : 0,
     pointBudget: isPositiveFinite(pointBudget) ? Number(pointBudget) : undefined,
+    adaptive: normalizeAdaptive(block),
   };
 }
 
@@ -244,6 +264,10 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
         // Late-bound: the adapter is replaced when the anchor migrates.
         onTiles: (batch) => entry.adapter?.applyBatch(batch),
         scheduleRender,
+        // The config pointBudget is the ceiling; adaptive (when enabled) moves
+        // the effective budget below it toward a target frame time. Frame
+        // durations arrive via recordPointCloudLodFrame.
+        adaptive: config.adaptive,
         ...(config.pointBudget !== undefined
           ? { pointBudget: config.pointBudget }
           : {}),
@@ -289,6 +313,22 @@ export function updatePointCloudLods(registry, context) {
   }
   for (const entry of registry.values()) {
     updateEntry(entry, renderers, renderWindow, scheduleRender ?? (() => {}));
+  }
+}
+
+// Report one painted frame's wall-time (ms) to every anchor's LOD controller,
+// feeding the adaptive-quality budget loop (a no-op for controllers without
+// adaptive enabled). Called by the view once per render, measuring only the
+// paint — not the pre-render camera/LOD update pass.
+export function recordPointCloudLodFrame(registry, durationMs) {
+  if (!registry || registry.size === 0) {
+    return;
+  }
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return;
+  }
+  for (const entry of registry.values()) {
+    entry.controller?.recordFrame(durationMs);
   }
 }
 

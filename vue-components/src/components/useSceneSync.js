@@ -30,6 +30,7 @@ import {
 import {
   applyPointCloudLodBlock,
   disposePointCloudLods,
+  recordPointCloudLodFrame,
   updatePointCloudLods,
   POINT_CLOUD_LOD_BLOCK_KEY,
 } from "./pointCloudLod";
@@ -496,6 +497,13 @@ export function useSceneSync(
     });
   }
 
+  // The view measures each paint's wall-time and reports it here; it feeds the
+  // adaptive-quality budget loop for any streamed LOD cloud (a no-op when no
+  // cloud has adaptive enabled).
+  function recordFrameDuration(durationMs) {
+    recordPointCloudLodFrame(pointCloudLods, durationMs);
+  }
+
   // Answer "what pickable glyph point is under (cssX, cssY)" from what this
   // view actually rendered. Coordinates are canvas CSS px, top-left origin.
   function pickAt(cssX, cssY) {
@@ -680,6 +688,7 @@ export function useSceneSync(
     setHoverEnabled: gestures.setHoverEnabled,
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     updatePointCloudLods: updatePointCloudLodsForRender,
+    recordFrameDuration,
     getSyncDiagnostics,
     getAppliedSceneState,
   };

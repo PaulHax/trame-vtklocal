@@ -45,6 +45,10 @@ def mark_point_cloud_lod(
     point_count,
     has_rgb=True,
     point_budget=DEFAULT_POINT_BUDGET,
+    adaptive=False,
+    min_budget=None,
+    stationary_target_ms=None,
+    interaction_target_ms=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
 
@@ -52,6 +56,13 @@ def mark_point_cloud_lod(
     trailing slash), e.g. ``/pointcloud/<asset>/<revision>``. ``root_cube``
     is the octree root cube in scene-local coordinates; ``root_spacing`` the
     approximate point spacing at level 0 in the same units.
+
+    With ``adaptive`` set, the client adapts the visible-point budget to
+    measured render duration (Phase 5): ``point_budget`` becomes the ceiling
+    (the user quality control) and the client keeps the effective budget at or
+    below it, tracking a target frame time. ``min_budget`` /
+    ``stationary_target_ms`` / ``interaction_target_ms`` tune the loop; omit
+    them to use the client defaults.
     """
     if not asset_id:
         raise ValueError("asset_id is required")
@@ -78,7 +89,27 @@ def mark_point_cloud_lod(
         "pointCount": point_count,
         "hasRgb": bool(has_rgb),
         "pointBudget": point_budget,
+        "adaptive": bool(adaptive),
     }
+    if min_budget is not None:
+        min_budget = int(min_budget)
+        if not min_budget > 0:
+            raise ValueError(f"min_budget must be > 0, got {min_budget}")
+        config["minBudget"] = min_budget
+    if stationary_target_ms is not None:
+        stationary_target_ms = float(stationary_target_ms)
+        if not stationary_target_ms > 0:
+            raise ValueError(
+                f"stationary_target_ms must be > 0, got {stationary_target_ms}"
+            )
+        config["stationaryTargetMs"] = stationary_target_ms
+    if interaction_target_ms is not None:
+        interaction_target_ms = float(interaction_target_ms)
+        if not interaction_target_ms > 0:
+            raise ValueError(
+                f"interaction_target_ms must be > 0, got {interaction_target_ms}"
+            )
+        config["interactionTargetMs"] = interaction_target_ms
     _MAPPER_CONFIGS[mapper] = config
     mapper.Modified()
     return config

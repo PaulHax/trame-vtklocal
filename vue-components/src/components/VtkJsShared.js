@@ -53,6 +53,17 @@ export default {
     let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
 
+    // Measure only the paint's wall-time (not the pre-render camera/LOD update
+    // pass) and report it to the adaptive-quality budget loop.
+    function paintAndRecord(paint) {
+      const start = performance.now();
+      try {
+        return paint();
+      } finally {
+        scene.recordFrameDuration(performance.now() - start);
+      }
+    }
+
     function renderScene() {
       if (renderRequestedCallbackWithDistanceToCamera) {
         renderRequestedCallbackWithDistanceToCamera();
@@ -60,7 +71,7 @@ export default {
       }
       scene.updateDistanceToCameraGlyphs();
       scene.updatePointCloudLods();
-      externalRenderWindow?.renderExternal?.();
+      paintAndRecord(() => externalRenderWindow?.renderExternal?.());
     }
 
     const scene = useSceneSync({
@@ -128,17 +139,22 @@ export default {
               drawBuffers: options.drawBuffers,
             }
           : undefined;
-      externalRenderWindow?.renderExternal?.(hostState);
+      paintAndRecord(() => externalRenderWindow?.renderExternal?.(hostState));
     }
 
     function onRenderRequested(callback) {
-      renderRequestedCallbackWithDistanceToCamera =
+      // The host's callback is the actual paint; time it (not the update pass
+      // createDistanceToCameraRenderCallback runs first) for adaptive quality.
+      const timedCallback =
         typeof callback === "function"
-          ? createDistanceToCameraRenderCallback(() => {
-              scene.updateDistanceToCameraGlyphs();
-              scene.updatePointCloudLods();
-            }, callback)
+          ? (...args) => paintAndRecord(() => callback(...args))
           : null;
+      renderRequestedCallbackWithDistanceToCamera = timedCallback
+        ? createDistanceToCameraRenderCallback(() => {
+            scene.updateDistanceToCameraGlyphs();
+            scene.updatePointCloudLods();
+          }, timedCallback)
+        : null;
       externalRenderWindow?.setRenderCallback?.(
         renderRequestedCallbackWithDistanceToCamera,
       );

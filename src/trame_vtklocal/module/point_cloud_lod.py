@@ -49,6 +49,7 @@ def mark_point_cloud_lod(
     min_budget=None,
     stationary_target_ms=None,
     interaction_target_ms=None,
+    world_size_factor=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
 
@@ -63,6 +64,12 @@ def mark_point_cloud_lod(
     below it, tracking a target frame time. ``min_budget`` /
     ``stationary_target_ms`` / ``interaction_target_ms`` tune the loop; omit
     them to use the client defaults.
+
+    With ``world_size_factor`` set, tile splats are sized in world units —
+    diameter = octree node point spacing times the factor — so coarse tiles
+    render as a closed surface up close instead of thinning into sparse
+    fixed-size pixels. Omit it for screen-pixel sizing from the actor point
+    size.
     """
     if not asset_id:
         raise ValueError("asset_id is required")
@@ -110,6 +117,11 @@ def mark_point_cloud_lod(
                 f"interaction_target_ms must be > 0, got {interaction_target_ms}"
             )
         config["interactionTargetMs"] = interaction_target_ms
+    if world_size_factor is not None:
+        world_size_factor = float(world_size_factor)
+        if not world_size_factor > 0:
+            raise ValueError(f"world_size_factor must be > 0, got {world_size_factor}")
+        config["worldSizeFactor"] = world_size_factor
     _MAPPER_CONFIGS[mapper] = config
     mapper.Modified()
     return config

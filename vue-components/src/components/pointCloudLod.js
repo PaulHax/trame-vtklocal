@@ -80,6 +80,9 @@ function normalizeConfig(block) {
     pointCount: Number.isFinite(pointCount) ? Number(pointCount) : 0,
     pointBudget: isPositiveFinite(pointBudget) ? Number(pointBudget) : undefined,
     adaptive: normalizeAdaptive(block),
+    worldSizeFactor: isPositiveFinite(block.worldSizeFactor)
+      ? Number(block.worldSizeFactor)
+      : undefined,
   };
 }
 
@@ -282,6 +285,14 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
     entry.controller.setPointBudget(budget);
     entry.appliedBudget = budget;
   }
+
+  // World-space splat sizing: diameter = node spacing x factor. The adapter
+  // value-compares, so re-applying per update is a no-op.
+  entry.adapter.setWorldSizing(
+    config.worldSizeFactor !== undefined
+      ? { rootSpacing: config.rootSpacing, factor: config.worldSizeFactor }
+      : null,
+  );
 
   entry.adapter.setBaseMatrix(actor.getUserMatrix?.() ?? null);
   // Server-synced actors carry visibility as 0/1 ints, not booleans; only

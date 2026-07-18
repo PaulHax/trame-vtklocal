@@ -79,6 +79,8 @@ def test_marked_mapper_translates_with_type_and_block():
     assert "minBudget" not in block
     assert "stationaryTargetMs" not in block
     assert "interactionTargetMs" not in block
+    # World-space splat sizing is opt-in.
+    assert "worldSizeFactor" not in block
     # Config props ride the block, never the mapper props.
     assert "assetId" not in node.get("props", {})
 
@@ -103,6 +105,16 @@ def test_adaptive_config_reaches_the_wire():
     assert block["minBudget"] == 250_000
     assert block["stationaryTargetMs"] == 16.0
     assert block["interactionTargetMs"] == 33.0
+
+
+def test_world_size_factor_reaches_the_wire():
+    api, rw, mapper, render_window_id = _make_scene()
+    pcl.mark_point_cloud_lod(mapper, **CONFIG, world_size_factor=1.5)
+    state = _translate(api, rw, render_window_id)
+
+    (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
+    block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
+    assert block["worldSizeFactor"] == 1.5
 
 
 def test_unmarked_point_gaussian_mapper_is_unaffected():
@@ -182,3 +194,5 @@ def test_validation_errors():
         pcl.mark_point_cloud_lod(
             mapper, **{**CONFIG, "adaptive": True, "interaction_target_ms": -1}
         )
+    with pytest.raises(ValueError):
+        pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "world_size_factor": 0})

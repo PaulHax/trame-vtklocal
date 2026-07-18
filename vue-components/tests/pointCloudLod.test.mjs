@@ -249,6 +249,53 @@ test("recordPointCloudLodFrame is a safe no-op on empty or invalid input", async
   recordPointCloudLodFrame(registry, 12);
 });
 
+test("worldSizeFactor sizes streamed tile splats in world units", async () => {
+  const { applyPointCloudLodBlock, updatePointCloudLods, disposePointCloudLods } =
+    await loadLodModule();
+  stubFetch();
+  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+
+  const registry = new Map();
+  const scheduleRender = () => {};
+  applyPointCloudLodBlock(
+    registry,
+    "42",
+    { ...BLOCK, worldSizeFactor: 1.5 },
+    anchorMapper,
+    scheduleRender,
+  );
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
+  await settle();
+
+  assert.equal(added.length, 1, "world-sized cloud streams a tile");
+  // Root tile (level 0): splat diameter = rootSpacing * factor world units.
+  const worldSize = added[0].getMapper().getWorldSize();
+  assert.ok(
+    Math.abs(worldSize - BLOCK.rootSpacing * 1.5) < 1e-12,
+    `tile mapper carries the world-unit diameter, got ${worldSize}`,
+  );
+
+  disposePointCloudLods(registry);
+});
+
+test("without worldSizeFactor tile splats stay in screen-pixel mode", async () => {
+  const { applyPointCloudLodBlock, updatePointCloudLods, disposePointCloudLods } =
+    await loadLodModule();
+  stubFetch();
+  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+
+  const registry = new Map();
+  const scheduleRender = () => {};
+  applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
+  updatePointCloudLods(registry, { renderers: [renderer], renderWindow, scheduleRender });
+  await settle();
+
+  assert.equal(added.length, 1);
+  assert.equal(added[0].getMapper().getWorldSize(), 0);
+
+  disposePointCloudLods(registry);
+});
+
 test("an adaptive block streams tiles and accepts frame timings", async () => {
   const {
     applyPointCloudLodBlock,

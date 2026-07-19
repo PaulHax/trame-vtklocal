@@ -23,8 +23,10 @@ import {
   createHttpTileSource,
   createLodController,
   createMemoryPool,
-  createRendererAdapter,
 } from "pointcloud-lod";
+// The renderer adapter lives behind its own entry point: it imports vtk.js at
+// module scope, so the core entry stays loadable without the peer.
+import { createRendererAdapter } from "pointcloud-lod/vtk";
 
 import { isLiveInstance } from "./vtkJsSync";
 

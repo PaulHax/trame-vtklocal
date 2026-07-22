@@ -48,6 +48,7 @@ def mark_point_cloud_lod(
     min_budget=None,
     stationary_target_ms=None,
     interaction_target_ms=None,
+    refinement_cutoff_px=None,
     world_size_factor=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
@@ -119,6 +120,13 @@ def mark_point_cloud_lod(
                 f"interaction_target_ms must be > 0, got {interaction_target_ms}"
             )
         config["interactionTargetMs"] = interaction_target_ms
+    if refinement_cutoff_px is not None:
+        refinement_cutoff_px = float(refinement_cutoff_px)
+        if refinement_cutoff_px < 0:
+            raise ValueError(
+                f"refinement_cutoff_px must be >= 0, got {refinement_cutoff_px}"
+            )
+        config["refinementCutoffPx"] = refinement_cutoff_px
     if world_size_factor is not None:
         world_size_factor = float(world_size_factor)
         if not world_size_factor > 0:

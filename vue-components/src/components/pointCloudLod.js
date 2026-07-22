@@ -59,7 +59,8 @@ function normalizeAdaptive(block) {
     return false;
   }
   const options = {};
-  if (isPositiveFinite(block.minBudget)) options.minBudget = Number(block.minBudget);
+  if (isPositiveFinite(block.minBudget))
+    options.minBudget = Number(block.minBudget);
   if (isPositiveFinite(block.stationaryTargetMs)) {
     options.stationaryTargetMs = Number(block.stationaryTargetMs);
   }
@@ -73,7 +74,14 @@ function normalizeConfig(block) {
   if (!block || typeof block !== "object") {
     return null;
   }
-  const { endpoint, rootCube, rootSpacing, pointCount, pointBudget } = block;
+  const {
+    endpoint,
+    rootCube,
+    rootSpacing,
+    pointCount,
+    pointBudget,
+    refinementCutoffPx,
+  } = block;
   if (
     typeof endpoint !== "string" ||
     !endpoint ||
@@ -93,7 +101,13 @@ function normalizeConfig(block) {
     },
     rootSpacing: Number(rootSpacing),
     pointCount: Number.isFinite(pointCount) ? Number(pointCount) : 0,
-    pointBudget: isPositiveFinite(pointBudget) ? Number(pointBudget) : undefined,
+    pointBudget: isPositiveFinite(pointBudget)
+      ? Number(pointBudget)
+      : undefined,
+    refinementCutoffPx:
+      Number.isFinite(refinementCutoffPx) && refinementCutoffPx >= 0
+        ? Number(refinementCutoffPx)
+        : undefined,
     adaptive: normalizeAdaptive(block),
     worldSizeFactor: isPositiveFinite(block.worldSizeFactor)
       ? Number(block.worldSizeFactor)
@@ -144,7 +158,9 @@ function readCameraView(renderer, renderWindow) {
   return {
     viewProj: transpose16(rowMajor),
     position: [position[0], position[1], position[2]],
-    fovY: (Number.isFinite(viewAngle) && viewAngle > 0 ? viewAngle : 30) * DEG_TO_RAD,
+    fovY:
+      (Number.isFinite(viewAngle) && viewAngle > 0 ? viewAngle : 30) *
+      DEG_TO_RAD,
     viewportHeight,
   };
 }
@@ -223,6 +239,7 @@ export function applyPointCloudLodBlock(
       config,
       appliedEndpoint: null,
       appliedBudget: null,
+      appliedRefinementCutoffPx: null,
       controller: null,
       adapter: null,
       adapterRenderer: null,
@@ -240,6 +257,7 @@ function resetStreaming(entry) {
   entry.adapterRenderer = null;
   entry.appliedEndpoint = null;
   entry.appliedBudget = null;
+  entry.appliedRefinementCutoffPx = null;
 }
 
 function updateEntry(entry, renderers, renderWindow, scheduleRender) {
@@ -253,6 +271,11 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
     return;
   }
   const { actor, renderer } = anchor;
+  // Server-synced actors carry visibility as 0/1 ints, not booleans; only a
+  // missing getter defaults to visible. Resolve this before controller
+  // construction so an initially hidden cloud does not start hierarchy I/O.
+  const anchorVisible = actor.getVisibility?.();
+  const drawEnabled = anchorVisible === undefined ? true : !!anchorVisible;
 
   // Tile actors depth-composite in the anchor's renderer, so an anchor that
   // migrated renderers (the server re-staged the layer) rebuilds the
@@ -287,12 +310,17 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
         // memory pool's byte cap; the config pointBudget only applies as the
         // fixed budget when adaptive is off.
         adaptive: config.adaptive,
+        active: drawEnabled,
         memory: getSharedMemoryPool(),
         ...(config.pointBudget !== undefined
           ? { pointBudget: config.pointBudget }
           : {}),
+        ...(config.refinementCutoffPx !== undefined
+          ? { refinementCutoffPx: config.refinementCutoffPx }
+          : {}),
       });
       entry.appliedBudget = config.pointBudget ?? null;
+      entry.appliedRefinementCutoffPx = config.refinementCutoffPx ?? 1;
     }
     entry.appliedEndpoint = config.endpoint;
   }
@@ -301,6 +329,12 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
   if (budget !== null && budget !== entry.appliedBudget) {
     entry.controller.setPointBudget(budget);
     entry.appliedBudget = budget;
+  }
+
+  const cutoff = config.refinementCutoffPx ?? 1;
+  if (cutoff !== entry.appliedRefinementCutoffPx) {
+    entry.controller.setRefinementCutoffPx(cutoff);
+    entry.appliedRefinementCutoffPx = cutoff;
   }
 
   // World-space splat sizing: diameter = node spacing x factor. The adapter
@@ -312,10 +346,11 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
   );
 
   entry.adapter.setBaseMatrix(actor.getUserMatrix?.() ?? null);
-  // Server-synced actors carry visibility as 0/1 ints, not booleans; only
-  // a missing getter defaults to visible.
-  const anchorVisible = actor.getVisibility?.();
-  entry.adapter.setVisible(anchorVisible === undefined ? true : !!anchorVisible);
+  // Hidden clouds own no renderer resources. Disable submission before
+  // updating the camera; when showing, store the latest camera while inactive
+  // and only then reactivate so the first selection uses the current view.
+  if (!drawEnabled) entry.controller.setActive(false);
+  entry.adapter.setVisible(drawEnabled);
   const pointSize = actor.getProperty?.()?.getPointSize?.();
   if (isPositiveFinite(pointSize)) {
     entry.adapter.setPointSize(pointSize);
@@ -325,6 +360,7 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
   if (view) {
     entry.controller.setCamera(view);
   }
+  if (drawEnabled) entry.controller.setActive(true);
 }
 
 // Per-render update: feed the camera and mirror anchor-actor state. Called on
@@ -359,6 +395,55 @@ export function recordPointCloudLodFrame(registry, durationMs) {
     entry.controller?.recordFrame(durationMs);
   }
 }
+
+// --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
+// Anchor visibility for the diagnostic snapshot: `null` while the anchor actor
+// is unresolved, so "hidden" and "unknown" stay distinguishable. Same defensive
+// read as updateEntry — server-synced actors carry visibility as 0/1 ints, and
+// a missing getter means visible.
+function describeAnchorVisibility(entry) {
+  const actor = entry?.actor;
+  if (!actor) {
+    return null;
+  }
+  const visibility = actor.getVisibility?.();
+  return visibility === undefined ? true : !!visibility;
+}
+
+// Read-only snapshot of the LOD registry for the diagnostic API. Controller and
+// adapter both resolve lazily (after the anchor actor is found), so every read
+// tolerates a half-built entry; nothing here mutates controller state.
+export function describePointCloudLodRegistry(registry) {
+  const entries = [];
+  if (!registry) {
+    return entries;
+  }
+  for (const [id, entry] of registry) {
+    const anchorVisible = describeAnchorVisibility(entry);
+    const adapterStats = entry?.adapter?.stats?.() ?? {
+      gpuResidentTiles: 0,
+      gpuResidentPoints: 0,
+      gpuResidentBytes: 0,
+      activeDrawTiles: 0,
+      activeDrawPoints: 0,
+    };
+    entries.push({
+      id,
+      endpoint: entry?.config?.endpoint ?? null,
+      hasController: !!entry?.controller,
+      residentActorTiles: adapterStats.gpuResidentTiles,
+      gpuResidentTiles: adapterStats.gpuResidentTiles,
+      gpuResidentPoints: adapterStats.gpuResidentPoints,
+      gpuResidentBytes: adapterStats.gpuResidentBytes,
+      anchorVisible,
+      activeDrawTiles: adapterStats.activeDrawTiles,
+      activeDrawPoints: adapterStats.activeDrawPoints,
+      stats: entry?.controller?.stats?.() ?? null,
+    });
+  }
+  return entries;
+}
+// --- end phase0-bench ---
 
 // Release every anchor's streamed tiles and controllers (view teardown).
 export function disposePointCloudLods(registry) {

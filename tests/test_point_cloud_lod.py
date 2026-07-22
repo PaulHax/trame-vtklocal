@@ -81,6 +81,7 @@ def test_marked_mapper_translates_with_type_and_block():
     assert "minBudget" not in block
     assert "stationaryTargetMs" not in block
     assert "interactionTargetMs" not in block
+    assert "refinementCutoffPx" not in block
     # World-space splat sizing is opt-in.
     assert "worldSizeFactor" not in block
     # Config props ride the block, never the mapper props.
@@ -118,6 +119,21 @@ def test_world_size_factor_reaches_the_wire():
     (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
     block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
     assert block["worldSizeFactor"] == 1.5
+
+
+def test_refinement_cutoff_reaches_the_wire():
+    api, rw, mapper, render_window_id = _make_scene()
+    pcl.mark_point_cloud_lod(mapper, **CONFIG, refinement_cutoff_px=0.5)
+    state = _translate(api, rw, render_window_id)
+
+    (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
+    assert node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]["refinementCutoffPx"] == 0.5
+
+
+def test_refinement_cutoff_rejects_negative_values():
+    _api, _rw, mapper, _render_window_id = _make_scene()
+    with pytest.raises(ValueError, match="refinement_cutoff_px must be >= 0"):
+        pcl.mark_point_cloud_lod(mapper, **CONFIG, refinement_cutoff_px=-0.1)
 
 
 def test_unmarked_point_gaussian_mapper_is_unaffected():

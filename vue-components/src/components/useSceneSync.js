@@ -29,6 +29,9 @@ import {
 } from "./pickables";
 import {
   applyPointCloudLodBlock,
+  // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
+  describePointCloudLodRegistry,
+  // --- end phase0-bench ---
   disposePointCloudLods,
   recordPointCloudLodFrame,
   updatePointCloudLods,
@@ -73,6 +76,13 @@ export function useSceneSync(
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
   const pointCloudLods = new Map();
+  // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
+  // Most recent paint wall-time reported by the view, surfaced through
+  // getSyncDiagnostics(). Assignment only — no work added to the render path.
+  let lastVtkPaintMs = null;
+  let lastVtkPaintAt = null;
+  let vtkPaintSequence = 0;
+  // --- end phase0-bench ---
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -282,6 +292,11 @@ export function useSceneSync(
     distanceToCameraGlyphs.clear();
     pickables.clear();
     disposePointCloudLods(pointCloudLods);
+    // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
+    lastVtkPaintMs = null;
+    lastVtkPaintAt = null;
+    vtkPaintSequence = 0;
+    // --- end phase0-bench ---
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -459,6 +474,12 @@ export function useSceneSync(
       externalTextures: peekExternalTextures(
         getRenderWindow?.() || null,
       )?.describe() ?? { size: 0, entries: [] },
+      // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
+      pointCloudLod: describePointCloudLodRegistry(pointCloudLods),
+      lastVtkPaintMs,
+      lastVtkPaintAt,
+      vtkPaintSequence,
+      // --- end phase0-bench ---
     };
   }
 
@@ -501,6 +522,13 @@ export function useSceneSync(
   // adaptive-quality budget loop for any streamed LOD cloud (a no-op when no
   // cloud has adaptive enabled).
   function recordFrameDuration(durationMs) {
+    // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
+    if (Number.isFinite(durationMs)) {
+      lastVtkPaintMs = durationMs;
+      lastVtkPaintAt = performance.now();
+      vtkPaintSequence += 1;
+    }
+    // --- end phase0-bench ---
     recordPointCloudLodFrame(pointCloudLods, durationMs);
   }
 

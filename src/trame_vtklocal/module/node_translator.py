@@ -310,9 +310,7 @@ def _translate_mapper(reader, state, vtkjs_type):
     if projected_texture:
         node_type = ptx.PROJECTED_TEXTURE_TYPE
         blocks["projectedTexture"] = projected_texture
-    if point_cloud_lod := pcl.point_cloud_lod_config(vtk_mapper):
-        node_type = pcl.POINT_CLOUD_LOD_TYPE
-        blocks[pcl.POINT_CLOUD_LOD_BLOCK] = point_cloud_lod
+    node_type = pcl.apply_point_cloud_blocks(vtk_mapper, node_type, blocks)
 
     return _make_node(node_type, props, refs, {}, blocks)
 

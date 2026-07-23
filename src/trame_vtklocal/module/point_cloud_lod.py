@@ -14,23 +14,34 @@ import weakref
 
 POINT_CLOUD_LOD_TYPE = "vtkPointCloudLodMapper"
 POINT_CLOUD_LOD_BLOCK = "pointCloudLod"
+POINT_CLOUD_PRESENTATION_BLOCK = "pointCloudPresentation"
 
 _MAPPER_CONFIGS = weakref.WeakKeyDictionary()
+_PRESENTATION_CONFIGS = weakref.WeakKeyDictionary()
 
 
-def _as_root_cube(value):
-    try:
-        center = [float(v) for v in value["center"]]
-        half_size = float(value["halfSize"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(
-            "root_cube must be {'center': [x, y, z], 'halfSize': s}"
-        ) from error
-    if len(center) != 3:
-        raise ValueError(f"root_cube center must have 3 values, got {len(center)}")
-    if not half_size > 0:
-        raise ValueError(f"root_cube halfSize must be > 0, got {half_size}")
-    return {"center": center, "halfSize": half_size}
+def _as_presentation(value):
+    if not isinstance(value, dict):
+        raise ValueError("presentation must be a Fixed or Auto object")
+    mode = value.get("mode")
+    if mode == "fixed":
+        diameter = float(value["diameterCssPx"])
+        if not diameter > 0:
+            raise ValueError("Fixed diameterCssPx must be positive")
+        return {"mode": "fixed", "diameterCssPx": diameter}
+    if mode == "auto":
+        user_scale = float(value["userScale"])
+        minimum = float(value["minDiameterCssPx"])
+        maximum = float(value["maxDiameterCssPx"])
+        if not user_scale > 0 or not 0 < minimum <= maximum:
+            raise ValueError("Auto scale and diameter clamps must be positive and ordered")
+        return {
+            "mode": "auto",
+            "userScale": user_scale,
+            "minDiameterCssPx": minimum,
+            "maxDiameterCssPx": maximum,
+        }
+    raise ValueError("presentation mode must be 'fixed' or 'auto'")
 
 
 def mark_point_cloud_lod(
@@ -39,9 +50,8 @@ def mark_point_cloud_lod(
     asset_id,
     revision,
     endpoint,
-    root_cube,
-    root_spacing,
     point_count,
+    presentation,
     has_rgb=True,
     point_budget=None,
     adaptive=False,
@@ -49,14 +59,12 @@ def mark_point_cloud_lod(
     stationary_target_ms=None,
     interaction_target_ms=None,
     refinement_cutoff_px=None,
-    world_size_factor=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
 
     ``endpoint`` is the revision-scoped base URL of the tile service (no
-    trailing slash), e.g. ``/pointcloud/<asset>/<revision>``. ``root_cube``
-    is the octree root cube in scene-local coordinates; ``root_spacing`` the
-    approximate point spacing at level 0 in the same units.
+    trailing slash), e.g. ``/pointcloud/<asset>/<revision>``. Node bounds and
+    metric spacing arrive in each hierarchy response.
 
     With ``adaptive`` set, the client adapts the visible-point budget to
     measured render duration (Phase 5), capped only by the client's shared
@@ -67,11 +75,8 @@ def mark_point_cloud_lod(
     visible-point budget (client default 2,000,000), still capped by the
     memory budget.
 
-    With ``world_size_factor`` set, tile splats are sized in world units —
-    diameter = octree node point spacing times the factor — so coarse tiles
-    render as a closed surface up close instead of thinning into sparse
-    fixed-size pixels. Omit it for screen-pixel sizing from the actor point
-    size.
+    ``presentation`` is an explicit Fixed CSS-pixel diameter or Auto scale and
+    clamp contract. The browser owns projected-density calculation.
     """
     if not asset_id:
         raise ValueError("asset_id is required")
@@ -79,9 +84,6 @@ def mark_point_cloud_lod(
         raise ValueError("revision is required")
     if not endpoint or str(endpoint).endswith("/"):
         raise ValueError("endpoint is required and must not end with '/'")
-    root_spacing = float(root_spacing)
-    if not root_spacing > 0:
-        raise ValueError(f"root_spacing must be > 0, got {root_spacing}")
     point_count = int(point_count)
     if point_count < 0:
         raise ValueError(f"point_count must be >= 0, got {point_count}")
@@ -90,11 +92,10 @@ def mark_point_cloud_lod(
         "assetId": str(asset_id),
         "revision": str(revision),
         "endpoint": str(endpoint),
-        "rootCube": _as_root_cube(root_cube),
-        "rootSpacing": root_spacing,
         "pointCount": point_count,
         "hasRgb": bool(has_rgb),
         "adaptive": bool(adaptive),
+        "presentation": _as_presentation(presentation),
     }
     if point_budget is not None:
         point_budget = int(point_budget)
@@ -127,11 +128,6 @@ def mark_point_cloud_lod(
                 f"refinement_cutoff_px must be >= 0, got {refinement_cutoff_px}"
             )
         config["refinementCutoffPx"] = refinement_cutoff_px
-    if world_size_factor is not None:
-        world_size_factor = float(world_size_factor)
-        if not world_size_factor > 0:
-            raise ValueError(f"world_size_factor must be > 0, got {world_size_factor}")
-        config["worldSizeFactor"] = world_size_factor
     _MAPPER_CONFIGS[mapper] = config
     mapper.Modified()
     return config
@@ -145,3 +141,33 @@ def clear_point_cloud_lod(mapper):
 def point_cloud_lod_config(mapper):
     config = _MAPPER_CONFIGS.get(mapper)
     return dict(config) if config else None
+
+
+def mark_point_cloud_presentation(mapper, *, diameter_css_px):
+    diameter = float(diameter_css_px)
+    if not diameter > 0:
+        raise ValueError("diameter_css_px must be positive")
+    config = {"mode": "fixed", "diameterCssPx": diameter}
+    _PRESENTATION_CONFIGS[mapper] = config
+    mapper.Modified()
+    return config
+
+
+def clear_point_cloud_presentation(mapper):
+    if _PRESENTATION_CONFIGS.pop(mapper, None) is not None:
+        mapper.Modified()
+
+
+def point_cloud_presentation_config(mapper):
+    config = _PRESENTATION_CONFIGS.get(mapper)
+    return dict(config) if config else None
+
+
+def apply_point_cloud_blocks(mapper, node_type, blocks):
+    """Attach point-cloud feature blocks and return the translated mapper type."""
+    if lod := point_cloud_lod_config(mapper):
+        node_type = POINT_CLOUD_LOD_TYPE
+        blocks[POINT_CLOUD_LOD_BLOCK] = lod
+    if presentation := point_cloud_presentation_config(mapper):
+        blocks[POINT_CLOUD_PRESENTATION_BLOCK] = presentation
+    return node_type

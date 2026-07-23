@@ -40,6 +40,11 @@ import {
   updatePointCloudLods,
   POINT_CLOUD_LOD_BLOCK_KEY,
 } from "./pointCloudLod";
+import {
+  applyPointCloudPresentationBlock,
+  updatePointCloudPresentations,
+  POINT_CLOUD_PRESENTATION_BLOCK_KEY,
+} from "./pointCloudPresentation";
 import { createPickableGestures } from "./pickableGestures";
 import { createDragPreview } from "./dragPreview";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
@@ -80,6 +85,7 @@ export function useSceneSync(
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
   const pointCloudLods = new Map();
+  const pointCloudPresentations = new Map();
   // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
   // Most recent paint wall-time reported by the view, surfaced through
   // getSyncDiagnostics(). Assignment only — no work added to the render path.
@@ -297,6 +303,7 @@ export function useSceneSync(
     distanceToCameraGlyphs.clear();
     pickables.clear();
     disposePointCloudLods(pointCloudLods);
+    pointCloudPresentations.clear();
     // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
     lastVtkPaintMs = null;
     lastVtkPaintAt = null;
@@ -374,6 +381,16 @@ export function useSceneSync(
       (nodeId, block, instance) =>
         applyPointCloudLodBlock(pointCloudLods, nodeId, block, instance, () =>
           renderRequestCallback?.(),
+        ),
+    );
+    reconciler.registerBlockHandler(
+      POINT_CLOUD_PRESENTATION_BLOCK_KEY,
+      (nodeId, block, instance) =>
+        applyPointCloudPresentationBlock(
+          pointCloudPresentations,
+          nodeId,
+          block,
+          instance,
         ),
     );
 
@@ -517,6 +534,7 @@ export function useSceneSync(
     // Camera + anchor-actor fan-out for streamed LOD point clouds; the
     // controller debounces selection internally, so per-message and
     // per-interactor-render calls stay cheap.
+    updatePointCloudPresentations(pointCloudPresentations);
     return updatePointCloudLods(pointCloudLods, {
       renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),

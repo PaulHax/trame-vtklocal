@@ -10,9 +10,13 @@ CONFIG = dict(
     asset_id="cloud-1",
     revision="abc123",
     endpoint="/pointcloud/cloud-1/abc123",
-    root_cube={"center": [10.0, 20.0, 30.0], "halfSize": 250.0},
-    root_spacing=2.5,
     point_count=9_128_231,
+    presentation={
+        "mode": "auto",
+        "userScale": 1.0,
+        "minDiameterCssPx": 1.5,
+        "maxDiameterCssPx": 5.0,
+    },
 )
 
 
@@ -69,9 +73,8 @@ def test_marked_mapper_translates_with_type_and_block():
     assert block["assetId"] == "cloud-1"
     assert block["revision"] == "abc123"
     assert block["endpoint"] == "/pointcloud/cloud-1/abc123"
-    assert block["rootCube"] == {"center": [10.0, 20.0, 30.0], "halfSize": 250.0}
-    assert block["rootSpacing"] == 2.5
     assert block["pointCount"] == 9_128_231
+    assert block["presentation"] == CONFIG["presentation"]
     assert block["hasRgb"] is True
     # No configured point budget: the client default applies (fixed mode) and
     # adaptive mode has no point ceiling at all.
@@ -82,8 +85,6 @@ def test_marked_mapper_translates_with_type_and_block():
     assert "stationaryTargetMs" not in block
     assert "interactionTargetMs" not in block
     assert "refinementCutoffPx" not in block
-    # World-space splat sizing is opt-in.
-    assert "worldSizeFactor" not in block
     # Config props ride the block, never the mapper props.
     assert "assetId" not in node.get("props", {})
 
@@ -109,16 +110,6 @@ def test_adaptive_config_reaches_the_wire():
     assert block["minBudget"] == 250_000
     assert block["stationaryTargetMs"] == 16.0
     assert block["interactionTargetMs"] == 33.0
-
-
-def test_world_size_factor_reaches_the_wire():
-    api, rw, mapper, render_window_id = _make_scene()
-    pcl.mark_point_cloud_lod(mapper, **CONFIG, world_size_factor=1.5)
-    state = _translate(api, rw, render_window_id)
-
-    (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
-    block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
-    assert block["worldSizeFactor"] == 1.5
 
 
 def test_refinement_cutoff_reaches_the_wire():
@@ -195,10 +186,12 @@ def test_validation_errors():
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "endpoint": "/pointcloud/a/rev/"})
     with pytest.raises(ValueError):
         pcl.mark_point_cloud_lod(
-            mapper, **{**CONFIG, "root_cube": {"center": [0, 0], "halfSize": 1}}
+            mapper,
+            **{
+                **CONFIG,
+                "presentation": {"mode": "fixed", "diameterCssPx": 0},
+            },
         )
-    with pytest.raises(ValueError):
-        pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "root_spacing": 0})
     with pytest.raises(ValueError):
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "point_budget": 0})
     with pytest.raises(ValueError):
@@ -213,5 +206,3 @@ def test_validation_errors():
         pcl.mark_point_cloud_lod(
             mapper, **{**CONFIG, "adaptive": True, "interaction_target_ms": -1}
         )
-    with pytest.raises(ValueError):
-        pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "world_size_factor": 0})

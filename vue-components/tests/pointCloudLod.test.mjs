@@ -15,9 +15,8 @@ const BLOCK = {
   assetId: "cloud-1",
   revision: "rev1",
   endpoint: "/pointcloud/cloud-1/rev1",
-  rootCube: { center: [0, 0, 0], halfSize: 0.5 },
-  rootSpacing: 0.1,
   pointCount: 2,
+  presentation: { mode: "fixed", diameterCssPx: 3 },
   hasRgb: true,
   pointBudget: 100000,
 };
@@ -49,7 +48,13 @@ function stubFetch() {
       return new Response(
         JSON.stringify({
           nodes: {
-            "0-0-0-0": { pointCount: 2, children: [], page: null },
+            "0-0-0-0": {
+              pointCount: 2,
+              children: [],
+              page: null,
+              bounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
+              spacing: 0.1,
+            },
           },
         }),
         { status: 200 },
@@ -158,9 +163,9 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     scheduleRender,
   });
   assert.equal(
-    firstTileActor.getVisibility(),
-    false,
-    "int 0 disables draw immediately",
+    removed.includes(firstTileActor),
+    true,
+    "int 0 removes draw resources immediately",
   );
   await settle();
   assert.equal(added.length, 0, "hidden cloud owns no tile actors");
@@ -354,7 +359,7 @@ test("malformed blocks are ignored", async () => {
   applyPointCloudLodBlock(
     registry,
     "43",
-    { ...BLOCK, rootCube: { center: [0, 0], halfSize: 1 } },
+    { ...BLOCK, presentation: { mode: "fixed", diameterCssPx: -1 } },
     null,
     () => {},
   );
@@ -374,60 +379,17 @@ test("recordPointCloudLodFrame is a safe no-op on empty or invalid input", async
   recordPointCloudLodFrame(registry, 12);
 });
 
-test("worldSizeFactor is ignored so every tile stays screen-pixel sized", async () => {
-  const {
-    applyPointCloudLodBlock,
-    updatePointCloudLods,
-    disposePointCloudLods,
-  } = await loadLodModule();
-  stubFetch();
-  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+test("interaction presentation follows the governor's deselection batch", async () => {
+  const { beginPointCloudLodInteraction } = await loadLodModule();
+  const calls = [];
+  const registry = new Map([
+    ["x", { controller: { beginInteraction: () => calls.push("begin") } }],
+  ]);
 
-  const registry = new Map();
-  const scheduleRender = () => {};
-  applyPointCloudLodBlock(
-    registry,
-    "42",
-    { ...BLOCK, worldSizeFactor: 1.5 },
-    anchorMapper,
-    scheduleRender,
-  );
-  updatePointCloudLods(registry, {
-    renderers: [renderer],
-    renderWindow,
-    scheduleRender,
-  });
-  await settle();
-
-  assert.equal(added.length, 1, "cloud streams a tile");
-  assert.equal(added[0].getMapper().getWorldSize(), 0);
-
-  disposePointCloudLods(registry);
-});
-
-test("without worldSizeFactor tile splats stay in screen-pixel mode", async () => {
-  const {
-    applyPointCloudLodBlock,
-    updatePointCloudLods,
-    disposePointCloudLods,
-  } = await loadLodModule();
-  stubFetch();
-  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
-
-  const registry = new Map();
-  const scheduleRender = () => {};
-  applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
-  updatePointCloudLods(registry, {
-    renderers: [renderer],
-    renderWindow,
-    scheduleRender,
-  });
-  await settle();
-
-  assert.equal(added.length, 1);
-  assert.equal(added[0].getMapper().getWorldSize(), 0);
-
-  disposePointCloudLods(registry);
+  beginPointCloudLodInteraction(registry);
+  assert.deepEqual(calls, []);
+  await Promise.resolve();
+  assert.deepEqual(calls, ["begin"]);
 });
 
 test("an adaptive block streams tiles and accepts frame timings", async () => {
@@ -525,4 +487,41 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
     0.25,
   );
   disposePointCloudLods(registry);
+});
+
+test("camera selection uses the inverse of anchor translation rotation and scale", async () => {
+  const { cameraInAnchorCoordinates } = await loadLodModule();
+  const similarity = [
+    0, 2, 0, 0,
+    -2, 0, 0, 0,
+    0, 0, 2, 0,
+    5, 6, 7, 1,
+  ];
+  const view = {
+    viewProj: IDENTITY,
+    position: [5, 8, 7],
+    fovY: Math.PI / 3,
+    viewportHeightCssPx: 600,
+  };
+
+  const local = cameraInAnchorCoordinates(view, similarity);
+
+  assert.deepEqual(local.position.map((value) => Math.round(value)), [1, 0, 0]);
+  assert.deepEqual(local.viewProj, similarity);
+  assert.equal(local.fovY, view.fovY);
+  assert.equal(local.viewportHeightCssPx, 600);
+});
+
+test("viewport height is measured in CSS pixels at non-unit DPR", async () => {
+  const { getViewportHeight } = await loadLodModule();
+  const previous = globalThis.devicePixelRatio;
+  globalThis.devicePixelRatio = 2;
+  try {
+    const renderer = { getViewport: () => [0, 0.25, 1, 0.75] };
+    const renderWindow = { getViews: () => [{ getSize: () => [800, 600] }] };
+    assert.equal(getViewportHeight(renderer, renderWindow), 150);
+  } finally {
+    if (previous === undefined) delete globalThis.devicePixelRatio;
+    else globalThis.devicePixelRatio = previous;
+  }
 });

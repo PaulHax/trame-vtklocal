@@ -384,6 +384,7 @@ export function applyPointCloudLodBlock(
       adapter: null,
       adapterRenderer: null,
       governorMember: null,
+      presentationTransitioning: false,
     });
   }
   return registry;
@@ -398,6 +399,7 @@ function resetStreaming(entry) {
   entry.controller = null;
   entry.adapter = null;
   entry.adapterRenderer = null;
+  entry.presentationTransitioning = false;
   entry.appliedEndpoint = null;
   entry.appliedBudget = null;
   entry.appliedRefinementCutoffPx = null;
@@ -531,10 +533,12 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
     entry.controller.setCamera(view);
   }
   if (drawEnabled) entry.controller.setActive(true);
+  const controllerStats = entry.controller.stats();
+  entry.presentationTransitioning =
+    controllerStats.presentation?.damping === true;
   entry.governorMember?.update({
     active: drawEnabled,
-    projectedImportance:
-      entry.controller.stats().selection.projectedImportance,
+    projectedImportance: controllerStats.selection.projectedImportance,
   });
 }
 
@@ -581,7 +585,13 @@ export function recordPointCloudLodFrame(registry, durationMs) {
 export function recordPointCloudLodHostFrame(registry, metrics) {
   if (!registry || registry.size === 0) return;
   if (!Number.isFinite(metrics?.hostFrameMs) || metrics.hostFrameMs < 0) return;
-  viewGovernors.get(registry)?.recordHostFrame(metrics);
+  const transitioning = [...registry.values()].some(
+    (entry) => entry.presentationTransitioning,
+  );
+  viewGovernors.get(registry)?.recordHostFrame({
+    ...metrics,
+    transitioning: metrics.transitioning || transitioning,
+  });
 }
 
 export function beginPointCloudLodInteraction(registry) {

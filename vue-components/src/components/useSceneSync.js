@@ -33,7 +33,10 @@ import {
   describePointCloudLodRegistry,
   // --- end phase0-bench ---
   disposePointCloudLods,
+  beginPointCloudLodInteraction,
+  endPointCloudLodInteraction,
   recordPointCloudLodFrame,
+  recordPointCloudLodHostFrame,
   updatePointCloudLods,
   POINT_CLOUD_LOD_BLOCK_KEY,
 } from "./pointCloudLod";
@@ -70,6 +73,7 @@ export function useSceneSync(
   let renderedCamera = null;
   let clientCamera = null;
   let cameraInteractionDepth = 0;
+  let cameraReportInteractionDepth = 0;
   let cameraReportOptions = { during: "none", terminal: true };
   let pendingCameraReport = false;
   let cameraReportFrame = 0;
@@ -82,6 +86,7 @@ export function useSceneSync(
   let lastVtkPaintMs = null;
   let lastVtkPaintAt = null;
   let vtkPaintSequence = 0;
+  let hostFrameFeedbackSeen = false;
   // --- end phase0-bench ---
 
   function getRenderer() {
@@ -296,6 +301,7 @@ export function useSceneSync(
     lastVtkPaintMs = null;
     lastVtkPaintAt = null;
     vtkPaintSequence = 0;
+    hostFrameFeedbackSeen = false;
     // --- end phase0-bench ---
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
@@ -529,7 +535,19 @@ export function useSceneSync(
       vtkPaintSequence += 1;
     }
     // --- end phase0-bench ---
-    recordPointCloudLodFrame(pointCloudLods, durationMs);
+    if (!hostFrameFeedbackSeen) {
+      recordPointCloudLodFrame(pointCloudLods, durationMs);
+    }
+  }
+
+  function recordHostFrame(metrics) {
+    hostFrameFeedbackSeen = true;
+    if (Number.isFinite(metrics?.vtkFrameMs)) {
+      lastVtkPaintMs = metrics.vtkFrameMs;
+      lastVtkPaintAt = performance.now();
+      vtkPaintSequence += 1;
+    }
+    recordPointCloudLodHostFrame(pointCloudLods, metrics);
   }
 
   // Answer "what pickable glyph point is under (cssX, cssY)" from what this
@@ -643,19 +661,28 @@ export function useSceneSync(
   // a wheel-idle timer and a drag) each begin/end independently, and the shared
   // camera channel must stay live until the LAST one ends. A boolean would let
   // one source's end silence another's in-flight reports.
-  function beginCameraInteraction() {
+  function beginCameraInteraction({ report = true } = {}) {
     cameraInteractionDepth += 1;
+    if (report) cameraReportInteractionDepth += 1;
+    if (cameraInteractionDepth === 1) {
+      beginPointCloudLodInteraction(pointCloudLods);
+    }
   }
 
   function cameraInteraction() {
-    if (cameraInteractionDepth > 0) reportCamera();
+    if (cameraReportInteractionDepth > 0) reportCamera();
   }
 
-  function endCameraInteraction() {
+  function endCameraInteraction({ report = true } = {}) {
     if (cameraInteractionDepth === 0) return;
     cameraInteractionDepth -= 1;
+    const reportEnded = report && cameraReportInteractionDepth > 0;
+    if (reportEnded) cameraReportInteractionDepth -= 1;
+    if (reportEnded && cameraReportInteractionDepth === 0) {
+      reportCamera({ terminal: true });
+    }
     if (cameraInteractionDepth > 0) return;
-    reportCamera({ terminal: true });
+    endPointCloudLodInteraction(pointCloudLods);
     reconciler?.flushDeferredProps?.();
     renderRequestCallback?.();
   }
@@ -717,6 +744,7 @@ export function useSceneSync(
     updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
     updatePointCloudLods: updatePointCloudLodsForRender,
     recordFrameDuration,
+    recordHostFrame,
     getSyncDiagnostics,
     getAppliedSceneState,
   };

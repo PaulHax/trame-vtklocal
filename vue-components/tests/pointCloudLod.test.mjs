@@ -374,7 +374,7 @@ test("recordPointCloudLodFrame is a safe no-op on empty or invalid input", async
   recordPointCloudLodFrame(registry, 12);
 });
 
-test("worldSizeFactor sizes streamed tile splats in world units", async () => {
+test("worldSizeFactor is ignored so every tile stays screen-pixel sized", async () => {
   const {
     applyPointCloudLodBlock,
     updatePointCloudLods,
@@ -399,13 +399,8 @@ test("worldSizeFactor sizes streamed tile splats in world units", async () => {
   });
   await settle();
 
-  assert.equal(added.length, 1, "world-sized cloud streams a tile");
-  // Root tile (level 0): splat diameter = rootSpacing * factor world units.
-  const worldSize = added[0].getMapper().getWorldSize();
-  assert.ok(
-    Math.abs(worldSize - BLOCK.rootSpacing * 1.5) < 1e-12,
-    `tile mapper carries the world-unit diameter, got ${worldSize}`,
-  );
+  assert.equal(added.length, 1, "cloud streams a tile");
+  assert.equal(added[0].getMapper().getWorldSize(), 0);
 
   disposePointCloudLods(registry);
 });

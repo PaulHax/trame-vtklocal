@@ -23,6 +23,7 @@ import {
   createHttpTileSource,
   createLodController,
   createMemoryPool,
+  createViewGovernor,
 } from "pointcloud-lod";
 // The renderer adapter lives behind its own entry point: it imports vtk.js at
 // module scope, so the core entry stays loadable without the peer.
@@ -37,11 +38,21 @@ export const POINT_CLOUD_LOD_BLOCK_KEY = "pointCloudLod";
 // one device-sized budget divided among the active clouds. Without this, N
 // clouds would each claim a full budget and multiply GPU memory by N.
 let sharedMemoryPool = null;
+const viewGovernors = new WeakMap();
 function getSharedMemoryPool() {
   if (!sharedMemoryPool) {
     sharedMemoryPool = createMemoryPool();
   }
   return sharedMemoryPool;
+}
+
+function getViewGovernor(registry, options = {}) {
+  let governor = viewGovernors.get(registry);
+  if (!governor) {
+    governor = createViewGovernor(options);
+    viewGovernors.set(registry, governor);
+  }
+  return governor;
 }
 
 const DEG_TO_RAD = Math.PI / 180;
@@ -109,9 +120,6 @@ function normalizeConfig(block) {
         ? Number(refinementCutoffPx)
         : undefined,
     adaptive: normalizeAdaptive(block),
-    worldSizeFactor: isPositiveFinite(block.worldSizeFactor)
-      ? Number(block.worldSizeFactor)
-      : undefined,
   };
 }
 
@@ -197,6 +205,8 @@ function findAnchor(entry, renderers) {
 }
 
 function disposeEntry(entry) {
+  entry?.governorMember?.release();
+  if (entry) entry.governorMember = null;
   entry?.controller?.dispose();
   entry?.adapter?.dispose();
 }
@@ -243,6 +253,7 @@ export function applyPointCloudLodBlock(
       controller: null,
       adapter: null,
       adapterRenderer: null,
+      governorMember: null,
     });
   }
   return registry;
@@ -250,6 +261,8 @@ export function applyPointCloudLodBlock(
 
 // Drop the streaming stack so it can rebuild against a new host renderer.
 function resetStreaming(entry) {
+  entry.governorMember?.release();
+  entry.governorMember = null;
   entry.controller?.dispose();
   entry.adapter?.dispose();
   entry.controller = null;
@@ -260,7 +273,7 @@ function resetStreaming(entry) {
   entry.appliedRefinementCutoffPx = null;
 }
 
-function updateEntry(entry, renderers, renderWindow, scheduleRender) {
+function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
   const { config } = entry;
 
   const anchor = findAnchor(entry, renderers);
@@ -281,6 +294,9 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
   // migrated renderers (the server re-staged the layer) rebuilds the
   // streaming stack in its new home.
   if (entry.adapter && entry.adapterRenderer !== renderer) {
+    resetStreaming(entry);
+  }
+  if (entry.controller && !!entry.governorMember !== !!config.adaptive) {
     resetStreaming(entry);
   }
   if (!entry.adapter) {
@@ -309,7 +325,6 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
         // durations arrive via recordPointCloudLodFrame) under the shared
         // memory pool's byte cap; the config pointBudget only applies as the
         // fixed budget when adaptive is off.
-        adaptive: config.adaptive,
         active: drawEnabled,
         memory: getSharedMemoryPool(),
         ...(config.pointBudget !== undefined
@@ -321,6 +336,15 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
       });
       entry.appliedBudget = config.pointBudget ?? null;
       entry.appliedRefinementCutoffPx = config.refinementCutoffPx ?? 1;
+      if (config.adaptive) {
+        entry.governorMember = getViewGovernor(
+          registry,
+          config.adaptive,
+        ).register({
+          active: drawEnabled,
+          setPointBudget: (points) => entry.controller?.setPointBudget(points),
+        });
+      }
     }
     entry.appliedEndpoint = config.endpoint;
   }
@@ -337,13 +361,9 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
     entry.appliedRefinementCutoffPx = cutoff;
   }
 
-  // World-space splat sizing: diameter = node spacing x factor. The adapter
-  // value-compares, so re-applying per update is a no-op.
-  entry.adapter.setWorldSizing(
-    config.worldSizeFactor !== undefined
-      ? { rootSpacing: config.rootSpacing, factor: config.worldSizeFactor }
-      : null,
-  );
+  // All additive COPC tiles use one screen-pixel size. Level-dependent world
+  // splats create visible size discontinuities as detail enters/leaves.
+  entry.adapter.setWorldSizing(null);
 
   entry.adapter.setBaseMatrix(actor.getUserMatrix?.() ?? null);
   // Hidden clouds own no renderer resources. Disable submission before
@@ -361,6 +381,11 @@ function updateEntry(entry, renderers, renderWindow, scheduleRender) {
     entry.controller.setCamera(view);
   }
   if (drawEnabled) entry.controller.setActive(true);
+  entry.governorMember?.update({
+    active: drawEnabled,
+    projectedImportance:
+      entry.controller.stats().selection.projectedImportance,
+  });
 }
 
 // Per-render update: feed the camera and mirror anchor-actor state. Called on
@@ -376,7 +401,13 @@ export function updatePointCloudLods(registry, context) {
     return;
   }
   for (const entry of registry.values()) {
-    updateEntry(entry, renderers, renderWindow, scheduleRender ?? (() => {}));
+    updateEntry(
+      registry,
+      entry,
+      renderers,
+      renderWindow,
+      scheduleRender ?? (() => {}),
+    );
   }
 }
 
@@ -391,9 +422,28 @@ export function recordPointCloudLodFrame(registry, durationMs) {
   if (!Number.isFinite(durationMs) || durationMs < 0) {
     return;
   }
-  for (const entry of registry.values()) {
-    entry.controller?.recordFrame(durationMs);
-  }
+  recordPointCloudLodHostFrame(registry, {
+    hostFrameMs: durationMs,
+    vtkFrameMs: durationMs,
+  });
+}
+
+export function recordPointCloudLodHostFrame(registry, metrics) {
+  if (!registry || registry.size === 0) return;
+  if (!Number.isFinite(metrics?.hostFrameMs) || metrics.hostFrameMs < 0) return;
+  viewGovernors.get(registry)?.recordHostFrame(metrics);
+}
+
+export function beginPointCloudLodInteraction(registry) {
+  if (!registry) return;
+  viewGovernors.get(registry)?.beginInteraction();
+  for (const entry of registry.values()) entry.controller?.beginInteraction();
+}
+
+export function endPointCloudLodInteraction(registry) {
+  if (!registry) return;
+  viewGovernors.get(registry)?.endInteraction();
+  for (const entry of registry.values()) entry.controller?.endInteraction();
 }
 
 // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
@@ -454,4 +504,6 @@ export function disposePointCloudLods(registry) {
     disposeEntry(entry);
   }
   registry.clear();
+  viewGovernors.get(registry)?.dispose();
+  viewGovernors.delete(registry);
 }

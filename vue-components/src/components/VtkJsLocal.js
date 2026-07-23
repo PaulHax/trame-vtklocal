@@ -62,7 +62,8 @@ export default {
       try {
         renderWindow?.render?.();
       } finally {
-        scene.recordFrameDuration(performance.now() - start);
+        const duration = performance.now() - start;
+        scene.recordHostFrame({ hostFrameMs: duration, vtkFrameMs: duration });
       }
     }
 

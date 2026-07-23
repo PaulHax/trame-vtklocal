@@ -224,6 +224,23 @@ test("camera interaction is reference-counted across overlapping sources", async
   }
 });
 
+test("programmatic interaction shares lifecycle without reporting camera echo", async () => {
+  const previousWindow = globalThis.window;
+  const fakeWindow = makeWindow();
+  globalThis.window = fakeWindow;
+  try {
+    const { scene, events } = await makeScene();
+    scene.enableCameraReports({ during: "interaction", terminal: true });
+    scene.beginCameraInteraction({ report: false });
+    scene.cameraInteraction();
+    scene.endCameraInteraction({ report: false });
+    fakeWindow.flush();
+    assert.equal(events.filter((event) => event.name === "camera").length, 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("gesture payload derives camera matrices from the live local camera", async () => {
   const { scene, events } = await makeScene();
   scene.emitTargetClick({ clientX: 10, clientY: 20 });

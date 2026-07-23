@@ -39,6 +39,9 @@ export const POINT_CLOUD_LOD_BLOCK_KEY = "pointCloudLod";
 // clouds would each claim a full budget and multiply GPU memory by N.
 let sharedMemoryPool = null;
 const viewGovernors = new WeakMap();
+// MapLibre can emit movestart/moveend synchronously. Track deferred controller
+// begins so an end in the same task cancels its matching microtask.
+const pendingControllerInteractionBegins = new WeakMap();
 function getSharedMemoryPool() {
   if (!sharedMemoryPool) {
     sharedMemoryPool = createMemoryPool();
@@ -587,7 +590,14 @@ export function beginPointCloudLodInteraction(registry) {
   // hide stale actors before applying the uniform interaction diameter, so
   // actors leaving the draw set are not needlessly invalidated.
   viewGovernors.get(registry)?.beginInteraction();
+  pendingControllerInteractionBegins.set(
+    registry,
+    (pendingControllerInteractionBegins.get(registry) ?? 0) + 1,
+  );
   queueMicrotask(() => {
+    const pending = pendingControllerInteractionBegins.get(registry) ?? 0;
+    if (pending === 0) return;
+    pendingControllerInteractionBegins.set(registry, pending - 1);
     for (const entry of registry.values()) entry.controller?.beginInteraction();
   });
 }
@@ -595,6 +605,11 @@ export function beginPointCloudLodInteraction(registry) {
 export function endPointCloudLodInteraction(registry) {
   if (!registry) return;
   viewGovernors.get(registry)?.endInteraction();
+  const pending = pendingControllerInteractionBegins.get(registry) ?? 0;
+  if (pending > 0) {
+    pendingControllerInteractionBegins.set(registry, pending - 1);
+    return;
+  }
   for (const entry of registry.values()) entry.controller?.endInteraction();
 }
 

@@ -392,6 +392,60 @@ test("interaction presentation follows the governor's deselection batch", async 
   assert.deepEqual(calls, ["begin"]);
 });
 
+test("a synchronous interaction end cancels its deferred controller begin", async () => {
+  const {
+    beginPointCloudLodInteraction,
+    endPointCloudLodInteraction,
+  } = await loadLodModule();
+  const calls = [];
+  const registry = new Map([
+    [
+      "x",
+      {
+        controller: {
+          beginInteraction: () => calls.push("begin"),
+          endInteraction: () => calls.push("end"),
+        },
+      },
+    ],
+  ]);
+
+  beginPointCloudLodInteraction(registry);
+  endPointCloudLodInteraction(registry);
+  await Promise.resolve();
+
+  assert.deepEqual(calls, []);
+});
+
+test("deferred controller interactions remain reference counted", async () => {
+  const {
+    beginPointCloudLodInteraction,
+    endPointCloudLodInteraction,
+  } = await loadLodModule();
+  const calls = [];
+  const registry = new Map([
+    [
+      "x",
+      {
+        controller: {
+          beginInteraction: () => calls.push("begin"),
+          endInteraction: () => calls.push("end"),
+        },
+      },
+    ],
+  ]);
+
+  beginPointCloudLodInteraction(registry);
+  beginPointCloudLodInteraction(registry);
+  endPointCloudLodInteraction(registry);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["begin"]);
+
+  endPointCloudLodInteraction(registry);
+  assert.deepEqual(calls, ["begin", "end"]);
+});
+
 test("an adaptive block streams tiles and accepts frame timings", async () => {
   const {
     applyPointCloudLodBlock,

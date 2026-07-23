@@ -379,7 +379,7 @@ test("recordPointCloudLodFrame is a safe no-op on empty or invalid input", async
   recordPointCloudLodFrame(registry, 12);
 });
 
-test("interaction presentation follows the governor's deselection batch", async () => {
+test("interaction begins reach controllers synchronously", async () => {
   const { beginPointCloudLodInteraction } = await loadLodModule();
   const calls = [];
   const registry = new Map([
@@ -387,12 +387,10 @@ test("interaction presentation follows the governor's deselection batch", async 
   ]);
 
   beginPointCloudLodInteraction(registry);
-  assert.deepEqual(calls, []);
-  await Promise.resolve();
   assert.deepEqual(calls, ["begin"]);
 });
 
-test("a synchronous interaction end cancels its deferred controller begin", async () => {
+test("a synchronous interaction end preserves the lifecycle pair", async () => {
   const {
     beginPointCloudLodInteraction,
     endPointCloudLodInteraction,
@@ -412,38 +410,35 @@ test("a synchronous interaction end cancels its deferred controller begin", asyn
 
   beginPointCloudLodInteraction(registry);
   endPointCloudLodInteraction(registry);
-  await Promise.resolve();
 
-  assert.deepEqual(calls, []);
-});
-
-test("deferred controller interactions remain reference counted", async () => {
-  const {
-    beginPointCloudLodInteraction,
-    endPointCloudLodInteraction,
-  } = await loadLodModule();
-  const calls = [];
-  const registry = new Map([
-    [
-      "x",
-      {
-        controller: {
-          beginInteraction: () => calls.push("begin"),
-          endInteraction: () => calls.push("end"),
-        },
-      },
-    ],
-  ]);
-
-  beginPointCloudLodInteraction(registry);
-  beginPointCloudLodInteraction(registry);
-  endPointCloudLodInteraction(registry);
-  await Promise.resolve();
-  await Promise.resolve();
-  assert.deepEqual(calls, ["begin"]);
-
-  endPointCloudLodInteraction(registry);
   assert.deepEqual(calls, ["begin", "end"]);
+});
+
+test("nested controller interactions preserve every lifecycle event", async () => {
+  const {
+    beginPointCloudLodInteraction,
+    endPointCloudLodInteraction,
+  } = await loadLodModule();
+  const calls = [];
+  const registry = new Map([
+    [
+      "x",
+      {
+        controller: {
+          beginInteraction: () => calls.push("begin"),
+          endInteraction: () => calls.push("end"),
+        },
+      },
+    ],
+  ]);
+
+  beginPointCloudLodInteraction(registry);
+  beginPointCloudLodInteraction(registry);
+  endPointCloudLodInteraction(registry);
+  assert.deepEqual(calls, ["begin", "begin", "end"]);
+
+  endPointCloudLodInteraction(registry);
+  assert.deepEqual(calls, ["begin", "begin", "end", "end"]);
 });
 
 test("an adaptive block streams tiles and accepts frame timings", async () => {

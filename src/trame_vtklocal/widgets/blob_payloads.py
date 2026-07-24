@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from trame_vtklocal.module.node_arrays import registered_blob
 from trame_vtklocal.store import (
     REF_CELLS_PREFIX,
     REF_CONTENT_PREFIX,
@@ -64,7 +65,7 @@ def resolve_ref_payload(object_manager, ref, live_hot_array):
     """Wire bytes for one array ref (``live_hot_array(node_id, key)`` -> flat
     numpy view or None, for ``v:`` refs)."""
     if ref.startswith(REF_CONTENT_PREFIX):
-        blob = object_manager.GetBlob(ref[len(REF_CONTENT_PREFIX) :])
+        blob = registered_blob(object_manager, ref[len(REF_CONTENT_PREFIX) :])
         if blob is None:
             raise RuntimeError(f"missing object-manager blob for {ref!r}")
         return bytes(memoryview(blob))
@@ -84,13 +85,7 @@ def nodes_reference_missing_blob(object_manager, nodes):
     """Whether non-empty content arrays cite a missing manager blob."""
 
     def blob_empty(hash_value):
-        blob = object_manager.GetBlob(hash_value)
-        if blob is None:
-            return True
-        try:
-            return memoryview(blob).nbytes == 0
-        except (TypeError, ValueError):
-            return False
+        return registered_blob(object_manager, hash_value) is None
 
     for node in nodes:
         for entry in (node.get("arrays") or {}).values():

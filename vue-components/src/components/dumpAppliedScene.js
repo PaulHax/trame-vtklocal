@@ -19,6 +19,8 @@
  *   no instance-side readback).
  */
 
+import { isLiveInstance } from "./predicates";
+
 const SINGLE_REF_GETTERS = {
   activeCamera: "getActiveCamera",
   mapper: "getMapper",
@@ -56,13 +58,6 @@ const TYPED_ARRAY_NAMES = new Set([
 function isTypedArray(value) {
   if (!value) return false;
   return TYPED_ARRAY_NAMES.has(value.constructor?.name);
-}
-
-function isLiveInstance(instance) {
-  return (
-    !!instance &&
-    !(typeof instance.isDeleted === "function" && instance.isDeleted())
-  );
 }
 
 function bytesToBase64(arrayBufferView) {
@@ -227,7 +222,3 @@ export function dumpAppliedScene(
 
   return { root: String(rootId), nodes };
 }
-
-export const __test = {
-  bytesToBase64,
-};

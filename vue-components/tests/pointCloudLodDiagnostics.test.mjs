@@ -1,6 +1,5 @@
-// phase0-bench: tests for the read-only point-cloud LOD diagnostic surface
-// (describePointCloudLodRegistry + getSyncDiagnostics.pointCloudLod /
-// .lastVtkPaintMs). Remove with the rest of the phase0-bench instrumentation.
+// The read-only point-cloud LOD registry snapshot: it must tolerate every
+// half-built entry shape without throwing or mutating controller state.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
@@ -159,88 +158,4 @@ test("describePointCloudLodRegistry reports controller stats and adapter tile co
       stats: null,
     },
   ]);
-});
-
-async function makeScene() {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const renderer = {
-    get: () => ({}),
-    getActiveCamera: () => null,
-    getViewport: () => [0, 0, 1, 1],
-  };
-  const renderWindow = {
-    getRenderers: () => [renderer],
-    getRenderersByReference: () => [renderer],
-    getViews: () => [{ getSize: () => [800, 400] }],
-  };
-  const scene = useSceneSync(
-    {
-      client: {},
-      emit() {},
-      getRenderWindow: () => renderWindow,
-      renderScene() {},
-    },
-    {
-      createManagedSyncContext: () => ({
-        synchronizerContext: {},
-        syncRenderWindow: renderWindow,
-        cleanup() {},
-      }),
-      createReconciler: () => ({
-        registerBlockHandler() {},
-        teardown() {},
-        flushDeferredProps() {},
-      }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        resync() {},
-        getSeq: () => 1,
-        getDiagnostics: () => ({}),
-        onCommand: () => () => {},
-      }),
-    },
-  );
-  scene.initialize({
-    contextName: "pointcloud-lod-diagnostics-test",
-    renderWindowId: 1,
-    onRenderNeeded() {},
-  });
-  return scene;
-}
-
-test("getSyncDiagnostics exposes empty point-cloud and paint diagnostics", async () => {
-  const scene = await makeScene();
-  const diagnostics = scene.getSyncDiagnostics();
-  assert.deepEqual(diagnostics.pointCloudLod, []);
-  assert.equal(diagnostics.lastVtkPaintMs, null);
-  assert.equal(diagnostics.lastVtkPaintAt, null);
-  assert.equal(diagnostics.vtkPaintSequence, 0);
-});
-
-test("lastVtkPaintMs tracks the most recent recorded frame and resets on cleanup", async () => {
-  const scene = await makeScene();
-
-  scene.recordFrameDuration(4.5);
-  const first = scene.getSyncDiagnostics();
-  assert.equal(first.lastVtkPaintMs, 4.5);
-  assert.equal(first.vtkPaintSequence, 1);
-  assert.equal(Number.isFinite(first.lastVtkPaintAt), true);
-
-  scene.recordFrameDuration(11.25);
-  const second = scene.getSyncDiagnostics();
-  assert.equal(second.lastVtkPaintMs, 11.25);
-  assert.equal(second.vtkPaintSequence, 2);
-  assert.equal(second.lastVtkPaintAt >= first.lastVtkPaintAt, true);
-
-  // Non-finite reports are ignored rather than clobbering the last real paint.
-  scene.recordFrameDuration(Number.NaN);
-  scene.recordFrameDuration(undefined);
-  assert.equal(scene.getSyncDiagnostics().lastVtkPaintMs, 11.25);
-  assert.equal(scene.getSyncDiagnostics().vtkPaintSequence, 2);
-
-  scene.cleanup();
-  assert.equal(scene.getSyncDiagnostics().lastVtkPaintMs, null);
-  assert.equal(scene.getSyncDiagnostics().lastVtkPaintAt, null);
-  assert.equal(scene.getSyncDiagnostics().vtkPaintSequence, 0);
 });

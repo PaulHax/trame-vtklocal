@@ -46,7 +46,6 @@ from trame_vtklocal.widgets.hot_arrays import (
     HotArrayDiffer,
     live_dataset_array,
 )
-from trame_vtklocal.widgets.tick_timing import TickTiming
 
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
@@ -317,31 +316,25 @@ class ScenePublisher:
         if not batch and not commands:
             return
 
-        timing = TickTiming(self._rw_str)
-        result = self._commit_batch(batch, timing) if batch else None
-        with timing.measure("broadcast"):
-            self._broadcast(result, commands)
+        result = self._commit_batch(batch) if batch else None
+        self._broadcast(result, commands)
         self._after_publish(batch, result)
-        timing.log()
 
-    def _commit_batch(self, batch, timing):
+    def _commit_batch(self, batch):
         # One serialization scope for the whole tick: the dtc bypass walks
         # every renderer's prop tree and rewires every dtc-fed mapper, so
         # entering it once (not per step) halves that walk and the rewire
         # MTime churn. Every VTK touch below is serialization work.
         with self._tracker_suppress():
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                with timing.measure("refresh"):
-                    self._update_pipeline_producers(batch.producers)
-                    self._refresh_object_states(batch.refresh_ids)
-                with timing.measure("translate"):
-                    nodes = self._translate_candidates(batch.candidates)
-        with timing.measure("diff"):
-            tx = self._store.transact()
-            for node_id, node in nodes.items():
-                self._hot_arrays.apply(node_id, node, self._store.get(node_id), tx)
-            tx.upsert_nodes(nodes)
-            return tx.commit()
+                self._update_pipeline_producers(batch.producers)
+                self._refresh_object_states(batch.refresh_ids)
+                nodes = self._translate_candidates(batch.candidates)
+        tx = self._store.transact()
+        for node_id, node in nodes.items():
+            self._hot_arrays.apply(node_id, node, self._store.get(node_id), tx)
+        tx.upsert_nodes(nodes)
+        return tx.commit()
 
     def _broadcast(self, result, commands):
         protocol = getattr(self._server, "protocol", None)

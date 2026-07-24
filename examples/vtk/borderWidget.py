@@ -77,7 +77,7 @@ class BorderWidget(TrameApp):
                     throttle_rate=20,
                     ctx_name="view",
                 )
-                self.widget_id = self.ctx.view.register_widget(self.widget)
+                self.widget_id = self.ctx.view.register_vtk_object(self.widget)
 
         return layout
 

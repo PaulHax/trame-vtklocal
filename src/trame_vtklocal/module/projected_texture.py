@@ -63,11 +63,6 @@ def mark_projected_texture(
     return config
 
 
-def clear_projected_texture(mapper):
-    if _MAPPER_CONFIGS.pop(mapper, None) is not None:
-        mapper.Modified()
-
-
 def set_projected_texture_matrix(mapper, homography=None, world_to_clip=None):
     """Update the marked mapper's projection matrix (column-major values)."""
     config = _MAPPER_CONFIGS.get(mapper)

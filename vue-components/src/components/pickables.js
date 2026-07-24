@@ -11,6 +11,8 @@
 // never interprets tag meaning; it round-trips them verbatim in the result.
 
 import { getWorldToClipMatrix } from "./cameraMatrix";
+import { isLiveInstance, isPositiveFinite } from "./predicates";
+import { getViewportMetrics } from "./viewportMetrics";
 
 export const PICKABLE_BLOCK_KEY = "pickable";
 
@@ -24,17 +26,6 @@ export function invalidatePickableProjectionCache(registry) {
   for (const entry of registry?.values?.() || []) {
     entry.projectionCache = null;
   }
-}
-
-function isLiveInstance(instance) {
-  return (
-    !!instance &&
-    !(typeof instance.isDeleted === "function" && instance.isDeleted())
-  );
-}
-
-function isPositiveFinite(value) {
-  return Number.isFinite(value) && value > 0;
 }
 
 function normalizeConfig(config) {
@@ -117,37 +108,6 @@ export function applyPickableBlock(registry, nodeId, block, instance) {
     ...config,
   });
   return registry;
-}
-
-export function getDevicePixelRatio() {
-  const ratio = Number(globalThis.window?.devicePixelRatio);
-  return isPositiveFinite(ratio) ? ratio : 1;
-}
-
-export function getViewportMetrics(renderer, renderWindow) {
-  const viewport = renderer?.getViewport?.() || [0, 0, 1, 1];
-  const view = renderWindow?.getViews?.()?.[0] || null;
-  const size = view?.getSize?.();
-  if (!size || size.length < 2) {
-    return null;
-  }
-
-  // vtk.js view sizes are device pixels; the pointer contract is CSS pixels,
-  // so divide by the device pixel ratio to match (same as the glyph sizer).
-  const devicePixelRatio = getDevicePixelRatio();
-  const viewWidth = Number(size[0]) / devicePixelRatio;
-  const viewHeight = Number(size[1]) / devicePixelRatio;
-  const x0 = Number(viewport[0] ?? 0);
-  const y0 = Number(viewport[1] ?? 0);
-  const x1 = Number(viewport[2] ?? 1);
-  const y1 = Number(viewport[3] ?? 1);
-  const width = Math.abs(x1 - x0) * viewWidth;
-  const height = Math.abs(y1 - y0) * viewHeight;
-  if (!isPositiveFinite(width) || !isPositiveFinite(height)) {
-    return null;
-  }
-
-  return { width, height, aspect: width / height };
 }
 
 // Project a world point [x,y,z] to canvas CSS px (top-left origin), or null

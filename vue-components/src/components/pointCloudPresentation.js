@@ -1,11 +1,7 @@
-import { isLiveInstance } from "./vtkJsSync";
+import { isLiveInstance } from "./predicates";
+import { getDevicePixelRatio } from "./viewportMetrics";
 
 export const POINT_CLOUD_PRESENTATION_BLOCK_KEY = "pointCloudPresentation";
-
-function devicePixelRatio() {
-  const value = Number(globalThis.devicePixelRatio);
-  return Number.isFinite(value) && value > 0 ? value : 1;
-}
 
 export function applyPointCloudPresentationBlock(
   registry,
@@ -25,12 +21,12 @@ export function applyPointCloudPresentationBlock(
     return registry;
   }
   registry.set(id, { mapper: instance });
-  instance.setScaleFactor?.(devicePixelRatio());
+  instance.setScaleFactor?.(getDevicePixelRatio());
   return registry;
 }
 
 export function updatePointCloudPresentations(registry) {
-  const ratio = devicePixelRatio();
+  const ratio = getDevicePixelRatio();
   for (const [id, entry] of registry) {
     if (!isLiveInstance(entry.mapper)) {
       registry.delete(id);

@@ -366,17 +366,18 @@ test("malformed blocks are ignored", async () => {
   assert.equal(registry.size, 0);
 });
 
-test("recordPointCloudLodFrame is a safe no-op on empty or invalid input", async () => {
-  const { recordPointCloudLodFrame } = await loadLodModule();
+test("recordPointCloudLodHostFrame is a safe no-op on empty or invalid input", async () => {
+  const { recordPointCloudLodHostFrame } = await loadLodModule();
+  const frame = (ms) => ({ hostFrameMs: ms, vtkFrameMs: ms });
   // No throw on missing registry, empty registry, null controller, or a
   // non-finite/negative duration.
-  recordPointCloudLodFrame(null, 12);
-  recordPointCloudLodFrame(new Map(), 12);
+  recordPointCloudLodHostFrame(null, frame(12));
+  recordPointCloudLodHostFrame(new Map(), frame(12));
   const registry = new Map();
   registry.set("x", { controller: null });
-  recordPointCloudLodFrame(registry, Number.NaN);
-  recordPointCloudLodFrame(registry, -5);
-  recordPointCloudLodFrame(registry, 12);
+  recordPointCloudLodHostFrame(registry, frame(Number.NaN));
+  recordPointCloudLodHostFrame(registry, frame(-5));
+  recordPointCloudLodHostFrame(registry, frame(12));
 });
 
 test("interaction begins reach controllers synchronously", async () => {
@@ -445,7 +446,7 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
   const {
     applyPointCloudLodBlock,
     updatePointCloudLods,
-    recordPointCloudLodFrame,
+    recordPointCloudLodHostFrame,
     disposePointCloudLods,
   } = await loadLodModule();
   stubFetch();
@@ -454,12 +455,11 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
   const registry = new Map();
   const scheduleRender = () => {};
   // adaptive: true enables the frame-time budget loop under the shared
-  // GPU-memory pool's cap; minBudget is parsed through. The happy path must
-  // be unaffected.
+  // GPU-memory pool's cap. The happy path must be unaffected.
   applyPointCloudLodBlock(
     registry,
     "42",
-    { ...BLOCK, adaptive: true, minBudget: 50000, interactionTargetMs: 33 },
+    { ...BLOCK, adaptive: true },
     anchorMapper,
     scheduleRender,
   );
@@ -472,7 +472,9 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
   assert.equal(added.length, 1, "adaptive cloud still streams a tile");
 
   // Feeding paint durations reaches the controller's recordFrame without error.
-  for (let i = 0; i < 30; i += 1) recordPointCloudLodFrame(registry, 40);
+  for (let i = 0; i < 30; i += 1) {
+    recordPointCloudLodHostFrame(registry, { hostFrameMs: 40, vtkFrameMs: 40 });
+  }
   updatePointCloudLods(registry, {
     renderers: [renderer],
     renderWindow,
@@ -561,14 +563,18 @@ test("camera selection uses the inverse of anchor translation rotation and scale
   assert.equal(local.viewportHeightCssPx, 600);
 });
 
-test("viewport height is measured in CSS pixels at non-unit DPR", async () => {
-  const { getViewportHeight } = await loadLodModule();
+test("viewport metrics are measured in CSS pixels at non-unit DPR", async () => {
+  const { getViewportMetrics } = await loadModule(
+    "/src/components/viewportMetrics.js",
+  );
   const previous = globalThis.devicePixelRatio;
   globalThis.devicePixelRatio = 2;
   try {
     const renderer = { getViewport: () => [0, 0.25, 1, 0.75] };
     const renderWindow = { getViews: () => [{ getSize: () => [800, 600] }] };
-    assert.equal(getViewportHeight(renderer, renderWindow), 150);
+    const metrics = getViewportMetrics(renderer, renderWindow);
+    assert.equal(metrics.height, 150);
+    assert.equal(metrics.width, 400);
   } finally {
     if (previous === undefined) delete globalThis.devicePixelRatio;
     else globalThis.devicePixelRatio = previous;

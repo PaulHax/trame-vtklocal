@@ -195,11 +195,6 @@ def distance_to_camera_mapper_translation(vtk_mapper):
     }
 
 
-def distance_to_camera_mapper_config(vtk_mapper):
-    translation = distance_to_camera_mapper_translation(vtk_mapper)
-    return dict(translation["config"]) if translation else None
-
-
 def state_available(object_manager, obj_id):
     try:
         return bool(object_manager.GetState(obj_id))

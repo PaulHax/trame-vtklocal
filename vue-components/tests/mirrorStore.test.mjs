@@ -93,8 +93,8 @@ test("a key change upsert replaces exactly that node", async () => {
   const mirror = createMirrorStore();
   mirror.applyOps(upsertAllOps(basicNodes()));
 
-  // The two shapes v1's hand-maintained patch signature used to drop: a
-  // feature-block change and a novel top-level key.
+  // A feature-block change and a novel top-level key: the two shapes a
+  // hand-maintained patch signature would miss but a generic diff must catch.
   const mapper = basicNodes()["4"];
   mapper.blocks.pickable.tags.rev = 2;
   mapper.authority = "server";

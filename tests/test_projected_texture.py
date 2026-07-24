@@ -106,17 +106,6 @@ def test_matrix_updates_ride_the_mapper_state():
     assert ptx.projected_texture_config(mapper)["homography"] is not None
 
 
-def test_clear_restores_plain_mapper_translation():
-    api, rw, mapper, render_window_id = _make_scene()
-    ptx.mark_projected_texture(mapper, "video")
-
-    ptx.clear_projected_texture(mapper)
-    state = _translate(api, rw, render_window_id)
-
-    assert _find_nodes(state, ptx.PROJECTED_TEXTURE_TYPE) == []
-    assert ptx.projected_texture_config(mapper) is None
-
-
 def test_validation_errors():
     _, _, mapper, _ = _make_scene()
 

@@ -24,7 +24,7 @@ except ImportError:
 VTK_VERSION = vtkVersion()
 logger = logging.getLogger(__name__)
 # Stale blobs are retired in batches: verifying a hash is truly dead walks the
-# whole shared object manager (GetAllDependencies("") + GetBlobHashes), so a
+# whole shared object manager (GetAllDependencies(0) + GetBlobHashes), so a
 # per-commit sweep would pay a full-scene walk on every landmark-drag move.
 # Deferring only delays memory reclamation; protection is re-derived at flush
 # time, so a hash that came back alive meanwhile is simply kept.
@@ -177,7 +177,7 @@ class ObjectManagerAPI(LinkProtocol):
     def _active_object_blob_hashes(self):
         with self._bypass_distance_to_camera_for_push_views():
             try:
-                active_ids = list(self.vtk_object_manager.GetAllDependencies(""))
+                active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
             except (RuntimeError, TypeError, ValueError):
                 return set()
             try:
@@ -221,7 +221,6 @@ class ObjectManagerAPI(LinkProtocol):
             self._widgets[root_id] = set()
 
         self._widgets[root_id].add(dep_id)
-        # print(f"Register widget: {dep_obj.GetClassName()}={dep_id}")
 
     def unregister_widget(self, root_obj, dep_obj):
         self.vtk_object_manager.UnRegisterObject(dep_obj)
@@ -288,7 +287,7 @@ class ObjectManagerAPI(LinkProtocol):
     @property
     def active_ids(self):
         with self._bypass_distance_to_camera_for_push_views():
-            return self.vtk_object_manager.GetAllDependencies("")
+            return self.vtk_object_manager.GetAllDependencies(0)
 
     @export_rpc("vtklocal.subscribe.update")
     def update_subscription(self, obj_id, delta):
@@ -308,24 +307,10 @@ class ObjectManagerAPI(LinkProtocol):
 
     @export_rpc("vtklocal.get.state")
     def get_state(self, obj_id):
-        state = self.vtk_object_manager.GetState(obj_id)
-
-        # -------------------------------------------------
-        # DEBUG - Helper for dynamic state patching
-        # -------------------------------------------------
-        # state = json.loads(state)
-        # if state["ClassName"] == "vtkTextProperty":
-        #     state["FontSize"] *= 2
-        # elif state["ClassName"] == "vtkCubeAxesActor":
-        #     state["ScreenSize"] *= 2
-        # state = json.dumps(state)
-        # -------------------------------------------------
-
-        return state
+        return self.vtk_object_manager.GetState(obj_id)
 
     @export_rpc("vtklocal.get.hash")
     def get_hash(self, hash):
-        # print("get_hash", hash)
         return self.addAttachment(memoryview(self.vtk_object_manager.GetBlob(hash)))
 
     @export_rpc("scene.resync")
@@ -345,7 +330,6 @@ class ObjectManagerAPI(LinkProtocol):
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id):
-        # print("get_status", obj_id)
         root_object = object_for_id(self.vtk_object_manager, obj_id)
         with dtc.bypass_distance_to_camera_for_serialization(root_object):
             ids = self.vtk_object_manager.GetAllDependencies(obj_id)

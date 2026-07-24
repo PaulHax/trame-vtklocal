@@ -1,3 +1,7 @@
+// The scene API contract: every key the view API promises must be backed by a
+// real function on the scene useSceneSync returns. A key named here but never
+// implemented (or later renamed on one side) makes the whole channel a silent
+// no-op — `api[key] = undefined` throws nothing until a user drives it.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
@@ -7,38 +11,63 @@ after(async () => {
   await closeModuleLoader();
 });
 
-test("owned and external backends share every scene API key", async () => {
+async function buildScene() {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit() {},
+      getRenderWindow: () => ({ id: "rw-view-api" }),
+      renderScene() {},
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: { getInstance: () => null },
+        syncRenderWindow: { id: "sync-render-window" },
+        cleanup() {},
+      }),
+      createReconciler: () => ({
+        registerBlockHandler: () => () => {},
+        teardown() {},
+      }),
+      createSceneEngine: () => ({
+        start() {},
+        stop() {},
+        resync() {},
+        onCommand: () => () => {},
+        getDiagnostics: () => ({}),
+      }),
+    },
+  );
+  scene.initialize({ contextName: "ctx", renderWindowId: 1 });
+  return scene;
+}
+
+test("every promised view API key is implemented by the scene", async () => {
+  const { COMMON_VIEW_API_KEYS } = await loadModule(
+    "/src/components/viewApi.js",
+  );
+  const scene = await buildScene();
+
+  const missing = COMMON_VIEW_API_KEYS.filter(
+    (key) => typeof scene[key] !== "function",
+  );
+  assert.deepEqual(missing, [], `scene is missing: ${missing.join(", ")}`);
+});
+
+test("a backend may add methods but never shadow a common API key", async () => {
   const { COMMON_VIEW_API_KEYS, createViewApi } = await loadModule(
     "/src/components/viewApi.js",
   );
-  const scene = Object.fromEntries(
-    COMMON_VIEW_API_KEYS.map((key) => [key, () => key]),
-  );
-  const owned = createViewApi(scene, {
+  const scene = await buildScene();
+  const api = createViewApi(scene, {
     container: {},
     render() {},
     resize() {},
   });
-  const external = createViewApi(scene, {
-    initializeForExternalContext() {},
-    renderExternal() {},
-    onRenderRequested() {},
-    setRepaintCallback() {},
-  });
-  const backendKeys = new Set([
-    "container",
-    "render",
-    "resize",
-    "initializeForExternalContext",
-    "renderExternal",
-    "onRenderRequested",
-    "setRepaintCallback",
-  ]);
-  const common = (api) =>
-    Object.keys(api)
-      .filter((key) => !backendKeys.has(key))
-      .sort();
 
-  assert.deepEqual(common(owned), [...COMMON_VIEW_API_KEYS].sort());
-  assert.deepEqual(common(external), [...COMMON_VIEW_API_KEYS].sort());
+  for (const key of COMMON_VIEW_API_KEYS) {
+    assert.equal(api[key], scene[key], `${key} is not the scene's own method`);
+  }
+  assert.equal(typeof api.render, "function");
 });

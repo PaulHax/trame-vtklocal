@@ -51,7 +51,7 @@ class TrameApp:
                 if WASM:
                     self.html_view = vtklocal.LocalView(self.render_window)
                     for w in self.widgets:
-                        self.html_view.register_widget(w)
+                        self.html_view.register_vtk_object(w)
                 else:
                     self.html_view = vtk_widgets.VtkRemoteView(
                         self.render_window, interactive_ratio=1

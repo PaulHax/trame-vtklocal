@@ -234,8 +234,7 @@ def _mapper_input_port_ids(reader, state):
 
     Stops at the first port with no node-worthy dataset so the list index
     always equals the port number. A port with several connections keeps the
-    last one — the same effective state v1's sequential setInputData calls
-    left on the client.
+    last one, matching the client's sequential ``setInputData`` semantics.
     """
     port_ids = []
     for port_value in state.get("InputDataObjects") or []:
@@ -247,7 +246,7 @@ def _mapper_input_port_ids(reader, state):
 
 
 def _distance_to_camera_block(reader, vtkjs_type, vtk_mapper):
-    """Pre-filter bypass block, as v1 ``dtc.prepare_mapper_translation``."""
+    """Distance-to-camera bypass block for a glyph mapper, or None."""
     if vtkjs_type != "vtkGlyph3DMapper":
         return None
     translation = dtc.distance_to_camera_mapper_translation(vtk_mapper)

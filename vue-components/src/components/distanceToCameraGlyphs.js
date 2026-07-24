@@ -1,5 +1,9 @@
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 
+import { getWorldToClipMatrix } from "./cameraMatrix";
+import { isLiveInstance, isPositiveFinite } from "./predicates";
+import { getViewportMetrics } from "./viewportMetrics";
+
 export const DISTANCE_TO_CAMERA_BLOCK_KEY = "distanceToCamera";
 export const DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera";
 
@@ -13,17 +17,6 @@ const EPSILON = 1e-12;
 
 export function createDistanceToCameraGlyphRegistry() {
   return new Map();
-}
-
-function isLiveInstance(instance) {
-  return (
-    !!instance &&
-    !(typeof instance.isDeleted === "function" && instance.isDeleted())
-  );
-}
-
-function isPositiveFinite(value) {
-  return Number.isFinite(value) && value > 0;
 }
 
 function validArrayName(value) {
@@ -151,73 +144,6 @@ export function bindDistanceToCameraInteractorRenderEvent(
   return interactor.onRenderEvent(() => {
     updateScales();
   });
-}
-
-function getDevicePixelRatio() {
-  const ratio = Number(globalThis.window?.devicePixelRatio);
-  return isPositiveFinite(ratio) ? ratio : 1;
-}
-
-function getViewportMetrics(renderer, renderWindow) {
-  const viewport = renderer?.getViewport?.() || [0, 0, 1, 1];
-  const view = renderWindow?.getViews?.()?.[0] || null;
-  const size = view?.getSize?.();
-  if (!size || size.length < 2) {
-    return null;
-  }
-
-  // vtk.js view sizes are device pixels; vtkDistanceToCamera screenSize is
-  // treated as CSS pixels to match the app's screen-space keypoint contract.
-  const devicePixelRatio = getDevicePixelRatio();
-  const viewWidth = Number(size[0]) / devicePixelRatio;
-  const viewHeight = Number(size[1]) / devicePixelRatio;
-  const x0 = Number(viewport[0] ?? 0);
-  const y0 = Number(viewport[1] ?? 0);
-  const x1 = Number(viewport[2] ?? 1);
-  const y1 = Number(viewport[3] ?? 1);
-  const width = Math.abs(x1 - x0) * viewWidth;
-  const height = Math.abs(y1 - y0) * viewHeight;
-  if (!isPositiveFinite(width) || !isPositiveFinite(height)) {
-    return null;
-  }
-
-  return {
-    width,
-    height,
-    aspect: width / height,
-    viewport: [x0, y0, x1, y1],
-  };
-}
-
-function getWorldToClipMatrix(camera, aspect) {
-  // getCompositeProjectionMatrix already includes user projection matrices and
-  // physicalScale, so sizing follows the actual rendered transform.
-  const matrix = camera?.getCompositeProjectionMatrix?.(aspect, -1, 1);
-  if (!matrix || matrix.length !== 16) {
-    return null;
-  }
-  return transposeMatrix(matrix);
-}
-
-function transposeMatrix(matrix) {
-  return [
-    matrix[0],
-    matrix[4],
-    matrix[8],
-    matrix[12],
-    matrix[1],
-    matrix[5],
-    matrix[9],
-    matrix[13],
-    matrix[2],
-    matrix[6],
-    matrix[10],
-    matrix[14],
-    matrix[3],
-    matrix[7],
-    matrix[11],
-    matrix[15],
-  ];
 }
 
 function transformPoint(out, point, matrix) {

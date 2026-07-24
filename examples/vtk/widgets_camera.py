@@ -94,7 +94,7 @@ class App:
             ):
                 if WASM:
                     self.html_view = vtklocal.LocalView(self.render_window)
-                    self.widget_id = self.html_view.register_widget(self.widget)
+                    self.widget_id = self.html_view.register_vtk_object(self.widget)
                 else:
                     self.html_view = vtk_widgets.VtkRemoteView(self.render_window)
 

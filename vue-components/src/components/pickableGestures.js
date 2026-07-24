@@ -1,16 +1,15 @@
 // Client-side drag/click gesture state machine for pickable glyphs.
 //
-// The app used to run this lifecycle itself (map_init.js); it now lives in the
-// fork so every consumer gets the same rAF-throttled drag, a guaranteed
-// terminal end, and self-contained event payloads. Each emitted event carries
+// Every consumer gets the same rAF-throttled drag, a guaranteed terminal end,
+// and self-contained event payloads. Each emitted event carries
 // the camera matrices, viewport, and applied scene seq it was measured
 // against (all read at build time), so the server needs no snapshot cache to
 // resolve it: the event describes its own frame and its staleness is the
 // generic seq check.
 //
 // Everything app-specific crosses as opaque data — `context` (an arbitrary
-// blob set via setPointerContext) and `pick.tags` (round-tripped from the G1
-// registry). The fork never interprets either.
+// blob set via setPointerContext) and `pick.tags` (round-tripped from the app's
+// pickable registry). The fork never interprets either.
 
 const noop = () => {};
 

@@ -1,4 +1,4 @@
-// Node-vs-mirror reconcile applier (push sync v2).
+// Node-vs-mirror reconcile applier.
 //
 // Applies broadcast ops to live vtk.js instances by diffing each upserted
 // node against the client mirror: changed props -> instance.set, ref-slot
@@ -20,6 +20,7 @@ import {
   typedArrayConstructor,
 } from "./arrayBinding";
 import { viewAsTypedArray } from "../sync/base64";
+import { isLiveInstance } from "../predicates";
 
 // Ref-slot -> vtk.js call map (pinned by the wire protocol).
 const SINGLE_REF_SETTERS = {
@@ -41,13 +42,6 @@ const INDEXED_REF_SETTERS = {
   grayTransferFunction: "setGrayTransferFunction",
   scalarOpacity: "setScalarOpacity",
 };
-
-export function isLiveInstance(instance) {
-  return (
-    !!instance &&
-    !(typeof instance.isDeleted === "function" && instance.isDeleted())
-  );
-}
 
 function slotIds(value) {
   if (value === undefined || value === null) {
@@ -200,51 +194,22 @@ export function createReconciler({
     }
   }
 
+  function drainListSlot(instance, listSpec) {
+    for (const item of [...(instance[listSpec.read]?.() || [])]) {
+      instance[listSpec.remove](item);
+    }
+  }
+
   // Re-apply a slot from scratch against live state — used after an instance
   // rebuild, when the referrer's collections may hold a stale (replaced)
-  // instance that id lookups can no longer name.
+  // instance that id lookups can no longer name. Draining those collections
+  // first turns the diff below into a full re-apply against an empty previous.
   function forceApplySlot(instance, slot, value) {
-    const ids = slotIds(value);
-    if (slot === "inputs") {
-      ids.forEach((refId, port) => {
-        const dataset = liveInstanceFor(refId);
-        if (dataset) {
-          instance.setInputData(dataset, port);
-        }
-      });
-      return;
-    }
-    const singleSetter = SINGLE_REF_SETTERS[slot];
-    if (singleSetter) {
-      const child = liveInstanceFor(ids[0]);
-      if (child && typeof instance[singleSetter] === "function") {
-        instance[singleSetter](child);
-      }
-      return;
-    }
     const listSpec = LIST_REF_SLOTS[slot];
     if (listSpec) {
-      const current = instance[listSpec.read]?.() || [];
-      for (const item of [...current]) {
-        instance[listSpec.remove](item);
-      }
-      for (const refId of ids) {
-        const child = liveInstanceFor(refId);
-        if (child) {
-          instance[listSpec.add](child);
-        }
-      }
-      return;
+      drainListSlot(instance, listSpec);
     }
-    const indexedSetter = INDEXED_REF_SETTERS[slot];
-    if (indexedSetter) {
-      ids.forEach((refId, i) => {
-        const child = liveInstanceFor(refId);
-        if (child) {
-          instance[indexedSetter](i, child);
-        }
-      });
-    }
+    applySlotDiff(instance, slot, undefined, value);
   }
 
   function rewireRebuilt(rebuiltIds, mirror) {
@@ -276,7 +241,7 @@ export function createReconciler({
       }
     }
     // Props absent from the new node are left at their current value — the
-    // server emits explicit values for anything it wants reset (v1 parity).
+    // server emits explicit values for anything it wants reset.
     if (count) {
       instance.set(changed);
     }
@@ -339,9 +304,7 @@ export function createReconciler({
     // A widget-owned render window can carry renderers from a previous
     // binding when the first root node arrives; the diff below is against an
     // empty mirror, so drain by hand once.
-    for (const renderer of [...(instance.getRenderers?.() || [])]) {
-      instance.removeRenderer(renderer);
-    }
+    drainListSlot(instance, LIST_REF_SLOTS.renderers);
   }
 
   function applyNodeDiff(id, node, prev, cache) {

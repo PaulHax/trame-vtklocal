@@ -79,11 +79,8 @@ def test_marked_mapper_translates_with_type_and_block():
     # No configured point budget: the client default applies (fixed mode) and
     # adaptive mode has no point ceiling at all.
     assert "pointBudget" not in block
-    # Adaptive quality is off by default and carries no tuning fields.
+    # Adaptive quality is off by default.
     assert block["adaptive"] is False
-    assert "minBudget" not in block
-    assert "stationaryTargetMs" not in block
-    assert "interactionTargetMs" not in block
     assert "refinementCutoffPx" not in block
     # Config props ride the block, never the mapper props.
     assert "assetId" not in node.get("props", {})
@@ -95,9 +92,6 @@ def test_adaptive_config_reaches_the_wire():
         mapper,
         **CONFIG,
         adaptive=True,
-        min_budget=250_000,
-        stationary_target_ms=16.0,
-        interaction_target_ms=33.0,
     )
     state = _translate(api, rw, render_window_id)
 
@@ -107,9 +101,6 @@ def test_adaptive_config_reaches_the_wire():
     # Adaptive mode carries no point ceiling: frame time and the client's
     # GPU-memory budget govern.
     assert "pointBudget" not in block
-    assert block["minBudget"] == 250_000
-    assert block["stationaryTargetMs"] == 16.0
-    assert block["interactionTargetMs"] == 33.0
 
 
 def test_refinement_cutoff_reaches_the_wire():
@@ -194,15 +185,3 @@ def test_validation_errors():
         )
     with pytest.raises(ValueError):
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "point_budget": 0})
-    with pytest.raises(ValueError):
-        pcl.mark_point_cloud_lod(
-            mapper, **{**CONFIG, "adaptive": True, "min_budget": 0}
-        )
-    with pytest.raises(ValueError):
-        pcl.mark_point_cloud_lod(
-            mapper, **{**CONFIG, "adaptive": True, "stationary_target_ms": 0}
-        )
-    with pytest.raises(ValueError):
-        pcl.mark_point_cloud_lod(
-            mapper, **{**CONFIG, "adaptive": True, "interaction_target_ms": -1}
-        )

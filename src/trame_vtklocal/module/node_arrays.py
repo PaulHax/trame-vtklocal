@@ -1,11 +1,9 @@
-"""Dataset array entries for the flat-node translator (push sync v2).
+"""Dataset array entries for the flat-node translator.
 
 Builds the ``arrays`` section of a dataset node: polydata topology
 (points/verts/lines/polys/strips) and field-data arrays, each carrying a blob
 ref instead of content — ``c:<hash>`` for content-addressed blobs,
-``c2:<connHash>:<offHash>`` for packed vtk.js cell arrays. Same bridging
-knowledge as the v1 translator (md5 field-array blobs, cell packing shape),
-new output shape.
+``c2:<connHash>:<offHash>`` for packed vtk.js cell arrays.
 """
 
 from __future__ import annotations
@@ -21,9 +19,9 @@ from trame_vtklocal.module.vtkjs_translator import (
     FIELD_DATA_GETTERS,
     POLYDATA_ARRAYS,
     get_ref_id,
-    js_datatype,
     to_camel_case,
 )
+from trame_vtklocal.module.array_datatypes import js_datatype
 from trame_vtklocal.store import REF_CELLS_PREFIX, REF_CONTENT_PREFIX
 
 
@@ -98,23 +96,32 @@ def _topology_entry(reader, ref_value, spec):
 _FIELD_BLOB_CACHE = weakref.WeakKeyDictionary()
 
 
-def _blob_present(object_manager, hash_value):
+def registered_blob(object_manager, hash_value):
+    """The blob registered at ``hash_value``, or None when it is missing.
+
+    VTK >= 9.6 answers an unknown hash with an empty array instead of None,
+    so emptiness -- not identity -- is the liveness test.
+    """
     try:
         blob = object_manager.GetBlob(hash_value)
     except (RuntimeError, TypeError, ValueError):
-        return False
+        return None
     if blob is None:
-        return False
+        return None
     try:
-        return memoryview(blob).nbytes > 0
+        return blob if memoryview(blob).nbytes else None
     except (TypeError, ValueError):
-        return True
+        return blob
+
+
+def _blob_present(object_manager, hash_value):
+    return registered_blob(object_manager, hash_value) is not None
 
 
 def _register_field_array_blob(object_manager, array, location):
     # vtkObjectManager doesn't serialize vtkDataSetAttributes arrays, so
     # bridge them by hand: md5-address the raw bytes and register the blob
-    # under that hash (same gap-bridging as v1). Re-hashing + re-registering
+    # under that hash. Re-hashing + re-registering
     # every translate is O(bytes) per attribute array, so the entry is cached
     # by MTime; the blob's presence is re-checked on a hit because the blob
     # GC may have retired it while the owning node was out of the scene.

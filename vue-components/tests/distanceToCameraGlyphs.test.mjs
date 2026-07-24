@@ -84,25 +84,13 @@ function lockViewportProjection(projection, { zoom, pan }) {
 }
 
 async function withDevicePixelRatio(ratio, run) {
-  const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, "window");
-  const previousWindow = globalThis.window;
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    writable: true,
-    value: {
-      ...(previousWindow || {}),
-      devicePixelRatio: ratio,
-    },
-  });
-
+  const previous = globalThis.devicePixelRatio;
+  globalThis.devicePixelRatio = ratio;
   try {
     return await run();
   } finally {
-    if (hadWindow) {
-      globalThis.window = previousWindow;
-    } else {
-      delete globalThis.window;
-    }
+    if (previous === undefined) delete globalThis.devicePixelRatio;
+    else globalThis.devicePixelRatio = previous;
   }
 }
 

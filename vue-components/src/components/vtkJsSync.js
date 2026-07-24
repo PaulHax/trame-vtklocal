@@ -7,12 +7,7 @@ import "./pointGaussianMapper";
 // Registers the streamed point-cloud LOD anchor state-sync type mapping.
 import "./pointCloudLodMapper";
 
-export function isLiveInstance(instance) {
-  return (
-    !!instance &&
-    !(typeof instance.isDeleted === "function" && instance.isDeleted())
-  );
-}
+import { isLiveInstance } from "./predicates";
 
 export function createSyncContext(contextName, renderWindow) {
   const synchronizerContext =

@@ -55,9 +55,6 @@ def mark_point_cloud_lod(
     has_rgb=True,
     point_budget=None,
     adaptive=False,
-    min_budget=None,
-    stationary_target_ms=None,
-    interaction_target_ms=None,
     refinement_cutoff_px=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
@@ -67,13 +64,10 @@ def mark_point_cloud_lod(
     metric spacing arrive in each hierarchy response.
 
     With ``adaptive`` set, the client adapts the visible-point budget to
-    measured render duration (Phase 5), capped only by the client's shared
-    GPU-memory budget — there is no configured point ceiling, and
-    ``point_budget`` is ignored. ``min_budget`` / ``stationary_target_ms`` /
-    ``interaction_target_ms`` tune the loop; omit them to use the client
-    defaults. Without ``adaptive``, ``point_budget`` is the fixed
-    visible-point budget (client default 2,000,000), still capped by the
-    memory budget.
+    measured render duration, capped only by the client's shared GPU-memory
+    budget — there is no configured point ceiling, and ``point_budget`` is
+    ignored. Without ``adaptive``, ``point_budget`` is the fixed visible-point
+    budget (client default 2,000,000), still capped by the memory budget.
 
     ``presentation`` is an explicit Fixed CSS-pixel diameter or Auto scale and
     clamp contract. The browser owns projected-density calculation.
@@ -102,25 +96,6 @@ def mark_point_cloud_lod(
         if not point_budget > 0:
             raise ValueError(f"point_budget must be > 0, got {point_budget}")
         config["pointBudget"] = point_budget
-    if min_budget is not None:
-        min_budget = int(min_budget)
-        if not min_budget > 0:
-            raise ValueError(f"min_budget must be > 0, got {min_budget}")
-        config["minBudget"] = min_budget
-    if stationary_target_ms is not None:
-        stationary_target_ms = float(stationary_target_ms)
-        if not stationary_target_ms > 0:
-            raise ValueError(
-                f"stationary_target_ms must be > 0, got {stationary_target_ms}"
-            )
-        config["stationaryTargetMs"] = stationary_target_ms
-    if interaction_target_ms is not None:
-        interaction_target_ms = float(interaction_target_ms)
-        if not interaction_target_ms > 0:
-            raise ValueError(
-                f"interaction_target_ms must be > 0, got {interaction_target_ms}"
-            )
-        config["interactionTargetMs"] = interaction_target_ms
     if refinement_cutoff_px is not None:
         refinement_cutoff_px = float(refinement_cutoff_px)
         if refinement_cutoff_px < 0:

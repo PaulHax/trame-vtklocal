@@ -3,7 +3,6 @@ import io
 import json
 import zipfile
 import base64
-import warnings
 from pathlib import Path
 from trame_client.widgets.core import AbstractElement
 from trame_vtklocal import module
@@ -216,13 +215,6 @@ class LocalView(HtmlElement):
 
         return self.get_wasm_id(vtk_instance)
 
-    def register_widget(self, w):
-        """Register external element (i.e. widget) into the scene so it can be managed and return its wasm_id"""
-        warnings.warn(
-            "register_widget() is deprecated, use register_vtk_object() instead"
-        )
-        return self.register_vtk_object(w)
-
     def unregister_vtk_object(self, vtk_instance):
         """Unregister external element (i.e. widget) from the scene so it can removed from tracking"""
         if vtk_instance in self.__registered_obj:
@@ -236,13 +228,6 @@ class LocalView(HtmlElement):
         for vtk_instance in self.__registered_obj:
             self.api.unregister(self._render_window, vtk_instance)
             self.__registered_obj.remove(vtk_instance)
-
-    def unregister_widgets(self):
-        """Unregister all external element (i.e. widget) from the scene"""
-        warnings.warn(
-            "unregister_widgets() is deprecated, use unregister_all_vtk_objects() instead"
-        )
-        self.unregister_all_vtk_objects()
 
     def export(self, format="zip", **kwargs):
         """Export standalone scene for WASMViewer

@@ -1,10 +1,9 @@
-"""Dirty-candidate tracking for the scene publisher (push sync v2).
+"""Dirty-candidate tracking for the scene publisher.
 
-Extracted from the v1 ``push_sync.py`` observer machinery: ``ModifiedEvent``
-observers over the render window's dependency graph, dataset-children
-walkers, pipeline-producer observers, structural collection observers, the
-suppress-dirty context manager, the live-ids filter that fixed the
-33k-observer leak, and the mtime snapshot fallback (now a sweep).
+Owns the ``ModifiedEvent`` observers over the render window's dependency
+graph, the dataset-children and pipeline-producer walkers, the structural
+collection observers, the suppress-dirty context manager, the live-ids
+filter, and the mtime snapshot sweep.
 
 The tracker's ONLY job is to produce *candidate* dirty ids per publish tick.
 False positives are cheap — the store's generic diff drops no-op upserts —
@@ -24,7 +23,7 @@ DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
 
 
 # ---------------------------------------------------------------------------
-# VTK-side iteration helpers (moved from v1 ``_push_sync_helpers``)
+# VTK-side iteration helpers
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +292,7 @@ class DirtyTracker:
                 child_id = str(self._object_manager.GetId(child))
             except (TypeError, ValueError, RuntimeError):
                 continue
-            # Live-ids filter (v1 lesson): iteration yields transient Python
+            # Live-ids filter: iteration yields transient Python
             # wrappers that GetId() assigns fresh ids to on every call;
             # observing them grows _observed_objects unboundedly (~33k in
             # 5 min of playback) and pins observer callbacks.

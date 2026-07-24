@@ -22,20 +22,15 @@ import {
   applyPickableBlock,
   createPickableRegistry,
   describePickableRegistry,
-  getDevicePixelRatio,
-  getViewportMetrics,
   pickAt as pickAtRegistry,
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
+import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 import {
   applyPointCloudLodBlock,
-  // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
-  describePointCloudLodRegistry,
-  // --- end phase0-bench ---
   disposePointCloudLods,
   beginPointCloudLodInteraction,
   endPointCloudLodInteraction,
-  recordPointCloudLodFrame,
   recordPointCloudLodHostFrame,
   updatePointCloudLods,
   POINT_CLOUD_LOD_BLOCK_KEY,
@@ -86,14 +81,9 @@ export function useSceneSync(
   const pickables = createPickableRegistry();
   const pointCloudLods = new Map();
   const pointCloudPresentations = new Map();
-  // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
-  // Most recent paint wall-time reported by the view, surfaced through
-  // getSyncDiagnostics(). Assignment only — no work added to the render path.
-  let lastVtkPaintMs = null;
-  let lastVtkPaintAt = null;
-  let vtkPaintSequence = 0;
+  // Once the host reports whole-frame metrics, the raw paint durations stop
+  // being fed to the budget loop so the same frame is never counted twice.
   let hostFrameFeedbackSeen = false;
-  // --- end phase0-bench ---
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -304,12 +294,7 @@ export function useSceneSync(
     pickables.clear();
     disposePointCloudLods(pointCloudLods);
     pointCloudPresentations.clear();
-    // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
-    lastVtkPaintMs = null;
-    lastVtkPaintAt = null;
-    vtkPaintSequence = 0;
     hostFrameFeedbackSeen = false;
-    // --- end phase0-bench ---
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -409,10 +394,7 @@ export function useSceneSync(
         },
         onSnapshotApplied(snapshot) {
           if (disposed) return;
-          bindPrimaryCameraToRenderers();
-          updateDistanceToCameraGlyphsForRender();
-          updatePointCloudLodsForRender();
-          dragPreview.reapply();
+          afterApply();
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
           if (!snapshot.commands?.some((command) => command?.render === true)) {
@@ -421,10 +403,7 @@ export function useSceneSync(
         },
         onApplied(message) {
           if (disposed) return;
-          bindPrimaryCameraToRenderers();
-          updateDistanceToCameraGlyphsForRender();
-          updatePointCloudLodsForRender();
-          dragPreview.reapply();
+          afterApply();
           noteMessageApplied(message);
           if (!Array.isArray(message?.ops) || message.ops.length) {
             renderRequestCallback?.();
@@ -497,12 +476,6 @@ export function useSceneSync(
       externalTextures: peekExternalTextures(
         getRenderWindow?.() || null,
       )?.describe() ?? { size: 0, entries: [] },
-      // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
-      pointCloudLod: describePointCloudLodRegistry(pointCloudLods),
-      lastVtkPaintMs,
-      lastVtkPaintAt,
-      vtkPaintSequence,
-      // --- end phase0-bench ---
     };
   }
 
@@ -542,29 +515,28 @@ export function useSceneSync(
     });
   }
 
+  // The post-apply pass every applied message runs, snapshot or ops.
+  function afterApply() {
+    bindPrimaryCameraToRenderers();
+    updateDistanceToCameraGlyphsForRender();
+    updatePointCloudLodsForRender();
+    dragPreview.reapply();
+  }
+
   // The view measures each paint's wall-time and reports it here; it feeds the
   // adaptive-quality budget loop for any streamed LOD cloud (a no-op when no
   // cloud has adaptive enabled).
   function recordFrameDuration(durationMs) {
-    // --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
-    if (Number.isFinite(durationMs)) {
-      lastVtkPaintMs = durationMs;
-      lastVtkPaintAt = performance.now();
-      vtkPaintSequence += 1;
-    }
-    // --- end phase0-bench ---
     if (!hostFrameFeedbackSeen) {
-      recordPointCloudLodFrame(pointCloudLods, durationMs);
+      recordPointCloudLodHostFrame(pointCloudLods, {
+        hostFrameMs: durationMs,
+        vtkFrameMs: durationMs,
+      });
     }
   }
 
   function recordHostFrame(metrics) {
     hostFrameFeedbackSeen = true;
-    if (Number.isFinite(metrics?.vtkFrameMs)) {
-      lastVtkPaintMs = metrics.vtkFrameMs;
-      lastVtkPaintAt = performance.now();
-      vtkPaintSequence += 1;
-    }
     recordPointCloudLodHostFrame(pointCloudLods, metrics);
   }
 

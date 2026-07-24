@@ -29,9 +29,14 @@ import {
 // module scope, so the core entry stays loadable without the peer.
 import { createRendererAdapter } from "pointcloud-lod/vtk";
 
-import { isLiveInstance } from "./vtkJsSync";
+import { mat4 } from "../glMatrix";
+import { getWorldToClipMatrix } from "./cameraMatrix";
+import { isLiveInstance, isPositiveFinite } from "./predicates";
+import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 
 export const POINT_CLOUD_LOD_BLOCK_KEY = "pointCloudLod";
+
+const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 // One memory pool per page: every LOD controller — across all views and
 // registries — renders on the same GPU, so resident tile bytes come out of
@@ -46,40 +51,16 @@ function getSharedMemoryPool() {
   return sharedMemoryPool;
 }
 
-function getViewGovernor(registry, options = {}) {
+function getViewGovernor(registry) {
   let governor = viewGovernors.get(registry);
   if (!governor) {
-    governor = createViewGovernor(options);
+    governor = createViewGovernor();
     viewGovernors.set(registry, governor);
   }
   return governor;
 }
 
 const DEG_TO_RAD = Math.PI / 180;
-
-function isPositiveFinite(value) {
-  return Number.isFinite(value) && value > 0;
-}
-
-// The adaptive-quality block (Phase 5). `adaptive` truthy enables the library's
-// render-duration-driven budget loop; frame time and the shared GPU-memory
-// pool govern the budget — there is no configured point ceiling. The tuning
-// fields are optional — the library supplies defaults for anything omitted.
-function normalizeAdaptive(block) {
-  if (!block || !block.adaptive) {
-    return false;
-  }
-  const options = {};
-  if (isPositiveFinite(block.minBudget))
-    options.minBudget = Number(block.minBudget);
-  if (isPositiveFinite(block.stationaryTargetMs)) {
-    options.stationaryTargetMs = Number(block.stationaryTargetMs);
-  }
-  if (isPositiveFinite(block.interactionTargetMs)) {
-    options.interactionTargetMs = Number(block.interactionTargetMs);
-  }
-  return options;
-}
 
 function normalizeConfig(block) {
   if (!block || typeof block !== "object") {
@@ -120,84 +101,36 @@ function normalizeConfig(block) {
       Number.isFinite(refinementCutoffPx) && refinementCutoffPx >= 0
         ? Number(refinementCutoffPx)
         : undefined,
-    adaptive: normalizeAdaptive(block),
+    adaptive: !!block.adaptive,
   };
-}
-
-function transpose16(m) {
-  const out = new Array(16);
-  for (let row = 0; row < 4; row += 1) {
-    for (let column = 0; column < 4; column += 1) {
-      out[column * 4 + row] = m[row * 4 + column];
-    }
-  }
-  return out;
-}
-
-export function getViewportHeight(renderer, renderWindow) {
-  const viewport = renderer?.getViewport?.() || [0, 0, 1, 1];
-  const size = renderWindow?.getViews?.()?.[0]?.getSize?.();
-  if (!size || size.length < 2) {
-    return null;
-  }
-  const dpr = isPositiveFinite(globalThis.devicePixelRatio)
-    ? Number(globalThis.devicePixelRatio)
-    : 1;
-  const height =
-    (Math.abs(viewport[3] - viewport[1]) * Number(size[1])) / dpr;
-  return isPositiveFinite(height) ? height : null;
 }
 
 function readCameraView(renderer, renderWindow) {
   const camera = renderer?.getActiveCamera?.();
-  const viewportHeight = getViewportHeight(renderer, renderWindow);
-  if (!camera || viewportHeight === null) {
+  const metrics = getViewportMetrics(renderer, renderWindow);
+  if (!camera || !metrics) {
     return null;
   }
-  const aspect = (() => {
-    const size = renderWindow.getViews()[0].getSize();
-    const viewport = renderer.getViewport?.() || [0, 0, 1, 1];
-    const dpr = isPositiveFinite(globalThis.devicePixelRatio)
-      ? Number(globalThis.devicePixelRatio)
-      : 1;
-    const width =
-      (Math.abs(viewport[2] - viewport[0]) * Number(size[0])) / dpr;
-    return width > 0 && viewportHeight > 0 ? width / viewportHeight : 1;
-  })();
-  // getCompositeProjectionMatrix returns the world-to-clip matrix row-major;
-  // the library's frustum math wants column-major.
-  const rowMajor = camera.getCompositeProjectionMatrix?.(aspect, -1, 1);
+  // The library's frustum math wants the column-major world-to-clip layout.
+  const viewProj = getWorldToClipMatrix(camera, metrics.aspect);
   const position = camera.getPosition?.();
   const viewAngle = camera.getViewAngle?.();
-  if (!rowMajor || rowMajor.length !== 16 || !position) {
+  if (!viewProj || !position) {
     return null;
   }
   return {
-    viewProj: transpose16(rowMajor),
+    viewProj,
     position: [position[0], position[1], position[2]],
     fovY:
       (Number.isFinite(viewAngle) && viewAngle > 0 ? viewAngle : 30) *
       DEG_TO_RAD,
-    viewportHeightCssPx: viewportHeight,
+    viewportHeightCssPx: metrics.height,
   };
 }
 
-function multiplyMat4(a, b) {
-  const out = new Array(16);
-  for (let column = 0; column < 4; column += 1) {
-    for (let row = 0; row < 4; row += 1) {
-      let value = 0;
-      for (let k = 0; k < 4; k += 1) {
-        value += a[k * 4 + row] * b[column * 4 + k];
-      }
-      out[column * 4 + row] = value;
-    }
-  }
-  return out;
-}
-
-function inverseSimilarity(matrix) {
-  const m = matrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+// The library's frustum/SSE math assumes a uniform-scale anchor transform:
+// affine bottom row, orthogonal columns, equal column lengths.
+function isSimilarity(m) {
   if (
     m.length !== 16 ||
     !Array.from(m).every(Number.isFinite) ||
@@ -206,7 +139,7 @@ function inverseSimilarity(matrix) {
     Math.abs(m[11]) > 1e-9 ||
     Math.abs(m[15] - 1) > 1e-9
   ) {
-    return null;
+    return false;
   }
   const columns = [
     [m[0], m[1], m[2]],
@@ -220,7 +153,7 @@ function inverseSimilarity(matrix) {
     !isPositiveFinite(scale) ||
     lengths.some((length) => Math.abs(length - scale) > tolerance)
   ) {
-    return null;
+    return false;
   }
   for (let left = 0; left < 3; left += 1) {
     for (let right = left + 1; right < 3; right += 1) {
@@ -228,45 +161,10 @@ function inverseSimilarity(matrix) {
         (sum, value, axis) => sum + value * columns[right][axis],
         0,
       );
-      if (Math.abs(dot) > scale * tolerance) return null;
+      if (Math.abs(dot) > scale * tolerance) return false;
     }
   }
-  const inverseScaleSquared = 1 / (scale * scale);
-  const inverse = [
-    m[0] * inverseScaleSquared,
-    m[4] * inverseScaleSquared,
-    m[8] * inverseScaleSquared,
-    0,
-    m[1] * inverseScaleSquared,
-    m[5] * inverseScaleSquared,
-    m[9] * inverseScaleSquared,
-    0,
-    m[2] * inverseScaleSquared,
-    m[6] * inverseScaleSquared,
-    m[10] * inverseScaleSquared,
-    0,
-    0,
-    0,
-    0,
-    1,
-  ];
-  const translation = [m[12], m[13], m[14]];
-  inverse[12] = -(
-    inverse[0] * translation[0] +
-    inverse[4] * translation[1] +
-    inverse[8] * translation[2]
-  );
-  inverse[13] = -(
-    inverse[1] * translation[0] +
-    inverse[5] * translation[1] +
-    inverse[9] * translation[2]
-  );
-  inverse[14] = -(
-    inverse[2] * translation[0] +
-    inverse[6] * translation[1] +
-    inverse[10] * translation[2]
-  );
-  return inverse;
+  return true;
 }
 
 function transformPoint(matrix, point) {
@@ -288,13 +186,14 @@ function transformPoint(matrix, point) {
 
 export function cameraInAnchorCoordinates(view, matrix) {
   if (!view) return null;
-  const inverse = inverseSimilarity(matrix);
+  const base = matrix ?? IDENTITY_MATRIX;
+  if (!isSimilarity(base)) return null;
+  const inverse = mat4.invert(new Float64Array(16), base);
   if (!inverse) return null;
-  const base =
-    matrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   return {
     ...view,
-    viewProj: multiplyMat4(view.viewProj, base),
+    // Plain Array, not Float64Array: pointcloud-lod's Mat16 is ArrayLike<number>.
+    viewProj: mat4.multiply(new Array(16), view.viewProj, base),
     position: transformPoint(inverse, view.position),
   };
 }
@@ -375,8 +274,6 @@ export function applyPointCloudLodBlock(
       config,
       appliedEndpoint: null,
       appliedBudget: null,
-      appliedRefinementCutoffPx: null,
-      appliedPresentation: null,
       controller: null,
       adapter: null,
       adapterRenderer: null,
@@ -397,8 +294,6 @@ function resetStreaming(entry) {
   entry.adapterRenderer = null;
   entry.appliedEndpoint = null;
   entry.appliedBudget = null;
-  entry.appliedRefinementCutoffPx = null;
-  entry.appliedPresentation = null;
 }
 
 function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
@@ -431,9 +326,7 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
     entry.adapter = createRendererAdapter({
       renderer,
       scheduleRender,
-      devicePixelRatio: isPositiveFinite(globalThis.devicePixelRatio)
-        ? Number(globalThis.devicePixelRatio)
-        : 1,
+      devicePixelRatio: getDevicePixelRatio(),
     });
     entry.adapterRenderer = renderer;
   }
@@ -457,7 +350,7 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
         onPointDiameterCssPx: (diameterCssPx) =>
           entry.adapter?.setPointDiameterCssPx(diameterCssPx),
         // With adaptive enabled the budget tracks a target frame time (frame
-        // durations arrive via recordPointCloudLodFrame) under the shared
+        // durations arrive via recordPointCloudLodHostFrame) under the shared
         // memory pool's byte cap; the config pointBudget only applies as the
         // fixed budget when adaptive is off.
         active: drawEnabled,
@@ -470,19 +363,14 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
           : {}),
       });
       entry.appliedBudget = config.pointBudget ?? null;
-      entry.appliedRefinementCutoffPx = config.refinementCutoffPx ?? 1;
       if (config.adaptive) {
-        entry.governorMember = getViewGovernor(
-          registry,
-          config.adaptive,
-        ).register({
+        entry.governorMember = getViewGovernor(registry).register({
           active: drawEnabled,
           setPointBudget: (points) => entry.controller?.setPointBudget(points),
         });
       }
     }
     entry.appliedEndpoint = config.endpoint;
-    entry.appliedPresentation = config.presentation;
   }
 
   const budget = config.pointBudget ?? null;
@@ -491,27 +379,13 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
     entry.appliedBudget = budget;
   }
 
-  const cutoff = config.refinementCutoffPx ?? 1;
-  if (cutoff !== entry.appliedRefinementCutoffPx) {
-    entry.controller.setRefinementCutoffPx(cutoff);
-    entry.appliedRefinementCutoffPx = cutoff;
-  }
-
-  if (
-    JSON.stringify(entry.appliedPresentation) !==
-    JSON.stringify(config.presentation)
-  ) {
-    entry.controller.setPresentation(config.presentation);
-    entry.appliedPresentation = config.presentation;
-  }
+  // Both setters no-op on an unchanged value inside the library.
+  entry.controller.setRefinementCutoffPx(config.refinementCutoffPx ?? 1);
+  entry.controller.setPresentation(config.presentation);
 
   const baseMatrix = actor.getUserMatrix?.() ?? null;
   entry.adapter.setBaseMatrix(baseMatrix);
-  entry.adapter.setDevicePixelRatio(
-    isPositiveFinite(globalThis.devicePixelRatio)
-      ? Number(globalThis.devicePixelRatio)
-      : 1,
-  );
+  entry.adapter.setDevicePixelRatio(getDevicePixelRatio());
   entry.adapter.setResourceCeilingBytes(
     entry.controller.stats().memoryBudgetBytes,
   );
@@ -558,23 +432,9 @@ export function updatePointCloudLods(registry, context) {
   }
 }
 
-// Report one painted frame's wall-time (ms) to every anchor's LOD controller,
-// feeding the adaptive-quality budget loop (a no-op for controllers without
-// adaptive enabled). Called by the view once per render, measuring only the
-// paint — not the pre-render camera/LOD update pass.
-export function recordPointCloudLodFrame(registry, durationMs) {
-  if (!registry || registry.size === 0) {
-    return;
-  }
-  if (!Number.isFinite(durationMs) || durationMs < 0) {
-    return;
-  }
-  recordPointCloudLodHostFrame(registry, {
-    hostFrameMs: durationMs,
-    vtkFrameMs: durationMs,
-  });
-}
-
+// Report one frame's wall-time (ms) to the view governor, feeding the
+// adaptive-quality budget loop (a no-op when no controller has adaptive
+// enabled). `hostFrameMs` is the whole frame; `vtkFrameMs` only the paint.
 export function recordPointCloudLodHostFrame(registry, metrics) {
   if (!registry || registry.size === 0) return;
   if (!Number.isFinite(metrics?.hostFrameMs) || metrics.hostFrameMs < 0) return;
@@ -593,7 +453,6 @@ export function endPointCloudLodInteraction(registry) {
   for (const entry of registry.values()) entry.controller?.endInteraction();
 }
 
-// --- phase0-bench (removable; see app/telesculptor_web/app/bench/README.md) ---
 // Anchor visibility for the diagnostic snapshot: `null` while the anchor actor
 // is unresolved, so "hidden" and "unknown" stay distinguishable. Same defensive
 // read as updateEntry — server-synced actors carry visibility as 0/1 ints, and
@@ -640,7 +499,6 @@ export function describePointCloudLodRegistry(registry) {
   }
   return entries;
 }
-// --- end phase0-bench ---
 
 // Release every anchor's streamed tiles and controllers (view teardown).
 export function disposePointCloudLods(registry) {

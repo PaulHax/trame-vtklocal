@@ -106,8 +106,8 @@ def test_identical_reupsert_is_a_noop():
 def test_any_key_change_emits_an_upsert_for_that_node_only():
     store, _ = committed_store()
 
-    # A feature-block change and a novel top-level key: exactly the two shapes
-    # of state v1's hand-maintained patch signature used to silently drop.
+    # A feature-block change and a novel top-level key: the two shapes a
+    # hand-maintained patch signature would miss but a generic diff must catch.
     mapper = basic_nodes()["4"]
     mapper["blocks"]["pickable"]["tags"]["rev"] = 2
     mapper["authority"] = "server"

@@ -1,4 +1,4 @@
-"""Flat-node translator tests (push sync v2 Phase 2).
+"""Flat-node translator tests.
 
 Every scene runs the same caller choreography as ``vtkjs_base``: register the
 render window, ``Render()`` under the dtc bypass, ``UpdateStatesFromObjects()``.
@@ -29,7 +29,8 @@ from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
-from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES, js_datatype
+from trame_vtklocal.module.array_datatypes import js_datatype
+from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
 from trame_vtklocal.store import SceneStore, ref_manager_hashes
 from trame_vtklocal.widgets.blob_payloads import (
     pack_cell_array_payload,

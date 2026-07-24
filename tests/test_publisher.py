@@ -135,6 +135,12 @@ def publisher_env():
         publisher.cleanup()
 
 
+def blob_size(object_manager, hash_value):
+    """Registered blob length (0 when the hash is gone)."""
+    blob = object_manager.GetBlob(hash_value)
+    return 0 if blob is None else memoryview(blob).nbytes
+
+
 def _dataset_id(scene):
     return str(scene.api.vtk_object_manager.GetId(scene.handles["polydata"]))
 
@@ -308,15 +314,15 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
     publisher.sync()
     orphan_ref = publisher._hot_arrays._orphaned_refs[_dataset_id(scene)]
     (orphan_hash,) = ref_manager_hashes([orphan_ref])
-    assert object_manager.GetBlob(orphan_hash) is not None
+    assert blob_size(object_manager, orphan_hash)
 
     # The next patch mints a new fresh hash; the previous orphan's blob is
     # no longer referenced by any state and is queued for the debounced GC.
     _touch_point(scene, 43, (2.0, 2.0, 2.0))
     publisher.sync()
-    assert object_manager.GetBlob(orphan_hash) is not None  # retire is deferred
+    assert blob_size(object_manager, orphan_hash)  # retire is deferred
     scene.api.flush_stale_blobs()
-    assert object_manager.GetBlob(orphan_hash) is None
+    assert not blob_size(object_manager, orphan_hash)
 
 
 # ----------------------------------------------------------------------
@@ -714,14 +720,14 @@ def test_removed_dataset_blobs_are_unregistered():
         hashes = ref_manager_hashes(entry["ref"] for entry in refs.values())
         assert hashes
         for hash_value in hashes:
-            assert object_manager.GetBlob(hash_value) is not None
+            assert blob_size(object_manager, hash_value)
 
         scene.handles["renderer"].RemoveActor(actor2)
         publisher.sync()
         scene.api.flush_stale_blobs()
 
         for hash_value in hashes:
-            assert object_manager.GetBlob(hash_value) is None
+            assert not blob_size(object_manager, hash_value)
     finally:
         publisher.cleanup()
 
@@ -761,7 +767,7 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
         publisher.sync()
         server.protocol.drain()
         scene.api.flush_stale_blobs()
-        assert object_manager.GetBlob(hash_value) is None
+        assert not blob_size(object_manager, hash_value)
 
         # Re-add through a NEW actor over the SAME polydata (unchanged MTime).
         add_actor(scene.handles["renderer"], polydata)
@@ -812,7 +818,7 @@ def test_deferred_blob_gc_keeps_hashes_that_return_alive():
         publisher.sync()  # hash re-enters the live set before the flush
 
         scene.api.flush_stale_blobs()
-        assert object_manager.GetBlob(hash_value) is not None
+        assert blob_size(object_manager, hash_value)
     finally:
         publisher.cleanup()
 

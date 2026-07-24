@@ -7,11 +7,6 @@ HELPER = FixtureHelper(ROOT_PATH)
 
 
 @pytest.fixture
-def ref_dir() -> Path:
-    return Path(__file__).parent / "refs"
-
-
-@pytest.fixture
 def server(xprocess, server_path):
     name, Starter, Monitor = HELPER.get_xprocess_args(server_path)
 

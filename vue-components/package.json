@@ -5,9 +5,6 @@
   "main": "./dist/trame_vtklocal.umd.js",
   "scripts": {
     "dev": "vite",
-    "gen-schema": "node scripts/gen-translation-schema.mjs",
-    "gen-schema:check": "node scripts/gen-translation-schema.mjs --check",
-    "prebuild": "npm run gen-schema",
     "build": "vite build --emptyOutDir",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "lint": "eslint --fix src",

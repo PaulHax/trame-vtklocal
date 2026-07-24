@@ -172,7 +172,7 @@ class App:
                 with vtklocal.LocalView(self.rw) as view:
                     view.update_throttle.rate = 20
                     self.ctrl.view_update = view.update_throttle
-                    self.widget_id = view.register_widget(self.widget)
+                    self.widget_id = view.register_vtk_object(self.widget)
                     view.listeners = (
                         "listeners",
                         {

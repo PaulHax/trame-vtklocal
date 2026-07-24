@@ -8,19 +8,6 @@ Local Rendering using VTK.wasm to match server side rendering pipeline on the cl
 The current code base is still at its infancy but we aim to make it the default implementation for local rendering using VTK/ParaView with trame.
 This WASM capability is starting to be available with VTK 9.4. 
 
-.. In term of version compatibility between VTK and trame-vtklocal we aim to follow this pattern.
-.. 
-.. .. list-table:: Version compatibility
-..    :widths: 50 50
-..    :header-rows: 1
-
-..    * - VTK
-..      - trame-vtklocal
-..    * - v9.4
-..      - v0
-..    * - v9.5
-..      - v1
-
 License
 ----------------------------------------
 
@@ -46,7 +33,7 @@ Build and install the Vue components
 
 .. code-block:: console
 
-    cd ../vtk-js
+    cd ../vtk-js-stuff/external-context-integration
     npm ci
     npm run build:esm
     cd dist/esm

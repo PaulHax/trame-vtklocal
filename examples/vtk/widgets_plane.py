@@ -186,7 +186,7 @@ class App:
                     throttle_rate=20,
                     listeners=("wasm_listeners", {}),
                 )
-                self.widget_id = self.html_view.register_widget(self.widget)
+                self.widget_id = self.html_view.register_vtk_object(self.widget)
 
         return layout
 

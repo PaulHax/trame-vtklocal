@@ -1,4 +1,4 @@
-// Binding node array entries to vtk.js data arrays (push sync v2).
+// Binding node array entries to vtk.js data arrays.
 //
 // An `arrays` entry carries a blob ref plus construction metadata:
 //   { ref, dataType, size, numberOfComponents, name?, registration?,
@@ -8,8 +8,7 @@
 // - field entries have `location` (pointData/cellData/fieldData) and an
 //   optional attribute `registration` (setScalars, ...), default addArray.
 //
-// The construction/reuse semantics are ported from v1's
-// createNewArrayHandler: reuse the existing vtk array object when present and
+// Construction/reuse: reuse the existing vtk array object when present and
 // swap its data in place, otherwise build the right vtk class and register it.
 
 import { TYPED_ARRAYS } from "@kitware/vtk.js/macros";

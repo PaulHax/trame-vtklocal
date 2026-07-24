@@ -2,8 +2,7 @@
 
 These rules describe the *shape* of the codebase — what may depend on
 what — rather than runtime behavior. They run in the normal pytest pass
-with no extra tooling. Each rule names the PR or commit whose lesson it
-encodes, so failures point future maintainers at the why.
+with no extra tooling.
 """
 
 from __future__ import annotations
@@ -50,11 +49,9 @@ def _imported_modules(source_path: Path):
 def test_module_subpackage_does_not_import_widgets():
     """Layer direction: module/ may not import from widgets/.
 
-    Encodes PR #6 / commit 3f7f9122. Shared protocol constants once imported
-    from ``widgets.push_sync`` made ``module/__init__.py`` (eagerly importing
-    ``vtkSerializationManager``) reachable from a leaf path that is supposed
-    to work without VTK installed. Locking the direction prevents that
-    regression class from reappearing; the shared leaf is now ``store.py``.
+    ``module/__init__.py`` eagerly imports ``vtkSerializationManager``, so any
+    widgets/ import from module/ drags VTK into leaf paths that must work
+    without it. The shared leaf both sides may import is ``store.py``.
     """
     bad = []
     for path in _iter_python_files(SRC_ROOT / "module"):
@@ -63,8 +60,8 @@ def test_module_subpackage_does_not_import_widgets():
                 bad.append(f"{path.relative_to(SRC_ROOT.parent)}:{lineno}: {name}")
 
     assert not bad, (
-        "module/ must not import from widgets/. See PR #6 / commit 3f7f9122. "
-        "Violations:\n  " + "\n  ".join(bad)
+        "module/ must not import from widgets/. Violations:\n  "
+        + "\n  ".join(bad)
     )
 
 
@@ -76,11 +73,15 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
-    "module/node_translator.py": 415,    # one translator for every node kind + the shared-reader seam; next seam is splitting mapper translation
-    "module/protocol.py": 450,           # wslink RPC surface + push-view blob registry with debounced GC; next seam is extracting the blob registry
-    "module/vtkjs_translator.py": 460,   # pure translation tables mirrored by the generated JS schema; grew for the constant-resolved datatype map, fixed-width vtkType* class rows, and the vtkPointGaussianMapper class map + skip rows
-    "widgets/dirty_tracker.py": 510,     # one concern (dirty candidates) but three observer graphs: objects, dataset children, pipeline producers — plus the dtc rewire-noise filter
-    "widgets/publisher.py": 540,         # publish tick + wire encoding + resync + dropped-blob re-entry guard; hot arrays and blob payloads extracted; next seam is object-manager choreography
+    # one translator for every node kind, plus the shared-reader seam
+    "module/node_translator.py": 415,
+    # wslink RPC surface + push-view blob registry with debounced GC
+    "module/protocol.py": 450,
+    # one concern (dirty candidates) but three observer graphs: objects,
+    # dataset children, pipeline producers — plus the dtc rewire-noise filter
+    "widgets/dirty_tracker.py": 510,
+    # publish tick + wire encoding + resync + dropped-blob re-entry guard
+    "widgets/publisher.py": 540,
 }
 
 
@@ -117,8 +118,8 @@ def test_store_stays_a_vtk_free_leaf():
 
     The scene store is the replication seam both ``module/`` and ``widgets/``
     import (node shapes, ref namespaces, ``ref_manager_hashes``). Reaching
-    back into either subpackage — or importing VTK — would reintroduce the
-    import cycle 3f7f9122 broke and break VTK-free unit testing.
+    back into either subpackage — or importing VTK — reintroduces an import
+    cycle and breaks VTK-free unit testing.
     """
     path = SRC_ROOT / "store.py"
     bad = [

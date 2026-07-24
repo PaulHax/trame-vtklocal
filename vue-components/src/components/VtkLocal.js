@@ -283,7 +283,6 @@ export default {
     // Life Cycles ------------------------------------------------------------
 
     onMounted(async () => {
-      // console.log("vtkLocal::mounted");
       wasmManager.bindNetwork(netFetchState, netFetchBlob, netFetchStatus);
       if (!wasmManager.loaded) {
         wasmLoading.value = true;
@@ -455,7 +454,6 @@ export default {
         wasmManager.sceneManager[removeObserverMethodName](cid, tag);
       }
 
-      // console.log("vtkLocal::unmounted");
       wasmManager.sceneManager.stopEventLoop(props.renderWindow);
       if (resizeObserver) {
         resizeObserver.disconnect();

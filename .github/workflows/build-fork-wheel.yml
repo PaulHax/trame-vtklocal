@@ -1,12 +1,16 @@
 name: Publish Fork Wheel
 
-# On every push to the fork's `shared-context` branch, build the wheel and
+# On every push to this fork's `shared-context` branch, build the wheel and
 # publish it as a GitHub prerelease so a downstream app can pin it by
 # URL (`releases/download/<tag>/…whl`).
 #
-# The wheel embeds a UMD bundle built against the fork's vtk-js `shared-context`
-# branch (PaulHax/vtk-js), so CI and the app agree on exactly which vtk-js the
-# wheel carries. Because CI clones that same tested branch, the UMD it builds
+# The wheel embeds a UMD bundle built against the vtk-js fork's
+# `external-context-integration` branch (PaulHax/vtk-js) — the branch that
+# carries `ExternalContextRenderWindow`, renamed there from `SharedRenderWindow`
+# (the retired `shared-context` branch). "shared-context" below always refers to
+# this repo's own branch and wheel-version label, never to a vtk-js branch.
+# CI and the app therefore agree on exactly which vtk-js the wheel carries:
+# because CI clones that same tested branch, the UMD it builds
 # matches what was validated locally — the old "CI rebuild is byte-divergent and
 # untested, so never publish from CI" caveat no longer applies.
 #
@@ -38,9 +42,9 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Build the vtk-js fork (shared-context) and expose it via npm link
+      - name: Build the vtk-js fork (external-context-integration) and expose it via npm link
         run: |
-          git clone --depth 1 --branch shared-context https://github.com/PaulHax/vtk-js.git
+          git clone --depth 1 --branch external-context-integration https://github.com/PaulHax/vtk-js.git
           cd vtk-js && npm ci && npm run build:esm
           cd dist/esm && npm link
 

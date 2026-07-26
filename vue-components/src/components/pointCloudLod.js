@@ -16,8 +16,20 @@
 // cadence. Streaming, budgets, cancellation, and caching all live in the
 // library — this module is only the wiring.
 //
+// The entry outlives its streaming stack, never the other way round: an anchor
+// that was live and then disappears takes actors, controller and view-budget
+// membership with it, leaving the normalized block to rebuild from if it comes
+// back. Budget mode and adaptive options are reconciled the same way, as a
+// whole, so nothing keeps drawing to a number an older block asked for.
+//
 // Renders are requested exclusively through the view's coalescing render
 // callback; nothing here calls renderWindow.render().
+//
+// The per-render update is also where rendered-camera motion is classified:
+// every camera that reaches LOD passes through here, so pointer gestures,
+// locked-video playback, timeline scrubbing, programmatic animation and
+// server-applied camera commands are all covered without any of them having to
+// announce itself.
 
 import {
   createHttpTileSource,
@@ -43,7 +55,6 @@ const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 // one device-sized budget divided among the active clouds. Without this, N
 // clouds would each claim a full budget and multiply GPU memory by N.
 let sharedMemoryPool = null;
-const viewGovernors = new WeakMap();
 function getSharedMemoryPool() {
   if (!sharedMemoryPool) {
     sharedMemoryPool = createMemoryPool();
@@ -51,16 +62,157 @@ function getSharedMemoryPool() {
   return sharedMemoryPool;
 }
 
-function getViewGovernor(registry) {
-  let governor = viewGovernors.get(registry);
-  if (!governor) {
-    governor = createViewGovernor();
-    viewGovernors.set(registry, governor);
-  }
-  return governor;
+// The view governor belongs to the VIEW, not to a cloud: one adaptive budget
+// split across every adaptive cloud drawing into it. The library fixes its
+// options at construction, so a wire block that changes them replaces the
+// instance — together with the memberships and motion references that instance
+// was holding. The stored key is what the current instance was built from.
+const viewGovernors = new WeakMap();
+
+function viewGovernorOf(registry) {
+  return viewGovernors.get(registry)?.governor ?? null;
 }
 
+// What a cloud draws when its block configures neither an explicit point budget
+// nor adaptive quality. Stated here rather than left to the library's default so
+// that dropping `pointBudget` from a block lands on one known number instead of
+// whatever the previous block happened to leave applied.
+const DEFAULT_POINT_BUDGET = 2_000_000;
+
+// The library rejects an adaptive maximum below the adaptive floor, and it
+// throws rather than clamping. The bridge therefore always states the floor it
+// wants, so an out-of-order pair is rejected while normalizing the block rather
+// than thrown from the middle of a render pass.
+const DEFAULT_ADAPTIVE_MIN_BUDGET = 200_000;
+
 const DEG_TO_RAD = Math.PI / 180;
+
+// How long the camera must hold still before the inferred motion reference is
+// released. Long enough to bridge a dropped playback frame or a slow scrub
+// step, short enough that a single camera jump refines almost immediately.
+const DEFAULT_MOTION_DEBOUNCE_MS = 250;
+
+// Relative, because these numbers span Mercator units (~1) and ENU metres
+// (~1e6) in the same matrix: 1e-9 sits ~5 orders above the round-off of
+// recomputing a double-precision camera product every frame and ~5 orders below
+// the smallest camera change that moves a pixel, so recomputation jitter never
+// enters the moving regime and no real motion is missed.
+const MOTION_RELATIVE_EPSILON = 1e-9;
+
+function movedBeyondJitter(previous, next) {
+  return (
+    Math.abs(previous - next) >
+    MOTION_RELATIVE_EPSILON * Math.max(1, Math.abs(previous), Math.abs(next))
+  );
+}
+
+// Everything about the camera that changes what LOD selects: the world-to-clip
+// transform, the eye point, the viewport height screen-space error is measured
+// in, and the projection's sizing scalar.
+function cameraMotionScalars(view) {
+  return [
+    ...Array.from(view.viewProj, Number),
+    ...view.position,
+    view.viewportHeightCssPx,
+    view.projection === "orthographic" ? view.parallelScale : view.fovY,
+  ];
+}
+
+function cameraMoved(previous, next) {
+  // The first camera a renderer supplies is the baseline, not a movement.
+  if (!previous) return false;
+  if (previous.projection !== next.projection) return true;
+  const before = cameraMotionScalars(previous);
+  const after = cameraMotionScalars(next);
+  return before.some((value, index) => movedBeyondJitter(value, after[index]));
+}
+
+// The two kinds of motion reference a view holds: one inferred reference per
+// burst of rendered-camera motion, and one slot per explicit gesture. Slots
+// rather than bare references because the governor can be replaced mid-gesture
+// (see reconcileViewGovernor), and the replacement has to inherit what the
+// view was holding.
+const cameraMotionByRegistry = new WeakMap();
+const explicitMotionSlots = new WeakMap();
+
+function getCameraMotion(registry) {
+  let state = cameraMotionByRegistry.get(registry);
+  if (!state) {
+    state = { views: new Map(), reference: null, timer: null };
+    cameraMotionByRegistry.set(registry, state);
+  }
+  return state;
+}
+
+function releaseInferredMotion(state) {
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = null;
+  state.reference?.release();
+  state.reference = null;
+}
+
+// One inferred motion reference per burst of motion, never one per frame: the
+// governor restarts its moving track whenever the first reference is taken, so
+// a per-frame reference would keep resetting the window it needs to learn from.
+// The reference is non-reporting by construction — this compares cameras the
+// host has already rendered, so nothing here can echo a server-provided camera
+// back upstream as a user camera report.
+function classifyCameraMotion(registry, views, debounceMs, scheduleRender) {
+  const state = getCameraMotion(registry);
+  let moved = false;
+  for (const [renderer, view] of views) {
+    if (view && cameraMoved(state.views.get(renderer), view)) moved = true;
+  }
+  // Replace rather than merge: a renderer that stops hosting an anchor must not
+  // keep a stale baseline that reads as motion when it comes back.
+  state.views = views;
+  const governor = viewGovernorOf(registry);
+  if (!moved || !governor) return;
+  if (!state.reference) state.reference = governor.beginMotion("inferred");
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    state.reference?.release();
+    state.reference = null;
+    // The settled regime cannot refine quality it never measures, so hand the
+    // host one frame to start from.
+    scheduleRender();
+  }, debounceMs);
+}
+
+// The adaptive quality options travel with a cloud but configure the view's
+// governor, which takes them as construction options and throws on an unusable
+// one rather than clamping it. So they are validated here under the library's
+// own policy — targets strictly positive, budgets whole and ordered — and a
+// block carrying an unusable one is as unusable as a block with no endpoint.
+// Absent fields stay absent so the library's defaults apply; the key order is
+// fixed because the reconciler compares option sets by their JSON.
+function normalizeAdaptiveOptions(block) {
+  const raw = block.adaptiveOptions ?? {};
+  if (typeof raw !== "object") {
+    return null;
+  }
+  const stated = (value) =>
+    value === undefined || value === null ? undefined : Number(value);
+  const statedWhole = (value) => {
+    const number = stated(value);
+    return number === undefined ? undefined : Math.floor(number);
+  };
+  const stationaryTargetMs = stated(raw.stationaryTargetMs);
+  const interactionTargetMs = stated(raw.interactionTargetMs);
+  const minBudget = statedWhole(raw.minBudget) ?? DEFAULT_ADAPTIVE_MIN_BUDGET;
+  const maxBudget = statedWhole(raw.maxBudget);
+  const usable =
+    (stationaryTargetMs === undefined ||
+      isPositiveFinite(stationaryTargetMs)) &&
+    (interactionTargetMs === undefined ||
+      isPositiveFinite(interactionTargetMs)) &&
+    isPositiveFinite(minBudget) &&
+    (maxBudget === undefined || maxBudget >= minBudget);
+  return usable
+    ? { minBudget, maxBudget, stationaryTargetMs, interactionTargetMs }
+    : null;
+}
 
 function normalizeConfig(block) {
   if (!block || typeof block !== "object") {
@@ -87,7 +239,13 @@ function normalizeConfig(block) {
             maxDiameterCssPx: Number(block.presentation.maxDiameterCssPx),
           }
         : null;
-  if (typeof endpoint !== "string" || !endpoint || !presentation) {
+  const adaptiveOptions = normalizeAdaptiveOptions(block);
+  if (
+    typeof endpoint !== "string" ||
+    !endpoint ||
+    !presentation ||
+    !adaptiveOptions
+  ) {
     return null;
   }
   return {
@@ -102,6 +260,7 @@ function normalizeConfig(block) {
         ? Number(refinementCutoffPx)
         : undefined,
     adaptive: !!block.adaptive,
+    adaptiveOptions,
   };
 }
 
@@ -303,7 +462,9 @@ export function applyPointCloudLodBlock(
   return registry;
 }
 
-// Drop the streaming stack so it can rebuild against a new host renderer.
+// Drop the streaming stack — actors, controller, governor membership — leaving
+// only the normalized configuration the entry rebuilds from. Its absence is
+// also what tells updateEntry that this entry has no established anchor.
 function resetStreaming(entry) {
   entry.governorMember?.release();
   entry.governorMember = null;
@@ -316,14 +477,62 @@ function resetStreaming(entry) {
   entry.appliedBudget = null;
 }
 
-function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
+// Which of the three budget modes the block asks for — adaptive governor
+// allocation, an explicit fixed number, or the bridge's default — reconciled as
+// a whole, because leaving any of them half-applied means a cloud drawing to a
+// number no live configuration asked for. Nothing here rebuilds the streaming
+// stack: a budget is just the number the controller re-selects against, so
+// dropping resident tiles to change it would blank the view for no gain.
+function reconcileBudgetMode(registry, entry, drawEnabled) {
+  const { config } = entry;
+  if (config.adaptive && !entry.governorMember) {
+    // Registering distributes, so the governor's allocation reaches the
+    // controller inside this pass rather than after the next frame report.
+    entry.governorMember =
+      viewGovernorOf(registry)?.register({
+        id: entry.id,
+        active: drawEnabled,
+        setPointBudget: (points) => entry.controller?.setPointBudget(points),
+      }) ?? null;
+    // The governor owns the number now; forget ours so leaving adaptive
+    // re-applies a fixed budget over whatever it last allocated.
+    entry.appliedBudget = null;
+  } else if (!config.adaptive && entry.governorMember) {
+    entry.governorMember.release();
+    entry.governorMember = null;
+  }
+  if (config.adaptive) {
+    // The draw state reaches the governor before the controller acts on it: a
+    // share that arrives after reactivation leaves the first selection of a
+    // revealed cloud running against a budget nobody granted it.
+    entry.governorMember?.update({ active: drawEnabled });
+    return;
+  }
+  const budget = config.pointBudget ?? DEFAULT_POINT_BUDGET;
+  if (budget !== entry.appliedBudget) {
+    entry.controller.setPointBudget(budget);
+    entry.appliedBudget = budget;
+  }
+}
+
+// `worldViewFor(renderer)` is the pass's rendered camera for that renderer,
+// read once and shared with the motion classifier.
+function updateEntry(registry, entry, renderers, worldViewFor, scheduleRender) {
   const { config } = entry;
 
   const anchor = findAnchor(entry, renderers);
   if (!anchor) {
-    // The block can land before the anchor actor is wired to its renderer
-    // (block application order inside a message is arbitrary) — retry on the
-    // next applied message / interactor render.
+    // Two situations reach here and only one of them is a retry. A block can
+    // land before its anchor actor is wired to a renderer (block application
+    // order inside a message is arbitrary), and that resolves on a later pass.
+    // An anchor that WAS established and is now gone is different: its tiles
+    // would keep drawing into a renderer the scene no longer anchors, and its
+    // governor membership would keep claiming a share of the view budget. Tear
+    // that down to the configuration and rebuild if the anchor comes back.
+    if (entry.adapter) {
+      resetStreaming(entry);
+      scheduleRender();
+    }
     return;
   }
   const { actor, renderer } = anchor;
@@ -337,9 +546,6 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
   // migrated renderers (the server re-staged the layer) rebuilds the
   // streaming stack in its new home.
   if (entry.adapter && entry.adapterRenderer !== renderer) {
-    resetStreaming(entry);
-  }
-  if (entry.controller && !!entry.governorMember !== !!config.adaptive) {
     resetStreaming(entry);
   }
   if (!entry.adapter) {
@@ -369,35 +575,21 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
         presentation: config.presentation,
         onPointDiameterCssPx: (diameterCssPx) =>
           entry.adapter?.setPointDiameterCssPx(diameterCssPx),
-        // With adaptive enabled the budget tracks a target frame time (frame
-        // durations arrive via recordPointCloudLodHostFrame) under the shared
-        // memory pool's byte cap; the config pointBudget only applies as the
-        // fixed budget when adaptive is off.
+        // No pointBudget here: reconcileBudgetMode below owns that number in
+        // every mode, and it runs before the first camera reaches the
+        // controller, so nothing is ever selected against a budget the wire
+        // block did not ask for.
         active: drawEnabled,
         memory: getSharedMemoryPool(),
-        ...(config.pointBudget !== undefined
-          ? { pointBudget: config.pointBudget }
-          : {}),
         ...(config.refinementCutoffPx !== undefined
           ? { refinementCutoffPx: config.refinementCutoffPx }
           : {}),
       });
-      entry.appliedBudget = config.pointBudget ?? null;
-      if (config.adaptive) {
-        entry.governorMember = getViewGovernor(registry).register({
-          active: drawEnabled,
-          setPointBudget: (points) => entry.controller?.setPointBudget(points),
-        });
-      }
     }
     entry.appliedEndpoint = config.endpoint;
   }
 
-  const budget = config.pointBudget ?? null;
-  if (budget !== null && budget !== entry.appliedBudget) {
-    entry.controller.setPointBudget(budget);
-    entry.appliedBudget = budget;
-  }
+  reconcileBudgetMode(registry, entry, drawEnabled);
 
   // Both setters no-op on an unchanged value inside the library.
   entry.controller.setRefinementCutoffPx(config.refinementCutoffPx ?? 1);
@@ -406,27 +598,82 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
   const baseMatrix = actor.getUserMatrix?.() ?? null;
   entry.adapter.setBaseMatrix(baseMatrix);
   entry.adapter.setDevicePixelRatio(getDevicePixelRatio());
-  entry.adapter.setResourceCeilingBytes(
-    entry.controller.stats().memoryBudgetBytes,
-  );
-  // Hidden clouds own no renderer resources. Disable submission before
-  // updating the camera; when showing, store the latest camera while inactive
-  // and only then reactivate so the first selection uses the current view.
+  // Hiding stops the draw at once; disable submission before updating the
+  // camera, and when showing store the latest camera while inactive and only
+  // then reactivate, so the first selection uses the current view.
   if (!drawEnabled) entry.controller.setActive(false);
   entry.adapter.setVisible(drawEnabled);
-  const view = cameraInAnchorCoordinates(
-    readCameraView(renderer, renderWindow),
-    baseMatrix,
-  );
+  const view = cameraInAnchorCoordinates(worldViewFor(renderer), baseMatrix);
   if (view) {
     entry.controller.setCamera(view);
   }
   if (drawEnabled) entry.controller.setActive(true);
   const controllerStats = entry.controller.stats();
+  // Read after the active state settles: a ceiling taken while the cloud was
+  // still inactive is zero, which would throw away the very reuse pool the
+  // reactivation is about to draw from — and leaves a hidden cloud's retired
+  // actors alive instead of releasing them.
+  entry.adapter.setResourceCeilingBytes(controllerStats.memoryBudgetBytes);
+  // The governor needs the memory ceiling to bound the aggregate before it
+  // splits it, and the physical work counts to know whether another frame is
+  // still worth painting.
   entry.governorMember?.update({
     active: drawEnabled,
     projectedImportance: controllerStats.selection.projectedImportance,
+    memoryCeilingPoints: controllerStats.memoryCeilingPoints,
+    physicalTileOperations: controllerStats.physicalTileOperations,
+    physicalHierarchyOperations: controllerStats.physicalHierarchyOperations,
   });
+}
+
+// The options the view's governor must be running on: those of the first
+// adaptive cloud in registry order, or null when no cloud asks for adaptive
+// quality at all. One governor serves the whole view, so clouds that disagree
+// need one stable answer — resolving per cloud would rebuild the governor once
+// per cloud on every pass.
+function desiredGovernorOptions(registry) {
+  for (const entry of registry.values()) {
+    if (entry.config?.adaptive) return entry.config.adaptiveOptions;
+  }
+  return null;
+}
+
+// Motion is a property of the view, so a governor replaced mid-drag or mid
+// playback burst inherits what the view was holding — otherwise the swap would
+// read as the camera having stopped and quality would jump mid-gesture.
+function retakeMotionReferences(registry, governor) {
+  for (const slot of explicitMotionSlots.get(registry) ?? []) {
+    slot.reference?.release();
+    slot.reference = governor?.beginMotion("explicit") ?? null;
+  }
+  const motion = cameraMotionByRegistry.get(registry);
+  if (!motion?.reference) return;
+  motion.reference.release();
+  motion.reference = governor?.beginMotion("inferred") ?? null;
+}
+
+// The library fixes a governor's options at construction, so reconciling a
+// changed wire block means replacing the instance. Memberships belong to the
+// instance that issued them: they are released here and the pass's entry loop
+// re-registers every adaptive cloud against the new governor.
+function reconcileViewGovernor(registry) {
+  const options = desiredGovernorOptions(registry);
+  const key = options === null ? null : JSON.stringify(options);
+  const current = viewGovernors.get(registry) ?? null;
+  if ((current?.key ?? null) === key) return;
+  for (const entry of registry.values()) {
+    if (!entry.governorMember) continue;
+    entry.governorMember.release();
+    entry.governorMember = null;
+    // The released allocation belonged to the old instance, so whichever mode
+    // this entry lands in has to state its budget again.
+    entry.appliedBudget = null;
+  }
+  current?.governor.dispose();
+  const governor = key === null ? null : createViewGovernor(options);
+  if (governor) viewGovernors.set(registry, { governor, key });
+  else viewGovernors.delete(registry);
+  retakeMotionReferences(registry, governor);
 }
 
 // Per-render update: feed the camera and mirror anchor-actor state. Called on
@@ -434,22 +681,42 @@ function updateEntry(registry, entry, renderers, renderWindow, scheduleRender) {
 // `renderers` is the view's synced renderers; the anchor (and its tiles) may
 // live in any of them.
 export function updatePointCloudLods(registry, context) {
-  if (!registry || registry.size === 0) {
+  if (!registry) {
     return;
   }
-  const { renderers, renderWindow, scheduleRender } = context || {};
-  if (!renderers?.length || !renderWindow) {
+  // Before anything else, including the early returns: entries must register
+  // against the governor the current wire blocks describe and never one built
+  // from an older block — and a view that has lost its last adaptive cloud must
+  // lose the governor too, or it goes on asking for frames for nobody.
+  reconcileViewGovernor(registry);
+  const { renderers, renderWindow, scheduleRender, motionDebounceMs } =
+    context || {};
+  if (registry.size === 0 || !renderers?.length || !renderWindow) {
     return;
   }
+  const render = scheduleRender ?? (() => {});
+  // The cameras this pass actually hands to LOD, one entry per host renderer:
+  // the classifier compares them against the previous pass, and reading each
+  // renderer once keeps the matrix work off the per-entry path.
+  const views = new Map();
+  const worldViewFor = (renderer) => {
+    if (!views.has(renderer)) {
+      views.set(renderer, readCameraView(renderer, renderWindow));
+    }
+    return views.get(renderer);
+  };
   for (const entry of registry.values()) {
-    updateEntry(
-      registry,
-      entry,
-      renderers,
-      renderWindow,
-      scheduleRender ?? (() => {}),
-    );
+    updateEntry(registry, entry, renderers, worldViewFor, render);
   }
+  // After the loop, which is what fills the view map.
+  classifyCameraMotion(
+    registry,
+    views,
+    Number.isFinite(motionDebounceMs) && motionDebounceMs >= 0
+      ? motionDebounceMs
+      : DEFAULT_MOTION_DEBOUNCE_MS,
+    render,
+  );
 }
 
 // Report one frame's wall-time (ms) to the view governor, feeding the
@@ -458,18 +725,44 @@ export function updatePointCloudLods(registry, context) {
 export function recordPointCloudLodHostFrame(registry, metrics) {
   if (!registry || registry.size === 0) return;
   if (!Number.isFinite(metrics?.hostFrameMs) || metrics.hostFrameMs < 0) return;
-  viewGovernors.get(registry)?.recordHostFrame(metrics);
+  viewGovernorOf(registry)?.recordHostFrame(metrics);
 }
 
+// The view's adaptive budget as the governor sees it: the regime, what is
+// holding it (explicit gestures, inferred camera motion, or both), the target
+// frame time, the ceilings, and the split across clouds. Null while no cloud in
+// the view asks for adaptive quality, since that is when the view has no
+// governor at all.
+export function describePointCloudLodGovernor(registry) {
+  if (!registry) return null;
+  return viewGovernorOf(registry)?.stats() ?? null;
+}
+
+// Whether the view still owes the user another frame: the governor never
+// schedules, so the host paints, reports the frame, and asks this.
+export function pointCloudLodNeedsFrame(registry) {
+  if (!registry) return false;
+  return viewGovernorOf(registry)?.needsFrame() ?? false;
+}
+
+// The governor counts motion references rather than begin/end pairs, so each
+// begin keeps its own slot and the matching end releases that slot. A stack,
+// because interactions nest; a slot holding a nullable reference, because a
+// gesture can outlive the governor it started against — or start before the
+// view has one.
 export function beginPointCloudLodInteraction(registry) {
   if (!registry) return;
-  viewGovernors.get(registry)?.beginInteraction();
+  const held = explicitMotionSlots.get(registry) ?? [];
+  held.push({
+    reference: viewGovernorOf(registry)?.beginMotion("explicit") ?? null,
+  });
+  explicitMotionSlots.set(registry, held);
   for (const entry of registry.values()) entry.controller?.beginInteraction();
 }
 
 export function endPointCloudLodInteraction(registry) {
   if (!registry) return;
-  viewGovernors.get(registry)?.endInteraction();
+  explicitMotionSlots.get(registry)?.pop()?.reference?.release();
   for (const entry of registry.values()) entry.controller?.endInteraction();
 }
 
@@ -496,24 +789,26 @@ export function describePointCloudLodRegistry(registry) {
   }
   for (const [id, entry] of registry) {
     const anchorVisible = describeAnchorVisibility(entry);
+    // Resident vs drawn are different questions — a hidden cloud keeps its
+    // actors so showing it again is a state restore — so both are reported
+    // under the library's own names.
     const adapterStats = entry?.adapter?.stats?.() ?? {
       gpuResidentTiles: 0,
       gpuResidentPoints: 0,
       gpuResidentBytes: 0,
-      activeDrawTiles: 0,
-      activeDrawPoints: 0,
+      drawnTiles: 0,
+      drawnPoints: 0,
     };
     entries.push({
       id,
       endpoint: entry?.config?.endpoint ?? null,
       hasController: !!entry?.controller,
-      residentActorTiles: adapterStats.gpuResidentTiles,
       gpuResidentTiles: adapterStats.gpuResidentTiles,
       gpuResidentPoints: adapterStats.gpuResidentPoints,
       gpuResidentBytes: adapterStats.gpuResidentBytes,
       anchorVisible,
-      activeDrawTiles: adapterStats.activeDrawTiles,
-      activeDrawPoints: adapterStats.activeDrawPoints,
+      drawnTiles: adapterStats.drawnTiles,
+      drawnPoints: adapterStats.drawnPoints,
       stats: entry?.controller?.stats?.() ?? null,
     });
   }
@@ -529,6 +824,10 @@ export function disposePointCloudLods(registry) {
     disposeEntry(entry);
   }
   registry.clear();
-  viewGovernors.get(registry)?.dispose();
+  const motion = cameraMotionByRegistry.get(registry);
+  if (motion) releaseInferredMotion(motion);
+  cameraMotionByRegistry.delete(registry);
+  explicitMotionSlots.delete(registry);
+  viewGovernorOf(registry)?.dispose();
   viewGovernors.delete(registry);
 }

@@ -152,8 +152,8 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
   // Anchor point size fanned out to the streamed tile actor.
   assert.equal(added[0].getProperty().getPointSize(), 3);
 
-  // Hiding deactivates draw immediately, then destroys renderer resources
-  // while retaining the decoded payload in the controller's bounded LRU.
+  // Hiding stops the draw at once, then releases renderer resources while
+  // retaining the decoded payload in the controller's bounded LRU.
   const firstTileActor = added[0];
   const tileFetchesBefore = fetchCalls.filter((url) =>
     url.includes("/tile/"),
@@ -165,11 +165,16 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     scheduleRender,
   });
   assert.equal(
-    removed.includes(firstTileActor),
-    true,
-    "int 0 removes draw resources immediately",
+    added.some((actor) => actor.getVisibility()),
+    false,
+    "int 0 stops the draw immediately",
   );
   await settle();
+  updatePointCloudLods(registry, {
+    renderers: [renderer],
+    renderWindow,
+    scheduleRender,
+  });
   assert.equal(added.length, 0, "hidden cloud owns no tile actors");
   assert.equal(
     removed.includes(firstTileActor),
@@ -179,9 +184,9 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
   const hidden = describePointCloudLodRegistry(registry)[0];
   assert.deepEqual(
     {
-      residentActorTiles: hidden.residentActorTiles,
+      gpuResidentTiles: hidden.gpuResidentTiles,
       gpuResidentBytes: hidden.gpuResidentBytes,
-      activeDrawTiles: hidden.activeDrawTiles,
+      drawnTiles: hidden.drawnTiles,
       active: hidden.stats.active,
       residentTiles: hidden.stats.residentTiles,
       cachedTiles: hidden.stats.cachedTiles,
@@ -189,9 +194,9 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
       memoryBudgetBytes: hidden.stats.memoryBudgetBytes,
     },
     {
-      residentActorTiles: 0,
+      gpuResidentTiles: 0,
       gpuResidentBytes: 0,
-      activeDrawTiles: 0,
+      drawnTiles: 0,
       active: false,
       residentTiles: 0,
       cachedTiles: 1,

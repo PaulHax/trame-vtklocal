@@ -93,6 +93,8 @@ function makeSceneStubs() {
     getActiveCamera: () => ({
       getCompositeProjectionMatrix: () => IDENTITY.slice(),
       getPosition: () => [0, 0, 0],
+      getParallelProjection: () => false,
+      getParallelScale: () => 1,
       getViewAngle: () => 90,
     }),
     getViewport: () => [0, 0, 1, 1],
@@ -540,27 +542,119 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
   disposePointCloudLods(registry);
 });
 
+// Rotation by 90 degrees about z, uniform scale 2, translation (5, 6, 7).
+const SIMILARITY = [
+  0, 2, 0, 0,
+  -2, 0, 0, 0,
+  0, 0, 2, 0,
+  5, 6, 7, 1,
+];
+
+function makeCameraStub(overrides) {
+  const camera = {
+    getCompositeProjectionMatrix: () => IDENTITY.slice(),
+    getPosition: () => [1, 2, 3],
+    getParallelProjection: () => false,
+    getParallelScale: () => 8,
+    getViewAngle: () => 90,
+    ...overrides,
+  };
+  return {
+    renderer: {
+      getActiveCamera: () => camera,
+      getViewport: () => [0, 0, 1, 1],
+    },
+    renderWindow: { getViews: () => [{ getSize: () => [200, 100] }] },
+  };
+}
+
+test("a perspective camera is read as an explicit perspective view", async () => {
+  const { readCameraView } = await loadLodModule();
+  const { renderer, renderWindow } = makeCameraStub();
+
+  const view = readCameraView(renderer, renderWindow);
+
+  assert.equal(view.projection, "perspective");
+  assert.ok(Math.abs(view.fovY - Math.PI / 2) < 1e-12);
+  assert.equal(view.parallelScale, undefined);
+  assert.deepEqual(view.position, [1, 2, 3]);
+  assert.equal(view.viewportHeightCssPx, 100);
+});
+
+test("a parallel camera is read as an orthographic view carrying parallelScale", async () => {
+  const { readCameraView } = await loadLodModule();
+  const { renderer, renderWindow } = makeCameraStub({
+    getParallelProjection: () => true,
+  });
+
+  const view = readCameraView(renderer, renderWindow);
+
+  assert.equal(view.projection, "orthographic");
+  assert.equal(view.parallelScale, 8);
+  // A parallel camera still reports a viewAngle; carrying it would let the
+  // library size detail by a number the projection never uses.
+  assert.equal(view.fovY, undefined);
+});
+
+test("a camera with an unusable sizing scalar yields no view instead of a guess", async () => {
+  const { readCameraView } = await loadLodModule();
+  const unusable = [
+    { getParallelProjection: () => true, getParallelScale: () => 0 },
+    { getParallelProjection: () => true, getParallelScale: () => Number.NaN },
+    { getParallelProjection: () => true, getParallelScale: () => undefined },
+    { getViewAngle: () => 0 },
+    { getViewAngle: () => 180 },
+    { getViewAngle: () => undefined },
+  ];
+  for (const overrides of unusable) {
+    const { renderer, renderWindow } = makeCameraStub(overrides);
+    assert.equal(
+      readCameraView(renderer, renderWindow),
+      null,
+      `no view for ${JSON.stringify(Object.keys(overrides))}`,
+    );
+  }
+});
+
 test("camera selection uses the inverse of anchor translation rotation and scale", async () => {
   const { cameraInAnchorCoordinates } = await loadLodModule();
-  const similarity = [
-    0, 2, 0, 0,
-    -2, 0, 0, 0,
-    0, 0, 2, 0,
-    5, 6, 7, 1,
-  ];
   const view = {
+    projection: "perspective",
     viewProj: IDENTITY,
     position: [5, 8, 7],
     fovY: Math.PI / 3,
     viewportHeightCssPx: 600,
   };
 
-  const local = cameraInAnchorCoordinates(view, similarity);
+  const local = cameraInAnchorCoordinates(view, SIMILARITY);
 
   assert.deepEqual(local.position.map((value) => Math.round(value)), [1, 0, 0]);
-  assert.deepEqual(local.viewProj, similarity);
+  assert.deepEqual(local.viewProj, SIMILARITY);
+  assert.equal(local.projection, "perspective");
+  // A field of view is an angle: uniform anchor scale cancels out of it.
   assert.equal(local.fovY, view.fovY);
   assert.equal(local.viewportHeightCssPx, 600);
+});
+
+test("an orthographic parallelScale is restated in anchor units", async () => {
+  const { cameraInAnchorCoordinates } = await loadLodModule();
+  const view = {
+    projection: "orthographic",
+    viewProj: IDENTITY,
+    position: [5, 8, 7],
+    parallelScale: 8,
+    viewportHeightCssPx: 600,
+  };
+
+  const local = cameraInAnchorCoordinates(view, SIMILARITY);
+
+  assert.equal(local.projection, "orthographic");
+  // parallelScale is a world height, and the anchor scales local units by 2,
+  // so the same viewport spans half as many anchor units.
+  assert.equal(local.parallelScale, 4);
+  assert.equal(local.viewportHeightCssPx, 600);
+  // An identity anchor leaves it untouched.
+  assert.equal(cameraInAnchorCoordinates(view, null).parallelScale, 8);
 });
 
 test("viewport metrics are measured in CSS pixels at non-unit DPR", async () => {

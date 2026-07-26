@@ -105,7 +105,12 @@ function normalizeConfig(block) {
   };
 }
 
-function readCameraView(renderer, renderWindow) {
+// The projection mode is read from the camera, never guessed from a numeric
+// value: the library projects a world spacing to pixels by a different law
+// per mode, and a parallel camera's viewAngle is meaningless rather than
+// absent. A camera whose sizing scalar is unusable yields no view at all,
+// leaving the controller on its last good camera.
+export function readCameraView(renderer, renderWindow) {
   const camera = renderer?.getActiveCamera?.();
   const metrics = getViewportMetrics(renderer, renderWindow);
   if (!camera || !metrics) {
@@ -114,23 +119,28 @@ function readCameraView(renderer, renderWindow) {
   // The library's frustum math wants the column-major world-to-clip layout.
   const viewProj = getWorldToClipMatrix(camera, metrics.aspect);
   const position = camera.getPosition?.();
-  const viewAngle = camera.getViewAngle?.();
   if (!viewProj || !position) {
     return null;
   }
-  return {
+  const common = {
     viewProj,
     position: [position[0], position[1], position[2]],
-    fovY:
-      (Number.isFinite(viewAngle) && viewAngle > 0 ? viewAngle : 30) *
-      DEG_TO_RAD,
     viewportHeightCssPx: metrics.height,
   };
+  if (camera.getParallelProjection?.()) {
+    const parallelScale = camera.getParallelScale?.();
+    if (!isPositiveFinite(parallelScale)) return null;
+    return { ...common, projection: "orthographic", parallelScale };
+  }
+  const viewAngle = camera.getViewAngle?.();
+  if (!isPositiveFinite(viewAngle) || viewAngle >= 180) return null;
+  return { ...common, projection: "perspective", fovY: viewAngle * DEG_TO_RAD };
 }
 
 // The library's frustum/SSE math assumes a uniform-scale anchor transform:
-// affine bottom row, orthogonal columns, equal column lengths.
-function isSimilarity(m) {
+// affine bottom row, orthogonal columns, equal column lengths. Returns that
+// uniform scale, or null when the matrix is not a similarity.
+function similarityScale(m) {
   if (
     m.length !== 16 ||
     !Array.from(m).every(Number.isFinite) ||
@@ -139,7 +149,7 @@ function isSimilarity(m) {
     Math.abs(m[11]) > 1e-9 ||
     Math.abs(m[15] - 1) > 1e-9
   ) {
-    return false;
+    return null;
   }
   const columns = [
     [m[0], m[1], m[2]],
@@ -153,7 +163,7 @@ function isSimilarity(m) {
     !isPositiveFinite(scale) ||
     lengths.some((length) => Math.abs(length - scale) > tolerance)
   ) {
-    return false;
+    return null;
   }
   for (let left = 0; left < 3; left += 1) {
     for (let right = left + 1; right < 3; right += 1) {
@@ -161,10 +171,10 @@ function isSimilarity(m) {
         (sum, value, axis) => sum + value * columns[right][axis],
         0,
       );
-      if (Math.abs(dot) > scale * tolerance) return false;
+      if (Math.abs(dot) > scale * tolerance) return null;
     }
   }
-  return true;
+  return scale;
 }
 
 function transformPoint(matrix, point) {
@@ -184,18 +194,28 @@ function transformPoint(matrix, point) {
   ];
 }
 
+// Restate the world camera in the anchor's local frame, where the tile
+// octree's bounds and spacings live.
 export function cameraInAnchorCoordinates(view, matrix) {
   if (!view) return null;
   const base = matrix ?? IDENTITY_MATRIX;
-  if (!isSimilarity(base)) return null;
+  const scale = similarityScale(base);
+  if (scale === null) return null;
   const inverse = mat4.invert(new Float64Array(16), base);
   if (!inverse) return null;
-  return {
+  const local = {
     ...view,
     // Plain Array, not Float64Array: pointcloud-lod's Mat16 is ArrayLike<number>.
     viewProj: mat4.multiply(new Array(16), view.viewProj, base),
     position: transformPoint(inverse, view.position),
   };
+  // Perspective screen-space error is a ratio of two lengths, so a uniform
+  // anchor scale cancels out of it. Parallel projection has no such ratio:
+  // parallelScale is an absolute world height and must be restated in anchor
+  // units alongside the spacings it is compared against.
+  return local.projection === "orthographic"
+    ? { ...local, parallelScale: local.parallelScale / scale }
+    : local;
 }
 
 // Resolve the anchor actor and the renderer hosting it. The anchor can live

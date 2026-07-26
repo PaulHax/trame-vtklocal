@@ -12,6 +12,13 @@ trigger.
 from dataclasses import dataclass, field
 from typing import Any
 
+# Importing the OpenGL2 backend registers the object-factory overrides that
+# vtkRenderWindow() resolves to. VTK 9.6 no longer pulls it in behind
+# vtkRenderingCore, so without this the scene factories build a backend-less
+# render window and Render() segfaults whenever this module is the first one
+# a test session imports.
+from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLRenderer  # noqa: F401
+
 from trame_vtklocal.module.protocol import ObjectManagerAPI
 
 

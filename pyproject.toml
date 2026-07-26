@@ -28,7 +28,11 @@ classifiers = [
 
 [project.optional-dependencies]
 vtk = [
-    "vtk>=9.4",
+    # 9.6 is the first VTK that ships a serializer for vtkPointGaussianMapper.
+    # Older wheels resolve the mapper to vtkOpenGLPointGaussianMapper and then
+    # fail to add its state, so every point-cloud anchor silently drops off the
+    # wire instead of raising.
+    "vtk>=9.6",
 ]
 dev = [
     "pre-commit",

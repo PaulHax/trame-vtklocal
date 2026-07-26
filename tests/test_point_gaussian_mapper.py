@@ -22,6 +22,11 @@ from vtkmodules.vtkRenderingCore import (
     vtkRenderWindow,
 )
 
+# The OpenGL2 backend registers the object-factory overrides the serialization
+# manager dereferences; VTK 9.6 no longer pulls it in behind vtkRenderingCore,
+# so without this Render() segfaults when this module runs on its own.
+from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLRenderer  # noqa: F401
+
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.node_translator import translate_scene
 from trame_vtklocal.module.protocol import ObjectManagerAPI

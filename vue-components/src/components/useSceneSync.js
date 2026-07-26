@@ -28,9 +28,12 @@ import {
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 import {
   applyPointCloudLodBlock,
+  describePointCloudLodGovernor,
+  describePointCloudLodRegistry,
   disposePointCloudLods,
   beginPointCloudLodInteraction,
   endPointCloudLodInteraction,
+  pointCloudLodNeedsFrame,
   recordPointCloudLodHostFrame,
   updatePointCloudLods,
   POINT_CLOUD_LOD_BLOCK_KEY,
@@ -47,7 +50,16 @@ import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
 
 export function useSceneSync(
-  { client, emit, getRenderWindow, renderScene, cameraAuthority = "server" },
+  {
+    client,
+    emit,
+    getRenderWindow,
+    renderScene,
+    cameraAuthority = "server",
+    // How long the rendered camera must hold still before LOD leaves the
+    // moving quality regime; the classifier's default applies when unset.
+    motionDebounceMs,
+  },
   dependencies = {},
 ) {
   const {
@@ -473,6 +485,12 @@ export function useSceneSync(
         distanceToCameraGlyphs,
       ),
       pickables: describePickableRegistry(pickables),
+      // Streamed clouds plus the one adaptive budget they share, so an
+      // effective point count can be explained without reading internals.
+      pointCloudLod: {
+        clouds: describePointCloudLodRegistry(pointCloudLods),
+        governor: describePointCloudLodGovernor(pointCloudLods),
+      },
       externalTextures: peekExternalTextures(
         getRenderWindow?.() || null,
       )?.describe() ?? { size: 0, entries: [] },
@@ -512,6 +530,7 @@ export function useSceneSync(
       renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),
       scheduleRender: () => renderRequestCallback?.(),
+      motionDebounceMs,
     });
   }
 
@@ -523,6 +542,14 @@ export function useSceneSync(
     dragPreview.reapply();
   }
 
+  // The adaptive budget never schedules a frame of its own: the host paints,
+  // reports the frame, and asks whether the view still owes the user another
+  // one. Without this the settled regime would stop measuring the moment the
+  // host went idle, and quality would freeze wherever motion left it.
+  function requestFrameWhileBudgetWorks() {
+    if (pointCloudLodNeedsFrame(pointCloudLods)) renderRequestCallback?.();
+  }
+
   // The view measures each paint's wall-time and reports it here; it feeds the
   // adaptive-quality budget loop for any streamed LOD cloud (a no-op when no
   // cloud has adaptive enabled).
@@ -532,12 +559,14 @@ export function useSceneSync(
         hostFrameMs: durationMs,
         vtkFrameMs: durationMs,
       });
+      requestFrameWhileBudgetWorks();
     }
   }
 
   function recordHostFrame(metrics) {
     hostFrameFeedbackSeen = true;
     recordPointCloudLodHostFrame(pointCloudLods, metrics);
+    requestFrameWhileBudgetWorks();
   }
 
   // Answer "what pickable glyph point is under (cssX, cssY)" from what this

@@ -29,20 +29,30 @@ Installation
 Development
 ----------------------------------------
 
-Build and install the Vue components
+Build and install the Vue components. The bundle needs the vtk-js fork built at
+the exact commit recorded in ``vtkjs-fork.env`` (``VTKJS_FORK_COMMIT``) — the
+only place that sha is written, so this README, ``release.sh`` and CI cannot
+disagree about which vtk.js the bundle carries.
 
 .. code-block:: console
 
+    source ./vtkjs-fork.env
+    git clone "$VTKJS_FORK_REPO" ../vtk-js-stuff/external-context-integration
     cd ../vtk-js-stuff/external-context-integration
+    git checkout "$VTKJS_FORK_COMMIT"
     npm ci
     npm run build:esm
     cd dist/esm
     npm link
     cd ../../../trame-vtklocal/vue-components
-    npm i
+    npm ci
     npm link @kitware/vtk.js
     npm run build
     cd -
+
+``npm ci`` (not ``npm i``) is what installs the locked, integrity-checked
+``pointcloud-lod`` release; ``release.sh`` refuses to build a wheel against a
+``npm link``-ed working copy of it.
 
 Install the library
 
@@ -93,13 +103,21 @@ its ``serve/wasm/`` tree — is a separate, unused code path. The wheel packagin
 ``serve/wasm/`` runtime artifacts sit in the working tree are never swept into
 the wheel.
 
-**Publishing is manual, via** ``release.sh --publish`` — never CI. The CI workflow
-``.github/workflows/build-fork-wheel.yml`` is a **build-only** sanity check
-(checkout + build the vtk-js fork + vue-components + wheel, then upload the wheel
-as an artifact). It does **not** publish a release: CI independently rebuilds the
-vtk-js fork, producing a byte-divergent, untested UMD, whereas ``release.sh``
-ships the locally-built UMD you actually ran and asserts the wheel's embedded UMD
-byte-matches it.
+Publishing runs from ``release.sh --publish``, locally or from
+``.github/workflows/build-fork-wheel.yml`` on every push to ``shared-context``.
+Both paths run the same script against the same immutable inputs — vtk-js
+fetched by the commit in ``vtkjs-fork.env``, ``pointcloud-lod`` from the
+lockfile — so a CI rebuild is not a different build.
+
+``verify_chain.py`` proves that before any wheel ships: the linked vtk.js is a
+clean checkout of the pinned commit, ``pointcloud-lod`` came from its
+integrity-checked tarball rather than a dev link, nothing declares a
+``@kitware/vtk.js`` range (no released version has ``vtkPointGaussianMapper``),
+and the built bundle really does carry the mapper, its OpenGL override, the
+fork's world-space point sizing and the Geometry profile. What it found is
+written to ``serve/js/build-info.json``, which ships inside the wheel, and to
+``dist/release-evidence.json``, which is attached to the release next to the
+wheel it describes.
 
 Use ``release.sh`` at the fork root. It requires the vtk-js fork to be linked
 into ``vue-components`` (see Development above).
@@ -122,8 +140,9 @@ Publish a GitHub prerelease and print the app pin:
     ./release.sh --publish
 
 This additionally creates (or re-uploads to) the ``gh`` prerelease
-``v0.16.0-shared-context.<sha>`` with the wheel attached, then prints the exact
-line to paste into the app's ``pyproject.toml`` plus the wheel ``sha256``.
+``v0.16.0-shared-context.<sha>`` with the wheel and ``release-evidence.json``
+attached, then prints the exact line to paste into the app's ``pyproject.toml``
+plus the wheel ``sha256``.
 Re-running is safe (existing releases get the asset re-uploaded with
 ``--clobber``).
 

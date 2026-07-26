@@ -4,18 +4,22 @@ name: Publish Fork Wheel
 # publish it as a GitHub prerelease so a downstream app can pin it by
 # URL (`releases/download/<tag>/…whl`).
 #
-# The wheel embeds a UMD bundle built against the vtk-js fork's
-# `external-context-integration` branch (PaulHax/vtk-js) — the branch that
-# carries `ExternalContextRenderWindow`, renamed there from `SharedRenderWindow`
-# (the retired `shared-context` branch). "shared-context" below always refers to
+# The wheel embeds a UMD bundle built against the vtk-js fork
+# (PaulHax/vtk-js) — the build that carries `ExternalContextRenderWindow`
+# (renamed there from `SharedRenderWindow`, the retired `shared-context`
+# branch) and `vtkPointGaussianMapper`. "shared-context" below always refers to
 # this repo's own branch and wheel-version label, never to a vtk-js branch.
-# CI and the app therefore agree on exactly which vtk-js the wheel carries:
-# because CI clones that same tested branch, the UMD it builds
-# matches what was validated locally — the old "CI rebuild is byte-divergent and
-# untested, so never publish from CI" caveat no longer applies.
+#
+# Every input is immutable. vtk-js is fetched by COMMIT — the sha in
+# `vtkjs-fork.env`, the single place it is written — because a branch moves and
+# would let the same release command produce different wheels. pointcloud-lod
+# comes from `npm ci`, i.e. the integrity-checked tarball in the lockfile, not a
+# dev link. `verify_chain.py` re-proves all of that from the built bundle and
+# fails the job when anything drifted, and the resulting build-info.json ships
+# inside the wheel.
 #
 # This reuses `./release.sh --publish` — the same script devs run locally — so
-# version stamping, the UMD byte-assert, the tag scheme
+# version stamping, chain verification, the UMD byte-assert, the tag scheme
 # (`v<base>-shared-context.<sha>`), and release creation live in ONE place.
 
 on:
@@ -42,25 +46,76 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Build the vtk-js fork (external-context-integration) and expose it via npm link
+      - name: Read the pinned vtk-js commit
+        working-directory: trame-vtklocal
         run: |
-          git clone --depth 1 --branch external-context-integration https://github.com/PaulHax/vtk-js.git
+          set -a
+          . ./vtkjs-fork.env
+          set +a
+          {
+            echo "VTKJS_FORK_REPO=$VTKJS_FORK_REPO"
+            echo "VTKJS_FORK_BRANCH=$VTKJS_FORK_BRANCH"
+            echo "VTKJS_FORK_COMMIT=$VTKJS_FORK_COMMIT"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the pinned vtk-js commit and expose it via npm link
+        # A shallow clone by branch cannot express "this exact commit", so fetch
+        # the sha itself and refuse to build anything else.
+        run: |
+          git init vtk-js
+          git -C vtk-js remote add origin "$VTKJS_FORK_REPO"
+          git -C vtk-js fetch --depth 1 origin "$VTKJS_FORK_COMMIT"
+          git -C vtk-js checkout --detach FETCH_HEAD
+          head="$(git -C vtk-js rev-parse HEAD)"
+          if [ "$head" != "$VTKJS_FORK_COMMIT" ]; then
+            echo "::error::vtk-js HEAD $head does not match the pinned $VTKJS_FORK_COMMIT"
+            exit 1
+          fi
+          echo "vtk-js at pinned commit $head"
           cd vtk-js && npm ci && npm run build:esm
           cd dist/esm && npm link
 
       - name: Install vue-components deps and link the fork vtk-js
         working-directory: trame-vtklocal/vue-components
-        # `npm ci` wipes node_modules but keeps the global link, so link after it.
-        # release.sh runs the actual `npm run build` against this link.
+        # `npm ci` installs pointcloud-lod from the lockfile's integrity-checked
+        # tarball (never a dev link) and wipes node_modules but keeps the global
+        # link, so link after it. release.sh runs the actual `npm run build`.
         run: npm ci && npm link @kitware/vtk.js
 
-      - name: Build + publish the fork wheel release
+      - name: Vue component tests from the clean install
+        working-directory: trame-vtklocal/vue-components
+        run: npm test
+
+      - name: Build + verify the chain (no publish)
+        working-directory: trame-vtklocal
+        run: |
+          pip install build
+          ./release.sh
+          echo "SMOKE_UMD_SHA=$(python -c 'import json;print(json.load(open("src/trame_vtklocal/module/serve/js/build-info.json"))["bundle"]["sha256"])')" >> "$GITHUB_ENV"
+
+      - name: Trame browser smoke tests from a clean install of the wheel
+        working-directory: trame-vtklocal
+        # OSMesa backs the server-side VTK render window; xvfb + a headed
+        # Chromium give the client a real WebGL context, which is what the
+        # shared-context path actually renders through.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libosmesa6-dev xvfb
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install "$(ls dist/trame_vtklocal-*.whl)[vtk]" -r tests/requirements.txt
+          /tmp/smoke/bin/playwright install --with-deps chromium
+          xvfb-run -a /tmp/smoke/bin/python -m pytest tests/test_shared_gl_context.py -v \
+            --browser chromium --headed
+
+      - name: Publish the fork wheel release
         working-directory: trame-vtklocal
         env:
           GH_TOKEN: ${{ github.token }}
+          # Only the bundle the smoke tests just exercised may be released.
+          EXPECT_UMD_SHA256: ${{ env.SMOKE_UMD_SHA }}
         run: |
           set -o pipefail
-          pip install build vtk
           ./release.sh --publish | tee /tmp/release.out
           {
             echo '### Fork wheel published :package:'
@@ -68,5 +123,10 @@ jobs:
             echo 'Pin in the app `pyproject.toml`:'
             echo '```toml'
             grep -m1 'trame-vtklocal = {' /tmp/release.out || true
+            echo '```'
+            echo
+            echo 'Embedded chain:'
+            echo '```json'
+            cat dist/release-evidence.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

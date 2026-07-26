@@ -299,7 +299,12 @@ export function useSceneSync(
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
+    // Both counters, or a re-init during an open gesture leaves the report
+    // counter permanently one above the interaction counter: every later
+    // gesture then ends with it still positive and never sends its terminal
+    // camera again.
     cameraInteractionDepth = 0;
+    cameraReportInteractionDepth = 0;
     renderedCamera = null;
     cancelCameraReport();
     distanceToCameraGlyphs.clear();

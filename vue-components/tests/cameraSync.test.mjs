@@ -224,6 +224,39 @@ test("camera interaction is reference-counted across overlapping sources", async
   }
 });
 
+test("re-initializing during a gesture does not silence later terminal reports", async () => {
+  const previousWindow = globalThis.window;
+  const fakeWindow = makeWindow();
+  globalThis.window = fakeWindow;
+  try {
+    const { scene, events } = await makeScene();
+    scene.enableCameraReports({ during: "interaction", terminal: true });
+
+    // The host re-initializes the view while a gesture is open: the gesture's
+    // end then lands on a counter that was already reset.
+    scene.beginCameraInteraction();
+    scene.initialize({
+      contextName: "camera-sync-test",
+      renderWindowId: 1,
+      onRenderNeeded() {},
+    });
+    scene.endCameraInteraction();
+
+    // Every later gesture must still report its moves and its end.
+    scene.beginCameraInteraction();
+    scene.cameraInteraction();
+    fakeWindow.flush();
+    scene.endCameraInteraction();
+    fakeWindow.flush();
+    const cameraEvents = events.filter((event) => event.name === "camera");
+    assert.equal(cameraEvents.length, 2);
+    assert.equal(cameraEvents[0].payload.terminal, false);
+    assert.equal(cameraEvents[1].payload.terminal, true);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("programmatic interaction shares lifecycle without reporting camera echo", async () => {
   const previousWindow = globalThis.window;
   const fakeWindow = makeWindow();

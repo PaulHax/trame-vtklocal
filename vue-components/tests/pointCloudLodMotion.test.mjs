@@ -89,6 +89,16 @@ function makeCamera() {
       camera.matrix[12] *= 1 + 1e-12;
       camera.position[0] *= 1 - 1e-12;
     },
+    // What the map does when the scene's visible bounds change: clip z is
+    // remapped (z' = alpha * z + beta * w) so the far plane covers whatever is
+    // now in the scene. The eye and the image are untouched — this happens
+    // because a tile landed, not because anyone moved the camera.
+    remapDepth(alpha, beta) {
+      for (let index = 0; index < 4; index += 1) {
+        camera.matrix[8 + index] =
+          alpha * camera.matrix[8 + index] + beta * camera.matrix[12 + index];
+      }
+    },
     getCompositeProjectionMatrix: () => camera.matrix.slice(),
     getPosition: () => camera.position.slice(),
     getParallelProjection: () => false,
@@ -237,6 +247,33 @@ test("playback under a fixed camera stays in the settled regime", async () => {
       assert.equal(stats.motion.source, null, `frame ${frame}`);
       assert.equal(stats.motion.inferredReferences, 0, `frame ${frame}`);
     }
+  } finally {
+    view.dispose();
+  }
+});
+
+test("a tile landing under a still camera is not camera motion", async () => {
+  const view = await makeAdaptiveView();
+  try {
+    const eyeBefore = view.camera.getPosition();
+    // Each streamed tile grows the scene bounds the map derives its depth
+    // range from, so every arrival rewrites clip z under a still camera.
+    for (let landing = 0; landing < 10; landing += 1) {
+      view.camera.remapDepth(1 + 1e-5, -1e-4);
+      view.repaint();
+      await sleep(25);
+      const stats = view.governor();
+      assert.equal(stats.regime, "stationary", `landing ${landing}`);
+      assert.equal(stats.targetFrameTimeMs, 33, `landing ${landing}`);
+      assert.equal(stats.motion.source, null, `landing ${landing}`);
+      assert.equal(stats.motion.inferredReferences, 0, `landing ${landing}`);
+    }
+    assert.deepEqual(view.camera.getPosition(), eyeBefore, "eye never moved");
+
+    // The classifier is still watching: a real move is still a real move.
+    view.camera.panBy(4);
+    view.repaint();
+    assert.equal(view.governor().regime, "interaction");
   } finally {
     view.dispose();
   }

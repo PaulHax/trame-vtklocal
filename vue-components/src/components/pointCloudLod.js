@@ -92,11 +92,14 @@ const DEG_TO_RAD = Math.PI / 180;
 // step, short enough that a single camera jump refines almost immediately.
 const DEFAULT_MOTION_DEBOUNCE_MS = 250;
 
-// Relative, because these numbers span Mercator units (~1) and ENU metres
-// (~1e6) in the same matrix: 1e-9 sits ~5 orders above the round-off of
-// recomputing a double-precision camera product every frame and ~5 orders below
-// the smallest camera change that moves a pixel, so recomputation jitter never
-// enters the moving regime and no real motion is missed.
+// Relative, with an absolute floor of the same size, because these numbers span
+// Mercator units (~1) and ENU metres (~1e6) in the same matrix. Recomputing a
+// double-precision camera product every frame moves the last bits — a few 1e-16
+// of the terms behind each entry — while the smallest camera change that moves a
+// pixel sits orders above 1e-9, so recomputation jitter never enters the moving
+// regime and no real motion is missed. Entries that are small differences of
+// huge terms would eat that margin; the one place the rendered matrix does that,
+// the scene-derived clip depth range, is left out of the comparison entirely.
 const MOTION_RELATIVE_EPSILON = 1e-9;
 
 function movedBeyondJitter(previous, next) {
@@ -106,12 +109,22 @@ function movedBeyondJitter(previous, next) {
   );
 }
 
-// Everything about the camera that changes what LOD selects: the world-to-clip
-// transform, the eye point, the viewport height screen-space error is measured
-// in, and the projection's sizing scalar.
+// World-to-clip entries that describe where the camera is looking, in the
+// column-major layout getWorldToClipMatrix returns (index = column * 4 + row).
+// The clip-z row (2, 6, 10, 14) is deliberately left out: hosts fold a depth
+// remap derived from the scene's visible bounds into it, so a tile arriving or
+// being evicted rewrites those four numbers while the camera stands perfectly
+// still. Everything a camera move does to the rendered image shows up in the
+// x, y and w rows; the one motion that lives only in clip z — dollying an
+// orthographic camera along its view axis — shows up in the eye point below.
+const MOTION_MATRIX_INDICES = [0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15];
+
+// Everything about the camera that changes what LOD selects: where it looks
+// from and at, the eye point, the viewport height screen-space error is
+// measured in, and the projection's sizing scalar.
 function cameraMotionScalars(view) {
   return [
-    ...Array.from(view.viewProj, Number),
+    ...MOTION_MATRIX_INDICES.map((index) => Number(view.viewProj[index])),
     ...view.position,
     view.viewportHeightCssPx,
     view.projection === "orthographic" ? view.parallelScale : view.fovY,

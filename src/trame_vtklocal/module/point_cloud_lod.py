@@ -16,6 +16,10 @@ POINT_CLOUD_LOD_TYPE = "vtkPointCloudLodMapper"
 POINT_CLOUD_LOD_BLOCK = "pointCloudLod"
 POINT_CLOUD_PRESENTATION_BLOCK = "pointCloudPresentation"
 
+# The client's adaptive floor. Mirrored here so a max_budget below the floor is
+# rejected while marking rather than thrown from a render pass.
+DEFAULT_ADAPTIVE_MIN_BUDGET = 200_000
+
 _MAPPER_CONFIGS = weakref.WeakKeyDictionary()
 _PRESENTATION_CONFIGS = weakref.WeakKeyDictionary()
 
@@ -34,7 +38,9 @@ def _as_presentation(value):
         minimum = float(value["minDiameterCssPx"])
         maximum = float(value["maxDiameterCssPx"])
         if not user_scale > 0 or not 0 < minimum <= maximum:
-            raise ValueError("Auto scale and diameter clamps must be positive and ordered")
+            raise ValueError(
+                "Auto scale and diameter clamps must be positive and ordered"
+            )
         return {
             "mode": "auto",
             "userScale": user_scale,
@@ -42,6 +48,49 @@ def _as_presentation(value):
             "maxDiameterCssPx": maximum,
         }
     raise ValueError("presentation mode must be 'fixed' or 'auto'")
+
+
+def _as_adaptive_options(value):
+    """Normalize the optional adaptive-quality options for the wire.
+
+    These reach the client's view governor as construction options, which
+    throw rather than clamp, so an unusable value is rejected here instead of
+    reaching a render pass. Keys mirror the wire (and the library) exactly.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("adaptive_options must be an object")
+    unknown = set(value) - {
+        "minBudget",
+        "maxBudget",
+        "interactionTargetMs",
+        "stationaryTargetMs",
+    }
+    if unknown:
+        raise ValueError(f"unknown adaptive_options: {', '.join(sorted(unknown))}")
+
+    options = {}
+    minimum = DEFAULT_ADAPTIVE_MIN_BUDGET
+    if (raw := value.get("minBudget")) is not None:
+        minimum = int(raw)
+        if not minimum > 0:
+            raise ValueError(f"minBudget must be > 0, got {minimum}")
+        options["minBudget"] = minimum
+    if (raw := value.get("maxBudget")) is not None:
+        maximum = int(raw)
+        # The memory-derived ceiling stays authoritative; this is the optional
+        # policy ceiling on top of it, so it only has to clear the floor.
+        if maximum < minimum:
+            raise ValueError(
+                f"maxBudget must be >= minBudget ({minimum}), got {maximum}"
+            )
+        options["maxBudget"] = maximum
+    for key in ("interactionTargetMs", "stationaryTargetMs"):
+        if (raw := value.get(key)) is not None:
+            target = float(raw)
+            if not target > 0:
+                raise ValueError(f"{key} must be > 0, got {target}")
+            options[key] = target
+    return options
 
 
 def mark_point_cloud_lod(
@@ -55,6 +104,7 @@ def mark_point_cloud_lod(
     has_rgb=True,
     point_budget=None,
     adaptive=False,
+    adaptive_options=None,
     refinement_cutoff_px=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
@@ -64,10 +114,17 @@ def mark_point_cloud_lod(
     metric spacing arrive in each hierarchy response.
 
     With ``adaptive`` set, the client adapts the visible-point budget to
-    measured render duration, capped only by the client's shared GPU-memory
-    budget — there is no configured point ceiling, and ``point_budget`` is
-    ignored. Without ``adaptive``, ``point_budget`` is the fixed visible-point
-    budget (client default 2,000,000), still capped by the memory budget.
+    measured render duration and ``point_budget`` is ignored. The effective
+    budget is the smallest of the adaptive budget, the optional
+    ``adaptive_options["maxBudget"]``, and the client's memory-derived
+    ceiling, which stays authoritative. Omitting ``maxBudget`` means the
+    memory ceiling is the only upper bound. ``adaptive_options`` also carries
+    ``minBudget`` and the per-regime frame-time targets
+    (``interactionTargetMs`` while the camera moves, ``stationaryTargetMs``
+    once it settles); each is optional and falls back to the client default.
+
+    Without ``adaptive``, ``point_budget`` is the fixed visible-point budget
+    (client default 2,000,000), still capped by the memory ceiling.
 
     ``presentation`` is an explicit Fixed CSS-pixel diameter or Auto scale and
     clamp contract. The browser owns projected-density calculation.
@@ -91,6 +148,12 @@ def mark_point_cloud_lod(
         "adaptive": bool(adaptive),
         "presentation": _as_presentation(presentation),
     }
+    if adaptive_options is not None:
+        # Silently inert configuration is the failure mode this block exists to
+        # avoid, so refuse options that nothing would ever read.
+        if not adaptive:
+            raise ValueError("adaptive_options requires adaptive=True")
+        config["adaptiveOptions"] = _as_adaptive_options(adaptive_options)
     if point_budget is not None:
         point_budget = int(point_budget)
         if not point_budget > 0:

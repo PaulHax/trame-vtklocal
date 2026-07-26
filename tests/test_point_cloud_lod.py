@@ -103,6 +103,75 @@ def test_adaptive_config_reaches_the_wire():
     assert "pointBudget" not in block
 
 
+def test_adaptive_options_reach_the_wire():
+    api, rw, mapper, render_window_id = _make_scene()
+    pcl.mark_point_cloud_lod(
+        mapper,
+        **CONFIG,
+        adaptive=True,
+        adaptive_options={
+            "maxBudget": 4_000_000,
+            "interactionTargetMs": 16,
+            "stationaryTargetMs": 33,
+        },
+    )
+    state = _translate(api, rw, render_window_id)
+
+    (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
+    block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
+    assert block["adaptiveOptions"] == {
+        "maxBudget": 4_000_000,
+        "interactionTargetMs": 16.0,
+        "stationaryTargetMs": 33.0,
+    }
+    # The optional ceiling is not a fixed budget: selection still adapts.
+    assert "pointBudget" not in block
+
+
+def test_adaptive_options_are_absent_unless_configured():
+    api, rw, mapper, render_window_id = _make_scene()
+    pcl.mark_point_cloud_lod(mapper, **CONFIG, adaptive=True)
+    state = _translate(api, rw, render_window_id)
+
+    (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
+    # Omitting them leaves the memory-derived ceiling as the only upper bound.
+    assert "adaptiveOptions" not in node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
+
+
+def test_adaptive_options_require_adaptive_quality():
+    _api, _rw, mapper, _render_window_id = _make_scene()
+    with pytest.raises(ValueError, match="adaptive_options requires adaptive=True"):
+        pcl.mark_point_cloud_lod(
+            mapper, **CONFIG, adaptive_options={"maxBudget": 4_000_000}
+        )
+
+
+def test_adaptive_options_validation_errors():
+    _api, _rw, mapper, _render_window_id = _make_scene()
+
+    def mark(options):
+        pcl.mark_point_cloud_lod(
+            mapper, **CONFIG, adaptive=True, adaptive_options=options
+        )
+
+    # Below the client's floor, so the governor would refuse it at construction.
+    with pytest.raises(ValueError, match="maxBudget must be >= minBudget"):
+        mark({"maxBudget": 1_000})
+    with pytest.raises(ValueError, match="maxBudget must be >= minBudget"):
+        mark({"minBudget": 500_000, "maxBudget": 400_000})
+    with pytest.raises(ValueError, match="minBudget must be > 0"):
+        mark({"minBudget": 0})
+    with pytest.raises(ValueError, match="interactionTargetMs must be > 0"):
+        mark({"interactionTargetMs": 0})
+    with pytest.raises(ValueError, match="stationaryTargetMs must be > 0"):
+        mark({"stationaryTargetMs": -1})
+    # A typo must not read as "use the defaults".
+    with pytest.raises(ValueError, match="unknown adaptive_options: maxPoints"):
+        mark({"maxPoints": 4_000_000})
+    with pytest.raises(ValueError, match="adaptive_options must be an object"):
+        mark(4_000_000)
+
+
 def test_refinement_cutoff_reaches_the_wire():
     api, rw, mapper, render_window_id = _make_scene()
     pcl.mark_point_cloud_lod(mapper, **CONFIG, refinement_cutoff_px=0.5)

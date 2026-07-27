@@ -555,13 +555,43 @@ const SIMILARITY = [
   5, 6, 7, 1,
 ];
 
+// Composite projection matrices in the layout getCompositeProjectionMatrix
+// returns (row-major; getWorldToClipMatrix transposes them). A 90° vertical
+// field of view at the stub's 2:1 aspect: f = cot(45°) = 1.
+const PERSPECTIVE_COMPOSITE = [
+  0.5, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, -1.002, -0.2,
+  0, 0, -1, 0,
+];
+// The same camera rendered through a uniformly doubled view transform: every
+// world-facing row doubles. The fovY read off the matrix is a ratio of two
+// such rows, so the scale must cancel.
+const PERSPECTIVE_COMPOSITE_SCALED = [
+  1, 0, 0, 0,
+  0, 2, 0, 0,
+  0, 0, -2.004, -0.2,
+  0, 0, -2, 0,
+];
+// parallelScale 8 at the same aspect: the vertical row is 1/8.
+const ORTHO_COMPOSITE = [
+  0.0625, 0, 0, 0,
+  0, 0.125, 0, 0,
+  0, 0, -0.01, -0.5,
+  0, 0, 0, 1,
+];
+
 function makeCameraStub(overrides) {
   const camera = {
-    getCompositeProjectionMatrix: () => IDENTITY.slice(),
+    getCompositeProjectionMatrix: () => PERSPECTIVE_COMPOSITE.slice(),
     getPosition: () => [1, 2, 3],
-    getParallelProjection: () => false,
-    getParallelScale: () => 8,
-    getViewAngle: () => 90,
+    // The state accessors deliberately contradict every matrix above: the
+    // reader must believe the rendered matrix, because a host that pushes a
+    // projection matrix leaves these describing a camera vtk.js is not
+    // rendering.
+    getParallelProjection: () => true,
+    getParallelScale: () => 999,
+    getViewAngle: () => 7,
     ...overrides,
   };
   return {
@@ -573,7 +603,7 @@ function makeCameraStub(overrides) {
   };
 }
 
-test("a perspective camera is read as an explicit perspective view", async () => {
+test("a perspective matrix is read as perspective whatever the camera state says", async () => {
   const { readCameraView } = await loadLodModule();
   const { renderer, renderWindow } = makeCameraStub();
 
@@ -586,37 +616,54 @@ test("a perspective camera is read as an explicit perspective view", async () =>
   assert.equal(view.viewportHeightCssPx, 100);
 });
 
-test("a parallel camera is read as an orthographic view carrying parallelScale", async () => {
+test("a uniform view scale cancels out of the fovY the matrix yields", async () => {
   const { readCameraView } = await loadLodModule();
   const { renderer, renderWindow } = makeCameraStub({
-    getParallelProjection: () => true,
+    getCompositeProjectionMatrix: () => PERSPECTIVE_COMPOSITE_SCALED.slice(),
+  });
+
+  const view = readCameraView(renderer, renderWindow);
+
+  assert.equal(view.projection, "perspective");
+  assert.ok(Math.abs(view.fovY - Math.PI / 2) < 1e-12);
+});
+
+test("a parallel matrix is read as an orthographic view carrying parallelScale", async () => {
+  const { readCameraView } = await loadLodModule();
+  const { renderer, renderWindow } = makeCameraStub({
+    getCompositeProjectionMatrix: () => ORTHO_COMPOSITE.slice(),
+    getParallelProjection: () => false,
   });
 
   const view = readCameraView(renderer, renderWindow);
 
   assert.equal(view.projection, "orthographic");
   assert.equal(view.parallelScale, 8);
-  // A parallel camera still reports a viewAngle; carrying it would let the
-  // library size detail by a number the projection never uses.
+  // The projection never uses a field of view; carrying the camera's would
+  // let the library size detail by a number nothing renders with.
   assert.equal(view.fovY, undefined);
 });
 
-test("a camera with an unusable sizing scalar yields no view instead of a guess", async () => {
+test("a camera with an unusable matrix yields no view instead of a guess", async () => {
   const { readCameraView } = await loadLodModule();
+  const zeroVertical = PERSPECTIVE_COMPOSITE.slice();
+  zeroVertical[5] = 0;
   const unusable = [
-    { getParallelProjection: () => true, getParallelScale: () => 0 },
-    { getParallelProjection: () => true, getParallelScale: () => Number.NaN },
-    { getParallelProjection: () => true, getParallelScale: () => undefined },
-    { getViewAngle: () => 0 },
-    { getViewAngle: () => 180 },
-    { getViewAngle: () => undefined },
+    { getCompositeProjectionMatrix: () => null },
+    { getCompositeProjectionMatrix: () => [1, 0, 0] },
+    { getCompositeProjectionMatrix: () => zeroVertical },
+    {
+      getCompositeProjectionMatrix: () =>
+        PERSPECTIVE_COMPOSITE.map(() => Number.NaN),
+    },
+    { getPosition: () => undefined },
   ];
-  for (const overrides of unusable) {
+  for (const [index, overrides] of unusable.entries()) {
     const { renderer, renderWindow } = makeCameraStub(overrides);
     assert.equal(
       readCameraView(renderer, renderWindow),
       null,
-      `no view for ${JSON.stringify(Object.keys(overrides))}`,
+      `no view for unusable camera ${index}`,
     );
   }
 });

@@ -578,6 +578,13 @@ test("unusable adaptive options make the block unusable instead of reaching the 
       { adaptive: true, adaptiveOptions: { stationaryTargetMs: 0 } },
       { adaptive: true, adaptiveOptions: { interactionTargetMs: Number.NaN } },
       { adaptive: true, adaptiveOptions: { minBudget: -1 } },
+      // Infinity satisfies `maxBudget >= minBudget` and survives Math.floor;
+      // the library rejects it by throwing mid-render-pass, so normalization
+      // must be the layer that refuses it.
+      {
+        adaptive: true,
+        adaptiveOptions: { maxBudget: Number.POSITIVE_INFINITY },
+      },
       { adaptive: true, adaptiveOptions: 7 },
     ];
     // Established and drawing first, so the rejection has something to undo.

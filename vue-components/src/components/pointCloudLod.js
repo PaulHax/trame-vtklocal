@@ -32,6 +32,7 @@
 // announce itself.
 
 import {
+  DEFAULTS as LOD_DEFAULTS,
   createHttpTileSource,
   createLodController,
   createMemoryPool,
@@ -82,10 +83,10 @@ const DEFAULT_POINT_BUDGET = 2_000_000;
 // The library rejects an adaptive maximum below the adaptive floor, and it
 // throws rather than clamping. The bridge therefore always states the floor it
 // wants, so an out-of-order pair is rejected while normalizing the block rather
-// than thrown from the middle of a render pass.
-const DEFAULT_ADAPTIVE_MIN_BUDGET = 200_000;
-
-const DEG_TO_RAD = Math.PI / 180;
+// than thrown from the middle of a render pass. The floor itself is the
+// library's, imported rather than restated: a copy here would accept a
+// maximum the library then throws on the moment the policy moves.
+const DEFAULT_ADAPTIVE_MIN_BUDGET = LOD_DEFAULTS.minBudget;
 
 // How long the camera must hold still before the inferred motion reference is
 // released. Long enough to bridge a dropped playback frame or a slow scrub
@@ -221,7 +222,13 @@ function normalizeAdaptiveOptions(block) {
     (interactionTargetMs === undefined ||
       isPositiveFinite(interactionTargetMs)) &&
     isPositiveFinite(minBudget) &&
-    (maxBudget === undefined || maxBudget >= minBudget);
+    // Finiteness is checked here and not only in the library because the
+    // library checks by throwing — from the middle of a render pass, taking
+    // the whole scene sync down with it. `Infinity >= minBudget` is true, and
+    // `Math.floor(Infinity)` is still `Infinity`, so without this test an
+    // unbounded maximum sails through normalization.
+    (maxBudget === undefined ||
+      (isPositiveFinite(maxBudget) && maxBudget >= minBudget));
   return usable
     ? { minBudget, maxBudget, stationaryTargetMs, interactionTargetMs }
     : null;
@@ -277,10 +284,33 @@ function normalizeConfig(block) {
   };
 }
 
-// The projection mode is read from the camera, never guessed from a numeric
-// value: the library projects a world spacing to pixels by a different law
-// per mode, and a parallel camera's viewAngle is meaningless rather than
-// absent. A camera whose sizing scalar is unusable yields no view at all,
+// The xyz norm of one row of a world-to-clip matrix in the column-major
+// layout getWorldToClipMatrix returns (`index = column * 4 + row`).
+function rowNorm(m, row) {
+  return Math.hypot(m[row], m[row + 4], m[row + 8]);
+}
+
+// Below this ratio of the w row to the vertical row, the projection is read
+// as parallel. A perspective matrix's w row carries the view scale and its
+// vertical row carries scale times cot(fovY/2), so the ratio is cot(fovY/2)
+// whatever the scale — reaching 1e6 would mean a field of view of
+// microdegrees, which no real camera produces, while a parallel projection's
+// w row is exactly zero.
+const PERSPECTIVE_W_RATIO_FLOOR = 1e-6;
+
+// The projection mode and sizing scalar are read from the rendered matrix
+// itself, never from camera state: a host that pushes a projection matrix
+// every frame (the map layer does) leaves `parallelProjection`, `viewAngle`
+// and `parallelScale` describing a camera vtk.js is not rendering, and the
+// library projects a world spacing to pixels by a different law per mode.
+// From the matrix, both scalars come out in exactly the form the library's
+// SSE math needs, with any uniform view scale cancelled:
+//
+//   - perspective: |w row| / |y row| = tan(fovY/2) of what is rendered;
+//   - parallel:    |y row| is NDC-per-world-unit, so 1 / |y row| is the
+//     effective parallelScale.
+//
+// A camera whose matrix yields no usable scalar produces no view at all,
 // leaving the controller on its last good camera.
 export function readCameraView(renderer, renderWindow) {
   const camera = renderer?.getActiveCamera?.();
@@ -299,14 +329,17 @@ export function readCameraView(renderer, renderWindow) {
     position: [position[0], position[1], position[2]],
     viewportHeightCssPx: metrics.height,
   };
-  if (camera.getParallelProjection?.()) {
-    const parallelScale = camera.getParallelScale?.();
-    if (!isPositiveFinite(parallelScale)) return null;
-    return { ...common, projection: "orthographic", parallelScale };
+  const verticalNorm = rowNorm(viewProj, 1);
+  const wNorm = rowNorm(viewProj, 3);
+  if (!isPositiveFinite(verticalNorm)) return null;
+  if (wNorm > verticalNorm * PERSPECTIVE_W_RATIO_FLOOR) {
+    const fovY = 2 * Math.atan(wNorm / verticalNorm);
+    if (!isPositiveFinite(fovY)) return null;
+    return { ...common, projection: "perspective", fovY };
   }
-  const viewAngle = camera.getViewAngle?.();
-  if (!isPositiveFinite(viewAngle) || viewAngle >= 180) return null;
-  return { ...common, projection: "perspective", fovY: viewAngle * DEG_TO_RAD };
+  const parallelScale = 1 / verticalNorm;
+  if (!isPositiveFinite(parallelScale)) return null;
+  return { ...common, projection: "orthographic", parallelScale };
 }
 
 // The library's frustum/SSE math assumes a uniform-scale anchor transform:

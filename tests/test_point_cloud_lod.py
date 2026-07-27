@@ -172,6 +172,34 @@ def test_adaptive_options_validation_errors():
         mark(4_000_000)
 
 
+def test_adaptive_floor_matches_the_library():
+    """Pin the mirrored floor to the library's own DEFAULTS.minBudget.
+
+    The JS component imports the value, so this module's mirror is the one
+    hand-copy left in the chain: everything downstream (the app validates
+    deployment caps against it) inherits a drift here as a crash in the
+    client's render pass. The library source is reachable through the vue
+    build's node_modules both in development (a symlink to the sibling
+    checkout) and in CI (the npm tarball ships src/).
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "vue-components"
+        / "node_modules"
+        / "pointcloud-lod"
+        / "src"
+        / "adaptiveBudget.ts"
+    )
+    if not source.exists():
+        pytest.skip("pointcloud-lod is not installed next to the vue build")
+    match = re.search(r"minBudget:\s*([0-9_]+)", source.read_text())
+    assert match is not None, "the library no longer states DEFAULTS.minBudget"
+    assert pcl.DEFAULT_ADAPTIVE_MIN_BUDGET == int(match.group(1).replace("_", ""))
+
+
 def test_refinement_cutoff_reaches_the_wire():
     api, rw, mapper, render_window_id = _make_scene()
     pcl.mark_point_cloud_lod(mapper, **CONFIG, refinement_cutoff_px=0.5)

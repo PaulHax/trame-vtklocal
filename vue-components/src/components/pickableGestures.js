@@ -25,6 +25,14 @@ export function createPickableGestures({
   readSeq = () => null,
   getCanvas = () => null,
   emit = noop,
+  // Synchronous payload-enrichment hook, applied to every payload after
+  // buildPayload and immediately before emit — for drag moves that is after
+  // rAF coalescing, so an expensive enrichment (e.g. a point-cloud depth
+  // solve) runs once per emitted frame, not once per pointer event. The hook
+  // returns the payload to emit (or a falsy value to emit the original);
+  // policy about WHICH payloads deserve enrichment lives in the hook, keeping
+  // this state machine free of app semantics.
+  enrichPayload = null,
   onDragStart = noop,
   onDragMove = noop,
   onDragEnd = noop,
@@ -97,6 +105,13 @@ export function createPickableGestures({
     };
   }
 
+  // Every payload leaves through here: enrichment sees exactly what emits.
+  function emitPayload(payload) {
+    const enriched =
+      typeof enrichPayload === "function" ? enrichPayload(payload) : null;
+    emit(enriched || payload);
+  }
+
   function setCursor(canvas, value) {
     if (canvas && canvas.style) {
       canvas.style.cursor = value;
@@ -128,7 +143,7 @@ export function createPickableGestures({
     pendingMove = null;
     if (!drag || !payload) return;
     onDragMove(payload);
-    emit(payload);
+    emitPayload(payload);
   }
 
   function scheduleMove(payload) {
@@ -178,7 +193,7 @@ export function createPickableGestures({
       flags,
     );
     onDragEnd(payload);
-    emit(payload);
+    emitPayload(payload);
 
     try {
       active.canvas?.releasePointerCapture?.(active.pointerId);
@@ -234,7 +249,7 @@ export function createPickableGestures({
       grabOffset,
     );
     onDragStart(payload);
-    emit(payload);
+    emitPayload(payload);
     return true;
   }
 
@@ -260,7 +275,7 @@ export function createPickableGestures({
   // hover off via setHoverEnabled/teardown stays silent: the app asked.)
   function clearHover() {
     if (hoveredPick) {
-      emit(buildPayload("target.leave", null, hoveredPick, null));
+      emitPayload(buildPayload("target.leave", null, hoveredPick, null));
     }
     dropHover();
   }
@@ -273,10 +288,10 @@ export function createPickableGestures({
     const next = cssPointer ? pick(cssPointer.x, cssPointer.y) : null;
     if (samePick(next, hoveredPick)) return;
     if (hoveredPick) {
-      emit(buildPayload("target.leave", cssPointer, hoveredPick, null));
+      emitPayload(buildPayload("target.leave", cssPointer, hoveredPick, null));
     }
     if (next) {
-      emit(buildPayload("target.enter", cssPointer, next, null));
+      emitPayload(buildPayload("target.enter", cssPointer, next, null));
     }
     hoveredPick = next;
   }
@@ -340,11 +355,11 @@ export function createPickableGestures({
     if (!cssPointer) return false;
     const pickResult = pick(cssPointer.x, cssPointer.y);
     if (pickResult) {
-      emit(buildPayload("target.click", cssPointer, pickResult, null));
+      emitPayload(buildPayload("target.click", cssPointer, pickResult, null));
       return true;
     }
     if (!backgroundClickEnabled) return false;
-    emit(buildPayload("background.click", cssPointer, null, null));
+    emitPayload(buildPayload("background.click", cssPointer, null, null));
     return true;
   }
 

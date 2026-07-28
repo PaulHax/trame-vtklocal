@@ -12,7 +12,7 @@ async function loadLodModule() {
 }
 
 const BLOCK = {
-  assetId: "cloud-1",
+  sourceAssetId: "asset-1",
   revision: "rev1",
   endpoint: "/pointcloud/cloud-1/rev1",
   pointCount: 2,

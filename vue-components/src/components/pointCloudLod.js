@@ -237,11 +237,20 @@ function normalizeAdaptiveOptions(block) {
     : null;
 }
 
+function nonEmptyString(value) {
+  return typeof value === "string" && value ? value : null;
+}
+
 function normalizeConfig(block) {
   if (!block || typeof block !== "object") {
     return null;
   }
   const { endpoint, pointCount, pointBudget, refinementCutoffPx } = block;
+  // The durable source identity and its revision are what scoped picking
+  // matches queries against and echoes back as provenance; a block that
+  // cannot say who it is cannot honestly answer "was that pick against you".
+  const sourceAssetId = nonEmptyString(block.sourceAssetId);
+  const revision = nonEmptyString(block.revision);
   const presentation =
     block.presentation?.mode === "fixed" &&
     isPositiveFinite(block.presentation.diameterCssPx)
@@ -266,12 +275,16 @@ function normalizeConfig(block) {
   if (
     typeof endpoint !== "string" ||
     !endpoint ||
+    !sourceAssetId ||
+    !revision ||
     !presentation ||
     !adaptiveOptions
   ) {
     return null;
   }
   return {
+    sourceAssetId,
+    revision,
     endpoint,
     pointCount: Number.isFinite(pointCount) ? Number(pointCount) : 0,
     presentation,
@@ -330,6 +343,7 @@ export function readCameraView(renderer, renderWindow) {
   const common = {
     viewProj,
     position: [position[0], position[1], position[2]],
+    viewportWidthCssPx: metrics.width,
     viewportHeightCssPx: metrics.height,
   };
   const verticalNorm = rowNorm(viewProj, 1);
@@ -424,6 +438,110 @@ export function cameraInAnchorCoordinates(view, matrix) {
   return local.projection === "orthographic"
     ? { ...local, parallelScale: local.parallelScale / scale }
     : local;
+}
+
+// Scoped point pick against ONE streamed cloud, addressed by its durable
+// sourceAssetId (never the tile-service id inside the endpoint, never "the
+// frontmost cloud"). Returns the wire-shaped solve:
+//
+//   { status: "hit", asset_id, revision, node_id, world, distance_px }
+//   { status: "miss", asset_id, revision, node_id }
+//   null — unavailable: unknown or duplicate identity, unresolved anchor,
+//   hidden cloud, unreadable camera, or a non-similarity anchor transform.
+//
+// Only the explicit miss authorizes a caller's fallback, so every doubtful
+// state must land on null rather than an empty sweep. The provenance fields
+// are read from the matched entry, never echoed from the request: a caller
+// comparing them against what it asked for is verifying the query really ran
+// against the cloud it named.
+//
+// The anchor's live UserMatrix is read per query: the camera is restated in
+// anchor coordinates through it, and a hit — solved on the anchor-local ray —
+// is transformed back through the SAME matrix, so `world` is display
+// scene-local ENU even while a correction preview is mid-flight.
+export function pickPointCloudPoint(
+  registry,
+  sourceAssetId,
+  cssXPx,
+  cssYPx,
+  context,
+) {
+  if (!registry) return null;
+  const requested = nonEmptyString(sourceAssetId);
+  if (!requested) return null;
+  let entry = null;
+  for (const candidate of registry.values()) {
+    if (candidate?.config?.sourceAssetId !== requested) continue;
+    // Two entries claiming one identity means "which cloud?" has no honest
+    // answer; refusing beats silently solving against whichever came first.
+    if (entry) return null;
+    entry = candidate;
+  }
+  if (!entry?.controller) return null;
+  // The anchor established by the update pass, revalidated: the pick must
+  // run in the renderer hosting the anchor (its camera is the one the tiles
+  // are drawn under), never an arbitrary primary renderer.
+  const { actor, hostRenderer } = entry;
+  if (
+    !isLiveInstance(actor) ||
+    actor.getMapper?.() !== entry.mapper ||
+    !hostRenderer?.getActors?.().includes(actor)
+  ) {
+    return null;
+  }
+  const anchorVisible = actor.getVisibility?.();
+  if (!(anchorVisible === undefined ? true : !!anchorVisible)) return null;
+  const baseMatrix = actor.getUserMatrix?.() ?? null;
+  const view = cameraInAnchorCoordinates(
+    readCameraView(hostRenderer, context?.renderWindow),
+    baseMatrix,
+  );
+  if (!view) return null;
+  const result = entry.controller.pickPoint(view, cssXPx, cssYPx);
+  if (!result) return null;
+  const provenance = {
+    asset_id: entry.config.sourceAssetId,
+    revision: entry.config.revision,
+    node_id: entry.id,
+  };
+  if (result.status !== "hit") {
+    return { status: "miss", ...provenance };
+  }
+  return {
+    status: "hit",
+    ...provenance,
+    world: transformPoint(baseMatrix ?? IDENTITY_MATRIX, result.pointOnRay),
+    distance_px: result.distancePx,
+  };
+}
+
+// The gesture payload types whose pointer is a ray the server would otherwise
+// resolve against cloud depth. Hover enter/leave never solve: they fire per
+// pointer move with no depth semantics.
+const CLOUD_SOLVE_GESTURE_TYPES = new Set([
+  "target.drag.start",
+  "target.drag.move",
+  "target.drag.end",
+  "target.click",
+]);
+
+// The cloud-depth enrichment policy for completed gesture payloads: attach a
+// scoped solve as `cloud_solve` when — and only when — the gesture is tagged
+// with a `depth_asset_id`, carries a resolved pointer (post grab-offset), and
+// is neither cancelled nor unresolved. Everything else passes through
+// untouched, so a terminal end without a pointer can never read as an
+// explicit miss downstream — a miss authorizes fallback, absence holds.
+// An unavailable scoped query (pickCloudPoint → null) also leaves the payload
+// untouched for the same reason.
+export function enrichGestureWithCloudSolve(payload, pickCloudPoint) {
+  if (!payload || !CLOUD_SOLVE_GESTURE_TYPES.has(payload.type)) return payload;
+  if (payload.cancelled || payload.unresolved || !payload.pointer) {
+    return payload;
+  }
+  const assetId = payload.pick?.tags?.depth_asset_id;
+  if (assetId == null) return payload;
+  const solve = pickCloudPoint(assetId, payload.pointer.x, payload.pointer.y);
+  return solve ? { ...payload, cloud_solve: solve } : payload;
 }
 
 // Resolve the anchor actor and the renderer hosting it. The anchor can live

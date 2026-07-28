@@ -71,3 +71,33 @@ test("a backend may add methods but never shadow a common API key", async () => 
   }
   assert.equal(typeof api.render, "function");
 });
+
+// The scoped cloud pick must be reachable from BOTH view implementations —
+// the owned-canvas view and the shared-context view. Their setups run outside
+// a mounted Vue instance here (lifecycle hooks warn and no-op), which is
+// enough: the returned object is the exact api each registers for consumers.
+test("pickCloudPoint is exposed by both view implementations", async () => {
+  const { COMMON_VIEW_API_KEYS } = await loadModule(
+    "/src/components/viewApi.js",
+  );
+  assert.ok(COMMON_VIEW_API_KEYS.includes("pickCloudPoint"));
+
+  const props = {
+    renderWindow: 1,
+    wsClient: {},
+    cameraAuthority: "server",
+    viewKey: null,
+  };
+  for (const path of [
+    "/src/components/VtkJsLocal.js",
+    "/src/components/VtkJsShared.js",
+  ]) {
+    const component = (await loadModule(path)).default;
+    const api = component.setup(props, { emit() {} });
+    assert.equal(
+      typeof api.pickCloudPoint,
+      "function",
+      `${path} exposes pickCloudPoint`,
+    );
+  }
+});

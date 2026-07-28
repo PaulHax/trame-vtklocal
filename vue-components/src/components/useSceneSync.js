@@ -33,6 +33,8 @@ import {
   disposePointCloudLods,
   beginPointCloudLodInteraction,
   endPointCloudLodInteraction,
+  enrichGestureWithCloudSolve,
+  pickPointCloudPoint,
   pointCloudLodNeedsFrame,
   recordPointCloudLodHostFrame,
   updatePointCloudLods,
@@ -50,13 +52,7 @@ import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
 
 export function useSceneSync(
-  {
-    client,
-    emit,
-    getRenderWindow,
-    renderScene,
-    cameraAuthority = "server",
-  },
+  { client, emit, getRenderWindow, renderScene, cameraAuthority = "server" },
   dependencies = {},
 ) {
   const {
@@ -584,6 +580,16 @@ export function useSceneSync(
     });
   }
 
+  // Solve cloud depth under (cssX, cssY) against the ONE streamed LOD cloud
+  // whose durable sourceAssetId matches — the query is scoped, never "the
+  // frontmost cloud". Null means unavailable; only an explicit
+  // {status: "miss"} authorizes a caller's fallback.
+  function pickCloudPoint(sourceAssetId, cssX, cssY) {
+    return pickPointCloudPoint(pointCloudLods, sourceAssetId, cssX, cssY, {
+      renderWindow: getRenderWindow?.(),
+    });
+  }
+
   // The camera matrices this view last rendered with, in the flat layout the
   // consuming server already speaks (the same arrays setRenderedCamera stored).
   // Null until a rendered camera has been pushed. Read at event time so a
@@ -730,6 +736,11 @@ export function useSceneSync(
     readViewport: readGestureViewport,
     readSeq: getSeq,
     getCanvas: getViewCanvas,
+    // Runs synchronously after rAF coalescing, on the payload's own pointer
+    // (grab offset already applied): the solved ray is exactly the one the
+    // server would otherwise resolve for this event.
+    enrichPayload: (payload) =>
+      enrichGestureWithCloudSolve(payload, pickCloudPoint),
     emit: (payload) => emit?.("pointerEvent", payload),
     onDragStart: dragPreview.start,
     onDragMove: dragPreview.move,
@@ -759,6 +770,7 @@ export function useSceneSync(
     getSeq,
     uploadTexture,
     pickAt,
+    pickCloudPoint,
     startTargetDrag: gestures.startTargetDrag,
     emitTargetClick: gestures.emitTargetClick,
     setPointerContext: gestures.setPointerContext,

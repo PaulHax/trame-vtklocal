@@ -496,3 +496,46 @@ test("removing the active target emits a terminal cancelled drag end", async () 
   assert.equal(terminal.unresolved, true);
   assert.equal(g.getActivePick(), null);
 });
+
+test("enrichPayload runs after rAF coalescing and its result is what emits", async () => {
+  const h = makeHarness();
+  const enriched = [];
+  const g = await createGestures(h, {
+    factory: {
+      enrichPayload: (payload) => {
+        enriched.push(payload);
+        return { ...payload, cloud_solve: { at: payload.pointer } };
+      },
+    },
+  });
+
+  g.startTargetDrag(pointerEvent(100, 50));
+  // Two raw moves, one frame: the hook must see only the coalesced survivor.
+  h.windowRef.dispatch("pointermove", pointerEvent(120, 60));
+  h.windowRef.dispatch("pointermove", pointerEvent(200, 90));
+  h.windowRef.flushRaf();
+
+  assert.equal(enriched.length, 2, "start + one coalesced move");
+  const move = h.events[1];
+  assert.equal(move.type, "target.drag.move");
+  // The enriched object is the emitted object, and the solve saw the payload's
+  // own pointer — grab offset (+5, -3) already applied.
+  assert.deepEqual(move.cloud_solve, { at: { x: 205, y: 87 } });
+  assert.deepEqual(move.pointer, { x: 205, y: 87 });
+
+  h.windowRef.dispatch("pointerup", pointerEvent(220, 100));
+  const end = h.events.at(-1);
+  assert.equal(end.type, "target.drag.end");
+  assert.deepEqual(end.cloud_solve, { at: { x: 225, y: 97 } });
+});
+
+test("a hook returning nothing leaves the original payload emitting", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h, {
+    factory: { enrichPayload: () => null },
+  });
+  g.startTargetDrag(pointerEvent(100, 50));
+  assert.equal(h.events.length, 1);
+  assert.equal(h.events[0].type, "target.drag.start");
+  assert.deepEqual(h.events[0].pointer, { x: 105, y: 47 });
+});

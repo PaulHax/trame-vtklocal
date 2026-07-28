@@ -12,6 +12,8 @@ after(async () => {
 });
 
 const BLOCK = {
+  sourceAssetId: "asset-1",
+  revision: "rev1",
   endpoint: "/pointcloud/cloud-1/rev1",
   pointCount: 2,
   presentation: { mode: "fixed", diameterCssPx: 3 },

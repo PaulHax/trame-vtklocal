@@ -19,6 +19,9 @@ export async function loadModule(modulePath) {
         },
         dedupe: ["@kitware/vtk.js"],
       },
+      ssr: {
+        noExternal: ["pointcloud-lod"],
+      },
       server: {
         middlewareMode: true,
         hmr: false,

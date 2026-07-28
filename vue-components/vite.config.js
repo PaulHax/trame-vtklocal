@@ -14,6 +14,9 @@ export default {
     },
     dedupe: ["@kitware/vtk.js"],
   },
+  ssr: {
+    noExternal: ["pointcloud-lod"],
+  },
   build: {
     lib: {
       entry: "./src/main.js",

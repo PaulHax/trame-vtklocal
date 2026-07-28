@@ -155,6 +155,7 @@ async function makeAdaptiveView() {
     ...module,
     registry,
     camera,
+    anchorMapper,
     repaint,
     governor: () => module.describePointCloudLodGovernor(registry),
     dispose: () => module.disposePointCloudLods(registry),
@@ -210,6 +211,56 @@ test("pausing playback transitions once into settled refinement", async () => {
     assert.equal(stats.targetFrameTimeMs, 33);
     assert.equal(stats.motion.source, null);
     assert.equal(stats.motion.settling, false);
+  } finally {
+    view.dispose();
+  }
+});
+
+test("a cloud re-added after the camera moved starts settled", async () => {
+  // While the view holds no cloud there is nothing to select for, so those
+  // passes see no camera at all. Keeping the last camera from before the cloud
+  // left makes the first pass after it comes back compare against it and read
+  // every metre travelled since as motion — the returning cloud's opening
+  // selection then runs at the responsive quality target for a gesture nobody
+  // made. It self-clears one debounce later, which is exactly long enough to
+  // be the frames the user is looking at.
+  const view = await makeAdaptiveView();
+  try {
+    assert.equal(view.governor().regime, "stationary", "still to begin with");
+
+    // The cloud goes away: a null block drops the entry, and with the last
+    // adaptive cloud gone the view drops its governor too.
+    view.applyPointCloudLodBlock(view.registry, "42", null, null, () => {});
+    view.repaint();
+    await settle();
+    assert.equal(view.registry.size, 0, "the entry is gone");
+    assert.equal(view.governor(), null, "no cloud, no governor");
+
+    // The user moves the empty view a long way.
+    for (let step = 0; step < 5; step += 1) {
+      view.camera.panBy(250);
+      view.repaint();
+      await sleep(20);
+    }
+
+    view.applyPointCloudLodBlock(
+      view.registry,
+      "42",
+      BLOCK,
+      view.anchorMapper,
+      () => {},
+    );
+    view.repaint();
+    await settle();
+
+    const stats = view.governor();
+    assert.equal(
+      stats.regime,
+      "stationary",
+      "the returning cloud read the camera's travel as motion",
+    );
+    assert.equal(stats.motion.source, null);
+    assert.equal(stats.motion.inferredReferences, 0);
   } finally {
     view.dispose();
   }

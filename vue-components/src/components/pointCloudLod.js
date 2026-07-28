@@ -91,6 +91,9 @@ const DEFAULT_ADAPTIVE_MIN_BUDGET = LOD_DEFAULTS.minBudget;
 // How long the camera must hold still before the inferred motion reference is
 // released. Long enough to bridge a dropped playback frame or a slow scrub
 // step, short enough that a single camera jump refines almost immediately.
+// This is what every view runs on: `context.motionDebounceMs` exists so a test
+// can shorten it, not as deployment configuration, and nothing in the
+// component chain supplies one.
 const DEFAULT_MOTION_DEBOUNCE_MS = 250;
 
 // Relative, with an absolute floor of the same size, because these numbers span
@@ -738,6 +741,14 @@ export function updatePointCloudLods(registry, context) {
   const { renderers, renderWindow, scheduleRender, motionDebounceMs } =
     context || {};
   if (registry.size === 0 || !renderers?.length || !renderWindow) {
+    // No cloud is being selected for, so nothing this pass could see is a
+    // camera baseline. Keeping the last one means the first pass after a cloud
+    // comes back compares against a camera from before it left and reads all
+    // the travel since as motion — the cloud's opening selection then runs in
+    // the moving regime for a gesture nobody made. Dropping the baseline makes
+    // that first camera the baseline again, exactly as it is on a fresh view.
+    const motion = cameraMotionByRegistry.get(registry);
+    if (motion) motion.views = new Map();
     return;
   }
   const render = scheduleRender ?? (() => {});
@@ -873,6 +884,14 @@ export function disposePointCloudLods(registry) {
   const motion = cameraMotionByRegistry.get(registry);
   if (motion) releaseInferredMotion(motion);
   cameraMotionByRegistry.delete(registry);
+  // Hand the references back before dropping the slots holding them. The
+  // governor is disposed on the next line, which makes the counts moot — but
+  // "we release everything we took" has to be true of this teardown on its own
+  // terms, not because of what the line after it happens to do.
+  for (const slot of explicitMotionSlots.get(registry) ?? []) {
+    slot.reference?.release();
+    slot.reference = null;
+  }
   explicitMotionSlots.delete(registry);
   viewGovernorOf(registry)?.dispose();
   viewGovernors.delete(registry);

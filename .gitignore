@@ -4,6 +4,8 @@ node_modules
 .venv
 .venv-pv
 .pyvista
+/.vite/
+/dist/
 
 bike.vtp
 seeds.jpg

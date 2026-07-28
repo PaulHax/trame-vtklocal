@@ -56,9 +56,6 @@ export function useSceneSync(
     getRenderWindow,
     renderScene,
     cameraAuthority = "server",
-    // How long the rendered camera must hold still before LOD leaves the
-    // moving quality regime; the classifier's default applies when unset.
-    motionDebounceMs,
   },
   dependencies = {},
 ) {
@@ -531,11 +528,14 @@ export function useSceneSync(
     // controller debounces selection internally, so per-message and
     // per-interactor-render calls stay cheap.
     updatePointCloudPresentations(pointCloudPresentations);
+    // No `motionDebounceMs` here: no component accepts one, so passing it
+    // through was configuration nothing but a test could ever set. The
+    // classifier's own constant is the debounce every view runs on; give this
+    // a prop the day a deployment actually needs a different one.
     return updatePointCloudLods(pointCloudLods, {
       renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),
       scheduleRender: () => renderRequestCallback?.(),
-      motionDebounceMs,
     });
   }
 

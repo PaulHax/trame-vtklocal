@@ -447,7 +447,8 @@ export function cameraInAnchorCoordinates(view, matrix) {
 //   { status: "hit", asset_id, revision, node_id, world, distance_px }
 //   { status: "miss", asset_id, revision, node_id }
 //   null — unavailable: unknown or duplicate identity, unresolved anchor,
-//   hidden cloud, unreadable camera, or a non-similarity anchor transform.
+//   hidden cloud, non-drawing host renderer, unreadable camera, or a
+//   non-similarity anchor transform.
 //
 // Only the explicit miss authorizes a caller's fallback, so every doubtful
 // state must land on null rather than an empty sweep. The provenance fields
@@ -491,13 +492,29 @@ export function pickPointCloudPoint(
   }
   const anchorVisible = actor.getVisibility?.();
   if (!(anchorVisible === undefined ? true : !!anchorVisible)) return null;
+  // A renderer taken out of the draw pass hides everything it hosts just as
+  // thoroughly as actor visibility does; what the user cannot see must not
+  // support a depth (a missing getter means drawing, like a missing
+  // visibility getter means visible).
+  const rendererDraws = hostRenderer.getDraw?.();
+  if (!(rendererDraws === undefined ? true : !!rendererDraws)) return null;
   const baseMatrix = actor.getUserMatrix?.() ?? null;
   const view = cameraInAnchorCoordinates(
     readCameraView(hostRenderer, context?.renderWindow),
     baseMatrix,
   );
   if (!view) return null;
-  const result = entry.controller.pickPoint(view, cssXPx, cssYPx);
+  // The caller measures the cursor on the canvas; the library sweeps in the
+  // host renderer's own viewport (top-left origin, spanning its css size).
+  // A non-full viewport makes those different spaces, so shift by the
+  // viewport's canvas-css origin before querying.
+  const metrics = getViewportMetrics(hostRenderer, context?.renderWindow);
+  if (!metrics) return null;
+  const result = entry.controller.pickPoint(
+    view,
+    cssXPx - metrics.leftCssPx,
+    cssYPx - metrics.topCssPx,
+  );
   if (!result) return null;
   const provenance = {
     asset_id: entry.config.sourceAssetId,

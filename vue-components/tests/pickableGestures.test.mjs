@@ -539,3 +539,35 @@ test("a hook returning nothing leaves the original payload emitting", async () =
   assert.equal(h.events[0].type, "target.drag.start");
   assert.deepEqual(h.events[0].pointer, { x: 105, y: 47 });
 });
+
+test("clicks emit through the enrichment hook like every other gesture", async () => {
+  const h = makeHarness();
+  const g = await createGestures(h, {
+    factory: {
+      enrichPayload: (payload) => ({
+        ...payload,
+        cloud_solve: { at: payload.pointer },
+      }),
+    },
+  });
+
+  // target.click is one of the four cloud_solve gesture types: a raw emit
+  // here would silently strip the solve from every click.
+  assert.equal(g.emitTargetClick(pointerEvent(200, 120)), true);
+  const click = h.events.at(-1);
+  assert.equal(click.type, "target.click");
+  assert.deepEqual(click.cloud_solve, { at: { x: 200, y: 120 } });
+
+  // The background click leaves through the same door; the hook decides what
+  // (if anything) it deserves.
+  const g2 = await createGestures(h, {
+    pick: () => null,
+    factory: {
+      enrichPayload: (payload) => ({ ...payload, marked: true }),
+    },
+  });
+  assert.equal(g2.emitTargetClick(pointerEvent(10, 10)), true);
+  const background = h.events.at(-1);
+  assert.equal(background.type, "background.click");
+  assert.equal(background.marked, true);
+});

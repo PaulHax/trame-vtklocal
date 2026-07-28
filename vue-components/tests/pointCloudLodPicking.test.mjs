@@ -109,7 +109,14 @@ function makeAnchor() {
   const actor = {
     visibility: 1,
     userMatrix: null,
-    getMapper: () => mapper,
+    deleted: false,
+    mapper,
+    isDeleted() {
+      return this.deleted;
+    },
+    getMapper() {
+      return this.mapper;
+    },
     getVisibility() {
       return this.visibility;
     },
@@ -121,10 +128,14 @@ function makeAnchor() {
   return { mapper, actor };
 }
 
-function makeRenderer(anchors, composite = IDENTITY) {
+function makeRenderer(anchors, composite = IDENTITY, viewport = [0, 0, 1, 1]) {
   const added = [];
   return {
     added,
+    draw: true,
+    getDraw() {
+      return this.draw;
+    },
     getActors: () => [...anchors.map((anchor) => anchor.actor), ...added],
     addActor: (actor) => added.push(actor),
     removeActor: (actor) => {
@@ -138,7 +149,7 @@ function makeRenderer(anchors, composite = IDENTITY) {
       getParallelScale: () => 1,
       getViewAngle: () => 90,
     }),
-    getViewport: () => [0, 0, 1, 1],
+    getViewport: () => viewport.slice(),
   };
 }
 
@@ -380,6 +391,224 @@ test("the pick runs under the entry's host renderer camera, not the primary", as
   lod.disposePointCloudLods(registry);
 });
 
+test("cursor coordinates are shifted into the host renderer's viewport", async () => {
+  const lod = await loadLodModule();
+  stubFetch();
+  const anchor = makeAnchor();
+  // The host renderer draws into the bottom-right quadrant of a 400x200
+  // canvas: a 200x100 viewport whose canvas-css origin is (200, 100).
+  const renderer = makeRenderer([anchor], IDENTITY, [0.5, 0, 1, 0.5]);
+  const renderWindow = { getViews: () => [{ getSize: () => [400, 200] }] };
+  const registry = new Map();
+  lod.applyPointCloudLodBlock(registry, "42", BLOCK, anchor.mapper, () => {});
+  lod.updatePointCloudLods(registry, {
+    renderers: [renderer],
+    renderWindow,
+    scheduleRender: () => {},
+  });
+  await settle();
+  assert.equal(renderer.added.length, 1, "tile streamed");
+
+  const context = { renderWindow };
+  // The cloud point renders at viewport-local (110, 45), i.e. canvas
+  // (310, 145). The canvas cursor there must resolve as a dead-on hit...
+  const solve = lod.pickPointCloudPoint(registry, "asset-1", 310, 145, context);
+  assert.equal(solve.status, "hit");
+  assert.ok(solve.distance_px < 1e-3, `cursor-exact hit: ${solve.distance_px}`);
+
+  // ...while the same numbers read as viewport-local (the pre-conversion
+  // interpretation) sit in another renderer's quadrant, out of every bucket.
+  const offset = lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context);
+  assert.equal(offset.status, "miss");
+
+  lod.disposePointCloudLods(registry);
+});
+
+test("a non-drawing host renderer makes the scoped pick unavailable", async () => {
+  const lod = await loadLodModule();
+  stubFetch();
+  const anchor = makeAnchor();
+  const renderer = makeRenderer([anchor]);
+  const registry = await streamClouds(
+    lod,
+    [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
+    [renderer],
+  );
+  const context = { renderWindow: RENDER_WINDOW };
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
+    "hit",
+  );
+
+  // The renderer leaves the draw pass with the anchor still visible and the
+  // tiles retained: nothing on screen can support a depth, so the answer is
+  // unavailable — never a fallback-authorizing miss, never a blind hit.
+  renderer.draw = false;
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
+    null,
+  );
+  renderer.draw = true;
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
+    "hit",
+  );
+
+  lod.disposePointCloudLods(registry);
+});
+
+test("a dead or re-parented anchor makes the scoped pick unavailable", async () => {
+  const lod = await loadLodModule();
+  stubFetch();
+  const anchor = makeAnchor();
+  const anchors = [anchor];
+  const renderer = makeRenderer(anchors);
+  const registry = await streamClouds(
+    lod,
+    [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
+    [renderer],
+  );
+  const context = { renderWindow: RENDER_WINDOW };
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
+    "hit",
+  );
+
+  // Deleted anchor actor: the entry's cached actor is no longer touchable.
+  anchor.actor.deleted = true;
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
+    null,
+  );
+  anchor.actor.deleted = false;
+
+  // Re-bound mapper: the actor no longer presents this entry's cloud.
+  anchor.actor.mapper = { isDeleted: () => false };
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
+    null,
+  );
+  anchor.actor.mapper = anchor.mapper;
+
+  // Actor gone from its cached host renderer (the server re-staged the
+  // layer): the cached camera is nobody's camera now.
+  anchors.pop();
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
+    null,
+  );
+  anchors.push(anchor);
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
+    "hit",
+  );
+
+  lod.disposePointCloudLods(registry);
+});
+
+test("controller and camera boundary failures are unavailable, never misses", async () => {
+  const lod = await loadLodModule();
+  stubFetch();
+  const anchor = makeAnchor();
+  const renderer = makeRenderer([anchor]);
+  const registry = await streamClouds(
+    lod,
+    [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
+    [renderer],
+  );
+  const context = { renderWindow: RENDER_WINDOW };
+  // The cursor sits dead on a rendered point: every null below is a refusal.
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
+    "hit",
+  );
+
+  // No usable render window: the host renderer's camera cannot be read.
+  assert.equal(lod.pickPointCloudPoint(registry, "asset-1", 110, 45, {}), null);
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, {
+      renderWindow: { getViews: () => [] },
+    }),
+    null,
+  );
+
+  // Non-finite cursor: the library refuses the query; that refusal must
+  // surface as unavailable, not be dressed up as an empty sweep.
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", NaN, 45, context),
+    null,
+  );
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, Infinity, context),
+    null,
+  );
+
+  // Disposed controller (the library's own unavailable state): same rule.
+  registry.get("42").controller.dispose();
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
+    null,
+  );
+
+  lod.disposePointCloudLods(registry);
+});
+
+test("a re-applied block refreshes the identity picking answers with", async () => {
+  const lod = await loadLodModule();
+  stubFetch();
+  const anchor = makeAnchor();
+  const renderer = makeRenderer([anchor]);
+  const registry = await streamClouds(
+    lod,
+    [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
+    [renderer],
+  );
+  const context = { renderWindow: RENDER_WINDOW };
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).revision,
+    "rev1",
+  );
+
+  // A revision bump on the same entry must reach provenance immediately: a
+  // stale revision would fail the server's currency check against a solve
+  // that really did run against the current cloud.
+  lod.applyPointCloudLodBlock(
+    registry,
+    "42",
+    { ...BLOCK, revision: "rev2" },
+    anchor.mapper,
+    () => {},
+  );
+  const bumped = lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context);
+  assert.equal(bumped.status, "hit");
+  assert.equal(bumped.revision, "rev2");
+
+  // A re-anchored source id moves the scope with it: the old identity stops
+  // answering and the new one owns the entry.
+  lod.applyPointCloudLodBlock(
+    registry,
+    "42",
+    { ...BLOCK, sourceAssetId: "asset-2", revision: "rev2" },
+    anchor.mapper,
+    () => {},
+  );
+  assert.equal(
+    lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
+    null,
+  );
+  const renamed = lod.pickPointCloudPoint(
+    registry,
+    "asset-2",
+    110,
+    45,
+    context,
+  );
+  assert.equal(renamed.status, "hit");
+  assert.equal(renamed.asset_id, "asset-2");
+
+  lod.disposePointCloudLods(registry);
+});
+
 test("a block without durable identity is unusable", async () => {
   const { applyPointCloudLodBlock } = await loadLodModule();
   const registry = new Map();
@@ -469,4 +698,118 @@ test("an unavailable scoped query leaves the payload without a cloud_solve", asy
   const result = enrichGestureWithCloudSolve(payload, () => null);
   assert.equal(result, payload);
   assert.equal("cloud_solve" in result, false);
+});
+
+// --- the delivering seam: useSceneSync wiring, no stubs on either side ----
+
+// A real gesture over a real streamed cloud: the pickable block and the LOD
+// block both arrive through useSceneSync's registered handlers, the drag runs
+// through the scene's own gesture machine, and the emitted pointerEvent must
+// carry a cloud_solve answered by the scene's own scoped query — the exact
+// closure-and-hook chain a green stub suite cannot vouch for.
+test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped solve", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+  const [glyph, polydata, points] = await Promise.all([
+    loadModule("/node_modules/@kitware/vtk.js/Rendering/Core/Glyph3DMapper.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/DataModel/PolyData.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/Core/Points.js"),
+  ]);
+  stubFetch();
+
+  const anchor = makeAnchor();
+  const renderer = makeRenderer([anchor]);
+  // Synced-renderer marker so the scene enumerates this renderer.
+  renderer.get = () => ({ remoteId: "1", managedInstanceId: "1" });
+  const canvas = {
+    style: { cursor: "" },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    setPointerCapture() {},
+    releasePointerCapture() {},
+  };
+  const renderWindow = {
+    getRenderers: () => [renderer],
+    getViews: () => [{ getSize: () => [200, 100], getCanvas: () => canvas }],
+  };
+
+  // A real glyph mapper backs the pickable, its one point on the streamed
+  // cloud point, so the grab lands exactly where the cloud solve must.
+  const glyphMapper = glyph.default.newInstance();
+  const poly = polydata.default.newInstance();
+  const pts = points.default.newInstance();
+  pts.setData(new Float32Array([0.1, 0.1, 0.1]), 3);
+  poly.setPoints(pts);
+  glyphMapper.setInputData(poly);
+
+  const events = [];
+  const blockHandlers = new Map();
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit: (type, payload) => events.push([type, payload]),
+      getRenderWindow: () => renderWindow,
+      renderScene() {},
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: { getInstance: () => null },
+        syncRenderWindow: renderWindow,
+        cleanup() {},
+      }),
+      createReconciler: () => ({
+        registerBlockHandler(key, handler) {
+          blockHandlers.set(key, handler);
+          return () => {};
+        },
+        teardown() {},
+      }),
+      createSceneEngine: () => ({
+        start() {},
+        stop() {},
+        resync() {},
+        onCommand: () => () => {},
+        getSeq: () => 5,
+        getDiagnostics: () => ({}),
+      }),
+    },
+  );
+  scene.initialize({ contextName: "ctx-cloud-solve", renderWindowId: 1 });
+
+  blockHandlers.get("pointCloudLod")("42", BLOCK, anchor.mapper);
+  blockHandlers.get("pickable")(
+    "9",
+    { grabPx: 8, priority: 0, tags: { depth_asset_id: "asset-1" } },
+    glyphMapper,
+  );
+  scene.updatePointCloudLods();
+  await settle();
+  assert.equal(renderer.added.length, 1, "tile streamed through the scene");
+
+  const started = scene.startTargetDrag({
+    clientX: 110,
+    clientY: 45,
+    pointerId: 1,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  assert.equal(started, true, "the tagged glyph grabs");
+
+  const pointerEvents = events.filter(([type]) => type === "pointerEvent");
+  assert.equal(pointerEvents.length, 1);
+  const payload = pointerEvents[0][1];
+  assert.equal(payload.type, "target.drag.start");
+  assert.equal(payload.pick.tags.depth_asset_id, "asset-1");
+  const solve = payload.cloud_solve;
+  assert.ok(solve, "the emitted payload carries the scoped solve");
+  assert.equal(solve.status, "hit");
+  assert.equal(solve.asset_id, "asset-1");
+  assert.equal(solve.revision, "rev1");
+  assert.equal(solve.node_id, "42");
+  for (const axis of [0, 1, 2]) {
+    assert.ok(
+      Math.abs(solve.world[axis] - 0.1) < 1e-6,
+      `world[${axis}] = ${solve.world[axis]} ≈ 0.1`,
+    );
+  }
+
+  scene.cleanup();
 });

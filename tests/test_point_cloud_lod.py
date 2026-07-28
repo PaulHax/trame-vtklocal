@@ -287,3 +287,17 @@ def test_validation_errors():
         )
     with pytest.raises(ValueError):
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "point_budget": 0})
+
+
+def test_legacy_asset_id_keyword_fails_loudly():
+    """The rename to ``source_asset_id`` is breaking on purpose.
+
+    A compatibility alias or a ``**kwargs`` sink would let old callers keep
+    passing ``asset_id`` — silently marking anchors with no durable identity.
+    """
+    _, _, mapper, _ = _make_scene()
+
+    legacy = dict(CONFIG)
+    legacy["asset_id"] = legacy.pop("source_asset_id")
+    with pytest.raises(TypeError):
+        pcl.mark_point_cloud_lod(mapper, **legacy)

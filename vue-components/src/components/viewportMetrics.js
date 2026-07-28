@@ -12,7 +12,9 @@ export function getDevicePixelRatio() {
   return isPositiveFinite(ratio) ? ratio : 1;
 }
 
-// Renderer viewport size in CSS px plus its normalized viewport rectangle, or
+// Renderer viewport size in CSS px plus its normalized viewport rectangle and
+// the viewport's top-left corner in canvas CSS px (canvas y grows downward
+// while the vtk viewport rectangle is bottom-up, hence the 1 - max flip), or
 // null when the view has no usable size yet.
 export function getViewportMetrics(renderer, renderWindow) {
   const viewport = renderer?.getViewport?.() || [0, 0, 1, 1];
@@ -35,5 +37,12 @@ export function getViewportMetrics(renderer, renderWindow) {
     return null;
   }
 
-  return { width, height, aspect: width / height, viewport: [x0, y0, x1, y1] };
+  return {
+    width,
+    height,
+    aspect: width / height,
+    viewport: [x0, y0, x1, y1],
+    leftCssPx: Math.min(x0, x1) * viewWidth,
+    topCssPx: (1 - Math.max(y0, y1)) * viewHeight,
+  };
 }

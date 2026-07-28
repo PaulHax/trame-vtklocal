@@ -96,7 +96,7 @@ def _as_adaptive_options(value):
 def mark_point_cloud_lod(
     mapper,
     *,
-    asset_id,
+    source_asset_id,
     revision,
     endpoint,
     point_count,
@@ -108,6 +108,12 @@ def mark_point_cloud_lod(
     refinement_cutoff_px=None,
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
+
+    ``source_asset_id`` is the durable session/source asset identity —
+    the id client-side picking scopes its queries by and echoes back as
+    provenance. It is deliberately separate from the URL-safe tile-service id,
+    which lives only inside ``endpoint``: the two must never be conflated,
+    because gesture identity has to survive tile-service re-registration.
 
     ``endpoint`` is the revision-scoped base URL of the tile service (no
     trailing slash), e.g. ``/pointcloud/<asset>/<revision>``. Node bounds and
@@ -129,8 +135,8 @@ def mark_point_cloud_lod(
     ``presentation`` is an explicit Fixed CSS-pixel diameter or Auto scale and
     clamp contract. The browser owns projected-density calculation.
     """
-    if not asset_id:
-        raise ValueError("asset_id is required")
+    if not source_asset_id:
+        raise ValueError("source_asset_id is required")
     if not revision:
         raise ValueError("revision is required")
     if not endpoint or str(endpoint).endswith("/"):
@@ -140,7 +146,7 @@ def mark_point_cloud_lod(
         raise ValueError(f"point_count must be >= 0, got {point_count}")
 
     config = {
-        "assetId": str(asset_id),
+        "sourceAssetId": str(source_asset_id),
         "revision": str(revision),
         "endpoint": str(endpoint),
         "pointCount": point_count,

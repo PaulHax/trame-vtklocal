@@ -7,7 +7,9 @@ from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.module.node_translator import translate_scene
 
 CONFIG = dict(
-    asset_id="cloud-1",
+    # The durable session/source identity, distinct from the URL-safe
+    # tile-service id embedded in the endpoint below.
+    source_asset_id="asset-42",
     revision="abc123",
     endpoint="/pointcloud/cloud-1/abc123",
     point_count=9_128_231,
@@ -70,7 +72,10 @@ def test_marked_mapper_translates_with_type_and_block():
 
     (node,) = _find_nodes(state, pcl.POINT_CLOUD_LOD_TYPE)
     block = node["blocks"][pcl.POINT_CLOUD_LOD_BLOCK]
-    assert block["assetId"] == "cloud-1"
+    # The durable source id rides the wire under its own key, never conflated
+    # with the tile-service id the endpoint embeds.
+    assert block["sourceAssetId"] == "asset-42"
+    assert "assetId" not in block
     assert block["revision"] == "abc123"
     assert block["endpoint"] == "/pointcloud/cloud-1/abc123"
     assert block["pointCount"] == 9_128_231
@@ -83,7 +88,7 @@ def test_marked_mapper_translates_with_type_and_block():
     assert block["adaptive"] is False
     assert "refinementCutoffPx" not in block
     # Config props ride the block, never the mapper props.
-    assert "assetId" not in node.get("props", {})
+    assert "sourceAssetId" not in node.get("props", {})
 
 
 def test_adaptive_config_reaches_the_wire():
@@ -267,7 +272,7 @@ def test_validation_errors():
     _, _, mapper, _ = _make_scene()
 
     with pytest.raises(ValueError):
-        pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "asset_id": ""})
+        pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "source_asset_id": ""})
     with pytest.raises(ValueError):
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "revision": ""})
     with pytest.raises(ValueError):

@@ -69,6 +69,7 @@ step() { echo; echo "==> $*"; }
 
 # --- sha + version ---------------------------------------------------------
 git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo: $ROOT"
+FULL_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
 export TRAME_VTKLOCAL_SHA="$SHA"
 BASE="$(sed -n 's/^BASE_VERSION *= *"\(.*\)".*/\1/p' hatch_build.py | head -n1)"
@@ -206,6 +207,7 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   gh release upload "$TAG" "$WHEEL" "$EVIDENCE_REL" --clobber || die "asset upload failed"
 else
   gh release create "$TAG" "$WHEEL" "$EVIDENCE_REL" \
+    --target "$FULL_SHA" \
     --prerelease \
     --title "$TAG" \
     --notes "$NOTES" \

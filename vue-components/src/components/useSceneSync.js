@@ -587,6 +587,7 @@ export function useSceneSync(
   function pickCloudPoint(sourceAssetId, cssX, cssY) {
     return pickPointCloudPoint(pointCloudLods, sourceAssetId, cssX, cssY, {
       renderWindow: getRenderWindow?.(),
+      synchronizerContext: managedSyncContext?.synchronizerContext,
     });
   }
 

@@ -155,6 +155,14 @@ function makeRenderer(anchors, composite = IDENTITY, viewport = [0, 0, 1, 1]) {
 
 const RENDER_WINDOW = { getViews: () => [{ getSize: () => [200, 100] }] };
 
+// The pick reports the anchor ACTOR's node id so the consumer can check the
+// transform's currency without rediscovering the mapper/actor pairing; the
+// synchronizer context is what resolves an instance to its node id.
+const ACTOR_NODE_ID = "actor-node";
+const SYNC_CONTEXT = {
+  getInstanceId: (instance) => (instance?.getMapper ? ACTOR_NODE_ID : null),
+};
+
 async function settle(rounds = 12) {
   for (let i = 0; i < rounds; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -200,6 +208,7 @@ test("a scoped pick hits through the LIVE anchor matrix and lands in display wor
   anchor.actor.userMatrix = SIMILARITY;
   const solve = lod.pickPointCloudPoint(registry, "asset-1", 130, 30, {
     renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
   });
 
   assert.equal(solve.status, "hit");
@@ -236,6 +245,7 @@ test("a valid sweep with nothing nearby is an explicit miss carrying provenance"
   // Both points sit more than the largest (100 css px) bucket away.
   const solve = lod.pickPointCloudPoint(registry, "asset-1", 5, 95, {
     renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
   });
 
   assert.deepEqual(solve, {
@@ -243,14 +253,58 @@ test("a valid sweep with nothing nearby is an explicit miss carrying provenance"
     asset_id: "asset-1",
     revision: "rev1",
     node_id: "42",
+    transform_node_id: ACTOR_NODE_ID,
   });
+  lod.disposePointCloudLods(registry);
+});
+
+test("a solve reports the anchor actor's node id, and is unavailable without one", async () => {
+  const lod = await loadLodModule();
+  stubFetch();
+  const anchor = makeAnchor();
+  const renderer = makeRenderer([anchor]);
+  const registry = await streamClouds(
+    lod,
+    [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
+    [renderer],
+  );
+
+  // node_id names the mapper carrying the LOD block; transform_node_id names
+  // the actor carrying the UserMatrix the answer was converted through. The
+  // consumer needs both to prove the solve is not stale, and cannot pair them
+  // itself without re-deriving the association the client already resolved.
+  const solve = lod.pickPointCloudPoint(registry, "asset-1", 130, 30, {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  });
+  assert.equal(solve.node_id, "42");
+  assert.equal(solve.transform_node_id, ACTOR_NODE_ID);
+
+  // An actor the synchronizer cannot name leaves the transform's currency
+  // unprovable, so the query is unavailable — never a miss, which would
+  // authorize the caller's fallback.
+  for (const context of [
+    { renderWindow: RENDER_WINDOW },
+    {
+      renderWindow: RENDER_WINDOW,
+      synchronizerContext: { getInstanceId: () => null },
+    },
+  ]) {
+    assert.equal(
+      lod.pickPointCloudPoint(registry, "asset-1", 130, 30, context),
+      null,
+    );
+  }
   lod.disposePointCloudLods(registry);
 });
 
 test("unknown, duplicate, hidden, unresolved and invalid-transform queries are unavailable", async () => {
   const lod = await loadLodModule();
   stubFetch();
-  const context = { renderWindow: RENDER_WINDOW };
+  const context = {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  };
   const anchor = makeAnchor();
   const renderer = makeRenderer([anchor]);
   const registry = await streamClouds(
@@ -343,7 +397,10 @@ test("a pick scoped to one asset never falls through to another visible cloud", 
   );
 
   // The cursor is dead on cloud A's rendered point.
-  const context = { renderWindow: RENDER_WINDOW };
+  const context = {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  };
   const solveA = lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context);
   assert.equal(solveA.status, "hit");
   assert.equal(solveA.node_id, "42");
@@ -356,6 +413,7 @@ test("a pick scoped to one asset never falls through to another visible cloud", 
     asset_id: "asset-B",
     revision: "revB",
     node_id: "43",
+    transform_node_id: ACTOR_NODE_ID,
   });
 
   lod.disposePointCloudLods(registry);
@@ -385,6 +443,7 @@ test("the pick runs under the entry's host renderer camera, not the primary", as
 
   const solve = lod.pickPointCloudPoint(registry, "asset-1", 110, 45, {
     renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
   });
   assert.equal(solve.status, "hit", "host renderer camera resolves the pick");
 
@@ -409,7 +468,7 @@ test("cursor coordinates are shifted into the host renderer's viewport", async (
   await settle();
   assert.equal(renderer.added.length, 1, "tile streamed");
 
-  const context = { renderWindow };
+  const context = { renderWindow, synchronizerContext: SYNC_CONTEXT };
   // The cloud point renders at viewport-local (110, 45), i.e. canvas
   // (310, 145). The canvas cursor there must resolve as a dead-on hit...
   const solve = lod.pickPointCloudPoint(registry, "asset-1", 310, 145, context);
@@ -434,7 +493,10 @@ test("a non-drawing host renderer makes the scoped pick unavailable", async () =
     [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
     [renderer],
   );
-  const context = { renderWindow: RENDER_WINDOW };
+  const context = {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  };
   assert.equal(
     lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
     "hit",
@@ -468,7 +530,10 @@ test("a dead or re-parented anchor makes the scoped pick unavailable", async () 
     [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
     [renderer],
   );
-  const context = { renderWindow: RENDER_WINDOW };
+  const context = {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  };
   assert.equal(
     lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
     "hit",
@@ -516,7 +581,10 @@ test("controller and camera boundary failures are unavailable, never misses", as
     [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
     [renderer],
   );
-  const context = { renderWindow: RENDER_WINDOW };
+  const context = {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  };
   // The cursor sits dead on a rendered point: every null below is a refusal.
   assert.equal(
     lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
@@ -563,7 +631,10 @@ test("a re-applied block refreshes the identity picking answers with", async () 
     [{ nodeId: "42", block: BLOCK, mapper: anchor.mapper }],
     [renderer],
   );
-  const context = { renderWindow: RENDER_WINDOW };
+  const context = {
+    renderWindow: RENDER_WINDOW,
+    synchronizerContext: SYNC_CONTEXT,
+  };
   assert.equal(
     lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).revision,
     "rev1",
@@ -751,7 +822,14 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
     },
     {
       createManagedSyncContext: () => ({
-        synchronizerContext: { getInstance: () => null },
+        synchronizerContext: {
+          getInstance: () => null,
+          // The real context resolves any synced instance to its node id; the
+          // pick asks it for the anchor actor's, to report as
+          // transform_node_id.
+          getInstanceId: (instance) =>
+            instance === anchor.actor ? ACTOR_NODE_ID : null,
+        },
         syncRenderWindow: renderWindow,
         cleanup() {},
       }),

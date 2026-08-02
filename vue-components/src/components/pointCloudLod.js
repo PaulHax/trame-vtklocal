@@ -483,21 +483,21 @@ export function pickPointCloudPoint(
   // run in the renderer hosting the anchor (its camera is the one the tiles
   // are drawn under), never an arbitrary primary renderer.
   const { actor, hostRenderer } = entry;
-  if (
-    !isLiveInstance(actor) ||
-    actor.getMapper?.() !== entry.mapper ||
-    !hostRenderer?.getActors?.().includes(actor)
-  ) {
-    return null;
-  }
-  const anchorVisible = actor.getVisibility?.();
-  if (!(anchorVisible === undefined ? true : !!anchorVisible)) return null;
+  if (!anchorStillValid(entry)) return null;
+  if (!actorIsVisible(actor)) return null;
   // A renderer taken out of the draw pass hides everything it hosts just as
   // thoroughly as actor visibility does; what the user cannot see must not
   // support a depth (a missing getter means drawing, like a missing
   // visibility getter means visible).
   const rendererDraws = hostRenderer.getDraw?.();
-  if (!(rendererDraws === undefined ? true : !!rendererDraws)) return null;
+  if (rendererDraws !== undefined && !rendererDraws) return null;
+  // The transform the pick is solved through rides the ACTOR, while the LOD
+  // block (and so `entry.id`) rides its mapper. The client resolved that
+  // pairing to read the matrix, so it reports the actor's node id too — the
+  // consumer can then check both nodes for staleness without rediscovering
+  // the mapper/actor association in its own copy of the scene.
+  const transformNodeId = context?.synchronizerContext?.getInstanceId?.(actor);
+  if (transformNodeId === null || transformNodeId === undefined) return null;
   const baseMatrix = actor.getUserMatrix?.() ?? null;
   const view = cameraInAnchorCoordinates(
     readCameraView(hostRenderer, context?.renderWindow),
@@ -520,6 +520,7 @@ export function pickPointCloudPoint(
     asset_id: entry.config.sourceAssetId,
     revision: entry.config.revision,
     node_id: entry.id,
+    transform_node_id: String(transformNodeId),
   };
   if (result.status !== "hit") {
     return { status: "miss", ...provenance };
@@ -561,18 +562,33 @@ export function enrichGestureWithCloudSolve(payload, pickCloudPoint) {
   return solve ? { ...payload, cloud_solve: solve } : payload;
 }
 
+// Whether the cached anchor is still the live actor this entry streams into:
+// the same live instance, still bound to the entry's mapper, still held by its
+// host renderer. The update pass and the pick query must agree on what makes an
+// anchor valid — a pick solved against an actor the renderer no longer uses is
+// not a pick of what the user sees — so both read this one predicate.
+function anchorStillValid(entry) {
+  const actor = entry?.actor;
+  return Boolean(
+    isLiveInstance(actor) &&
+      actor.getMapper?.() === entry.mapper &&
+      entry.hostRenderer?.getActors?.().includes(actor),
+  );
+}
+
+// Server-synced actors carry visibility as 0/1 ints, not booleans; only a
+// missing getter defaults to visible.
+function actorIsVisible(actor) {
+  const visibility = actor?.getVisibility?.();
+  return visibility === undefined ? true : !!visibility;
+}
+
 // Resolve the anchor actor and the renderer hosting it. The anchor can live
 // in any synced renderer, so the search spans them all; the cached hit is
 // revalidated against its cached renderer first.
 function findAnchor(entry, renderers) {
-  const cached = entry.actor;
-  if (
-    isLiveInstance(cached) &&
-    cached.getMapper?.() === entry.mapper &&
-    entry.hostRenderer?.getActors?.().includes(cached) &&
-    renderers.includes(entry.hostRenderer)
-  ) {
-    return { actor: cached, renderer: entry.hostRenderer };
+  if (anchorStillValid(entry) && renderers.includes(entry.hostRenderer)) {
+    return { actor: entry.actor, renderer: entry.hostRenderer };
   }
   for (const renderer of renderers) {
     const actor = renderer
@@ -720,11 +736,9 @@ function updateEntry(registry, entry, renderers, worldViewFor, scheduleRender) {
     return;
   }
   const { actor, renderer } = anchor;
-  // Server-synced actors carry visibility as 0/1 ints, not booleans; only a
-  // missing getter defaults to visible. Resolve this before controller
-  // construction so an initially hidden cloud does not start hierarchy I/O.
-  const anchorVisible = actor.getVisibility?.();
-  const drawEnabled = anchorVisible === undefined ? true : !!anchorVisible;
+  // Resolve visibility before controller construction so an initially hidden
+  // cloud does not start hierarchy I/O.
+  const drawEnabled = actorIsVisible(actor);
 
   // Tile actors depth-composite in the anchor's renderer, so an anchor that
   // migrated renderers (the server re-staged the layer) rebuilds the
@@ -963,12 +977,7 @@ export function endPointCloudLodInteraction(registry) {
 // read as updateEntry — server-synced actors carry visibility as 0/1 ints, and
 // a missing getter means visible.
 function describeAnchorVisibility(entry) {
-  const actor = entry?.actor;
-  if (!actor) {
-    return null;
-  }
-  const visibility = actor.getVisibility?.();
-  return visibility === undefined ? true : !!visibility;
+  return entry?.actor ? actorIsVisible(entry.actor) : null;
 }
 
 // Read-only snapshot of the LOD registry for the diagnostic API. Controller and

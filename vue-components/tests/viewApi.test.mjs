@@ -76,11 +76,12 @@ test("a backend may add methods but never shadow a common API key", async () => 
 // the owned-canvas view and the shared-context view. Their setups run outside
 // a mounted Vue instance here (lifecycle hooks warn and no-op), which is
 // enough: the returned object is the exact api each registers for consumers.
-test("pickCloudPoint is exposed by both view implementations", async () => {
+test("pickCloudPoint and setArmedCloudPick are exposed by both view implementations", async () => {
   const { COMMON_VIEW_API_KEYS } = await loadModule(
     "/src/components/viewApi.js",
   );
   assert.ok(COMMON_VIEW_API_KEYS.includes("pickCloudPoint"));
+  assert.ok(COMMON_VIEW_API_KEYS.includes("setArmedCloudPick"));
 
   const props = {
     renderWindow: 1,
@@ -94,10 +95,8 @@ test("pickCloudPoint is exposed by both view implementations", async () => {
   ]) {
     const component = (await loadModule(path)).default;
     const api = component.setup(props, { emit() {} });
-    assert.equal(
-      typeof api.pickCloudPoint,
-      "function",
-      `${path} exposes pickCloudPoint`,
-    );
+    for (const key of ["pickCloudPoint", "setArmedCloudPick"]) {
+      assert.equal(typeof api[key], "function", `${path} exposes ${key}`);
+    }
   }
 });

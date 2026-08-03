@@ -23,6 +23,7 @@ export const COMMON_VIEW_API_KEYS = Object.freeze([
   "uploadTexture",
   "pickAt",
   "pickCloudPoint",
+  "setArmedCloudPick",
   "startTargetDrag",
   "emitTargetClick",
   "setPointerContext",

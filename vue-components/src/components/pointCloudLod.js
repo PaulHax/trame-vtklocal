@@ -543,6 +543,13 @@ const CLOUD_SOLVE_GESTURE_TYPES = new Set([
   "target.click",
 ]);
 
+// The click-family payloads an armed pick spec governs. Drags stay tag-based:
+// a drag's depth target is the glyph being dragged, never an app-armed cloud.
+const ARMED_CLOUD_SOLVE_GESTURE_TYPES = new Set([
+  "target.click",
+  "background.click",
+]);
+
 // The cloud-depth enrichment policy for completed gesture payloads: attach a
 // scoped solve as `cloud_solve` when — and only when — the gesture is tagged
 // with a `depth_asset_id`, carries a resolved pointer (post grab-offset), and
@@ -551,12 +558,25 @@ const CLOUD_SOLVE_GESTURE_TYPES = new Set([
 // explicit miss downstream — a miss authorizes fallback, absence holds.
 // An unavailable scoped query (pickCloudPoint → null) also leaves the payload
 // untouched for the same reason.
-export function enrichGestureWithCloudSolve(payload, pickCloudPoint) {
-  if (!payload || !CLOUD_SOLVE_GESTURE_TYPES.has(payload.type)) return payload;
+//
+// While `armedAssetId` is set it is AUTHORITATIVE for clicks: a target.click
+// solves against the armed cloud even when the glyph under the cursor is
+// tagged with a different `depth_asset_id`, and a background.click (pick:
+// null, so never tagged) solves too. Disarmed (null), clicks degrade exactly
+// to the tag-based read above — an absent spec is not a miss.
+export function enrichGestureWithCloudSolve(
+  payload,
+  pickCloudPoint,
+  armedAssetId = null,
+) {
+  if (!payload) return payload;
+  const armed =
+    armedAssetId != null && ARMED_CLOUD_SOLVE_GESTURE_TYPES.has(payload.type);
+  if (!armed && !CLOUD_SOLVE_GESTURE_TYPES.has(payload.type)) return payload;
   if (payload.cancelled || payload.unresolved || !payload.pointer) {
     return payload;
   }
-  const assetId = payload.pick?.tags?.depth_asset_id;
+  const assetId = armed ? armedAssetId : payload.pick?.tags?.depth_asset_id;
   if (assetId == null) return payload;
   const solve = pickCloudPoint(assetId, payload.pointer.x, payload.pointer.y);
   return solve ? { ...payload, cloud_solve: solve } : payload;

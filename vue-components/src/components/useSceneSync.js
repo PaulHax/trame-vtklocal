@@ -86,6 +86,11 @@ export function useSceneSync(
   const pickables = createPickableRegistry();
   const pointCloudLods = new Map();
   const pointCloudPresentations = new Map();
+  // Server-pushed armed pick spec: while set, click gestures solve cloud
+  // depth against this asset id instead of the picked glyph's tag. View
+  // state, not scene-sync state: the server owns it and only its pushes may
+  // change it, so a scene re-initialization must not silently disarm.
+  let armedCloudPickAssetId = null;
   // Once the host reports whole-frame metrics, the raw paint durations stop
   // being fed to the budget loop so the same frame is never counted twice.
   let hostFrameFeedbackSeen = false;
@@ -591,6 +596,15 @@ export function useSceneSync(
     });
   }
 
+  // Arm (or disarm with null) the click-time cloud-solve override. While
+  // armed, the id is authoritative for target/background clicks — the app
+  // has explicitly named which cloud a click means, so no glyph tag under
+  // the cursor may redirect it. Drags are untouched.
+  function setArmedCloudPick(assetId) {
+    armedCloudPickAssetId =
+      typeof assetId === "string" && assetId.length > 0 ? assetId : null;
+  }
+
   // The camera matrices this view last rendered with, in the flat layout the
   // consuming server already speaks (the same arrays setRenderedCamera stored).
   // Null until a rendered camera has been pushed. Read at event time so a
@@ -741,7 +755,11 @@ export function useSceneSync(
     // (grab offset already applied): the solved ray is exactly the one the
     // server would otherwise resolve for this event.
     enrichPayload: (payload) =>
-      enrichGestureWithCloudSolve(payload, pickCloudPoint),
+      enrichGestureWithCloudSolve(
+        payload,
+        pickCloudPoint,
+        armedCloudPickAssetId,
+      ),
     emit: (payload) => emit?.("pointerEvent", payload),
     onDragStart: dragPreview.start,
     onDragMove: dragPreview.move,
@@ -772,6 +790,7 @@ export function useSceneSync(
     uploadTexture,
     pickAt,
     pickCloudPoint,
+    setArmedCloudPick,
     startTargetDrag: gestures.startTargetDrag,
     emitTargetClick: gestures.emitTargetClick,
     setPointerContext: gestures.setPointerContext,

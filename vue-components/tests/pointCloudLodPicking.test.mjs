@@ -771,6 +771,144 @@ test("an unavailable scoped query leaves the payload without a cloud_solve", asy
   assert.equal("cloud_solve" in result, false);
 });
 
+// --- armed pick spec: click-time override ---------------------------------
+
+test("an armed spec enriches background clicks against the armed cloud", async () => {
+  const { enrichGestureWithCloudSolve } = await loadLodModule();
+  const calls = [];
+  const solve = { status: "hit", asset_id: "asset-armed" };
+  const payload = gesturePayload({ type: "background.click", pick: null });
+
+  const enriched = enrichGestureWithCloudSolve(
+    payload,
+    (...args) => {
+      calls.push(args);
+      return solve;
+    },
+    "asset-armed",
+  );
+
+  assert.deepEqual(calls, [["asset-armed", 105, 47]]);
+  assert.equal(enriched.cloud_solve, solve);
+  assert.equal(payload.cloud_solve, undefined);
+});
+
+test("an armed spec overrides a conflicting glyph tag on target.click", async () => {
+  const { enrichGestureWithCloudSolve } = await loadLodModule();
+  const calls = [];
+  const payload = gesturePayload({
+    type: "target.click",
+    pick: { nodeId: "9", tags: { depth_asset_id: "asset-decoy" } },
+  });
+
+  const enriched = enrichGestureWithCloudSolve(
+    payload,
+    (...args) => {
+      calls.push(args);
+      return { status: "hit", asset_id: "asset-armed" };
+    },
+    "asset-armed",
+  );
+
+  assert.deepEqual(calls, [["asset-armed", 105, 47]]);
+  assert.equal(enriched.cloud_solve.asset_id, "asset-armed");
+});
+
+test("an armed spec never redirects drag enrichment", async () => {
+  const { enrichGestureWithCloudSolve } = await loadLodModule();
+  for (const type of [
+    "target.drag.start",
+    "target.drag.move",
+    "target.drag.end",
+  ]) {
+    // Tagged drag: the tag stays authoritative.
+    const calls = [];
+    enrichGestureWithCloudSolve(
+      gesturePayload({ type }),
+      (...args) => {
+        calls.push(args);
+        return { status: "hit" };
+      },
+      "asset-armed",
+    );
+    assert.deepEqual(calls, [["asset-1", 105, 47]], `${type} solves its tag`);
+
+    // Untagged drag: armed or not, nothing solves.
+    const untagged = gesturePayload({ type, pick: { nodeId: "9", tags: {} } });
+    const result = enrichGestureWithCloudSolve(
+      untagged,
+      () => {
+        throw new Error(`must not solve untagged ${type}`);
+      },
+      "asset-armed",
+    );
+    assert.equal(result, untagged);
+  }
+});
+
+test("armed cancelled, unresolved or pointerless clicks are never solved", async () => {
+  const { enrichGestureWithCloudSolve } = await loadLodModule();
+  const untouched = [
+    gesturePayload({ type: "background.click", pick: null, pointer: null }),
+    gesturePayload({ type: "background.click", pick: null, cancelled: true }),
+    gesturePayload({ type: "target.click", unresolved: true }),
+  ];
+  for (const payload of untouched) {
+    const result = enrichGestureWithCloudSolve(
+      payload,
+      () => {
+        throw new Error("must not solve");
+      },
+      "asset-armed",
+    );
+    assert.equal(result, payload);
+  }
+});
+
+test("an armed unavailable scoped query still attaches nothing", async () => {
+  const { enrichGestureWithCloudSolve } = await loadLodModule();
+  const payload = gesturePayload({ type: "background.click", pick: null });
+  const result = enrichGestureWithCloudSolve(
+    payload,
+    () => null,
+    "asset-armed",
+  );
+  assert.equal(result, payload);
+  assert.equal("cloud_solve" in result, false);
+});
+
+test("an absent spec leaves clicks byte-identical to the tag-based policy", async () => {
+  const { enrichGestureWithCloudSolve } = await loadLodModule();
+  for (const armed of [null, undefined]) {
+    // background.click carries no pick, so nothing solves — and the absence
+    // of a cloud_solve is not a miss the server may act on.
+    const background = gesturePayload({ type: "background.click", pick: null });
+    const untouched = enrichGestureWithCloudSolve(
+      background,
+      () => {
+        throw new Error("must not solve a disarmed background click");
+      },
+      armed,
+    );
+    assert.equal(untouched, background);
+    assert.equal("cloud_solve" in untouched, false);
+
+    // target.click keeps solving its own tag exactly as before.
+    const calls = [];
+    const solve = { status: "hit", asset_id: "asset-1" };
+    const tagged = enrichGestureWithCloudSolve(
+      gesturePayload({ type: "target.click" }),
+      (...args) => {
+        calls.push(args);
+        return solve;
+      },
+      armed,
+    );
+    assert.deepEqual(calls, [["asset-1", 105, 47]]);
+    assert.equal(tagged.cloud_solve, solve);
+  }
+});
+
 // --- the delivering seam: useSceneSync wiring, no stubs on either side ----
 
 // A real gesture over a real streamed cloud: the pickable block and the LOD
@@ -888,6 +1026,175 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
       `world[${axis}] = ${solve.world[axis]} ≈ 0.1`,
     );
   }
+
+  scene.cleanup();
+});
+
+// The armed spec through the same real seam: setArmedCloudPick drives the
+// scene's own click enrichment — background clicks solve, a conflicting glyph
+// tag loses, and disarming restores the exact tag-based behavior.
+test("setArmedCloudPick governs the clicks the scene emits", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+  const [glyph, polydata, points] = await Promise.all([
+    loadModule("/node_modules/@kitware/vtk.js/Rendering/Core/Glyph3DMapper.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/DataModel/PolyData.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/Core/Points.js"),
+  ]);
+  stubFetch();
+
+  const anchor = makeAnchor();
+  const renderer = makeRenderer([anchor]);
+  renderer.get = () => ({ remoteId: "1", managedInstanceId: "1" });
+  const canvas = {
+    style: { cursor: "" },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    setPointerCapture() {},
+    releasePointerCapture() {},
+  };
+  const renderWindow = {
+    getRenderers: () => [renderer],
+    getViews: () => [{ getSize: () => [200, 100], getCanvas: () => canvas }],
+  };
+
+  // The glyph sits on the first cloud point but is tagged with a DIFFERENT
+  // asset id: the armed spec must win over it.
+  const glyphMapper = glyph.default.newInstance();
+  const poly = polydata.default.newInstance();
+  const pts = points.default.newInstance();
+  pts.setData(new Float32Array([0.1, 0.1, 0.1]), 3);
+  poly.setPoints(pts);
+  glyphMapper.setInputData(poly);
+
+  const events = [];
+  const blockHandlers = new Map();
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit: (type, payload) => events.push([type, payload]),
+      getRenderWindow: () => renderWindow,
+      renderScene() {},
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: {
+          getInstance: () => null,
+          getInstanceId: (instance) =>
+            instance === anchor.actor ? ACTOR_NODE_ID : null,
+        },
+        syncRenderWindow: renderWindow,
+        cleanup() {},
+      }),
+      createReconciler: () => ({
+        registerBlockHandler(key, handler) {
+          blockHandlers.set(key, handler);
+          return () => {};
+        },
+        teardown() {},
+      }),
+      createSceneEngine: () => ({
+        start() {},
+        stop() {},
+        resync() {},
+        onCommand: () => () => {},
+        getSeq: () => 5,
+        getDiagnostics: () => ({}),
+      }),
+    },
+  );
+  scene.initialize({ contextName: "ctx-armed-pick", renderWindowId: 1 });
+
+  blockHandlers.get("pointCloudLod")("42", BLOCK, anchor.mapper);
+  blockHandlers.get("pickable")(
+    "9",
+    { grabPx: 8, priority: 0, tags: { depth_asset_id: "asset-decoy" } },
+    glyphMapper,
+  );
+  scene.updatePointCloudLods();
+  await settle();
+  assert.equal(renderer.added.length, 1, "tile streamed through the scene");
+
+  const click = (clientX, clientY) =>
+    scene.emitTargetClick({
+      clientX,
+      clientY,
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+  const lastPointerEvent = () =>
+    events.filter(([type]) => type === "pointerEvent").at(-1)[1];
+
+  // Disarmed background click: no pick, no tag, nothing attaches (≠ miss).
+  click(90, 55);
+  let payload = lastPointerEvent();
+  assert.equal(payload.type, "background.click");
+  assert.equal("cloud_solve" in payload, false);
+
+  // Disarmed target click: the decoy tag names an unknown cloud, so the
+  // scoped query is unavailable and nothing attaches — the tag-based policy.
+  click(110, 45);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "target.click");
+  assert.equal(payload.pick.tags.depth_asset_id, "asset-decoy");
+  assert.equal("cloud_solve" in payload, false);
+
+  // Armed background click solves against the armed cloud.
+  scene.setArmedCloudPick("asset-1");
+  click(90, 55);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "background.click");
+  assert.equal(payload.cloud_solve?.status, "hit");
+  assert.equal(payload.cloud_solve.asset_id, "asset-1");
+  for (const axis of [0, 1, 2]) {
+    assert.ok(
+      Math.abs(payload.cloud_solve.world[axis] + 0.1) < 1e-6,
+      `world[${axis}] = ${payload.cloud_solve.world[axis]} ≈ -0.1`,
+    );
+  }
+
+  // Armed target click over the conflicting glyph resolves against the
+  // armed cloud, not the decoy tag.
+  click(110, 45);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "target.click");
+  assert.equal(payload.pick.tags.depth_asset_id, "asset-decoy");
+  assert.equal(payload.cloud_solve?.status, "hit");
+  assert.equal(payload.cloud_solve.asset_id, "asset-1");
+
+  // Scene re-initialization (a supported lifecycle: shared views re-init on
+  // external-context changes) must not disarm — the server owns the spec and
+  // pushed no change. Both armed click kinds keep solving after the re-init
+  // rebuilds the streamed cloud and the decoy pickable.
+  scene.initialize({ contextName: "ctx-armed-pick", renderWindowId: 1 });
+  blockHandlers.get("pointCloudLod")("42", BLOCK, anchor.mapper);
+  blockHandlers.get("pickable")(
+    "9",
+    { grabPx: 8, priority: 0, tags: { depth_asset_id: "asset-decoy" } },
+    glyphMapper,
+  );
+  scene.updatePointCloudLods();
+  await settle();
+  click(90, 55);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "background.click");
+  assert.equal(payload.cloud_solve?.status, "hit", "armed across re-init");
+  assert.equal(payload.cloud_solve.asset_id, "asset-1");
+  click(110, 45);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "target.click");
+  assert.equal(payload.pick.tags.depth_asset_id, "asset-decoy");
+  assert.equal(payload.cloud_solve?.status, "hit");
+  assert.equal(payload.cloud_solve.asset_id, "asset-1");
+
+  // Disarming restores the exact prior behavior for both click kinds.
+  scene.setArmedCloudPick(null);
+  click(90, 55);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "background.click");
+  assert.equal("cloud_solve" in payload, false);
+  click(110, 45);
+  payload = lastPointerEvent();
+  assert.equal(payload.type, "target.click");
+  assert.equal("cloud_solve" in payload, false);
 
   scene.cleanup();
 });

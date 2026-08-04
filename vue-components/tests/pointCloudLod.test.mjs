@@ -621,9 +621,6 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
   disposePointCloudLods(registry);
 });
 
-// Rotation by 90 degrees about z, uniform scale 2, translation (5, 6, 7).
-const SIMILARITY = [0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 2, 0, 5, 6, 7, 1];
-
 // Composite projection matrices in the layout getCompositeProjectionMatrix
 // returns (row-major; getWorldToClipMatrix transposes them). A 90° vertical
 // field of view at the stub's 2:1 aspect: f = cot(45°) = 1.
@@ -726,50 +723,6 @@ test("a camera with an unusable matrix yields no view instead of a guess", async
       `no view for unusable camera ${index}`,
     );
   }
-});
-
-test("camera selection uses the inverse of anchor translation rotation and scale", async () => {
-  const { cameraInAnchorCoordinates } = await loadLodModule();
-  const view = {
-    projection: "perspective",
-    viewProj: IDENTITY,
-    position: [5, 8, 7],
-    fovY: Math.PI / 3,
-    viewportHeightCssPx: 600,
-  };
-
-  const local = cameraInAnchorCoordinates(view, SIMILARITY);
-
-  assert.deepEqual(
-    local.position.map((value) => Math.round(value)),
-    [1, 0, 0],
-  );
-  assert.deepEqual(local.viewProj, SIMILARITY);
-  assert.equal(local.projection, "perspective");
-  // A field of view is an angle: uniform anchor scale cancels out of it.
-  assert.equal(local.fovY, view.fovY);
-  assert.equal(local.viewportHeightCssPx, 600);
-});
-
-test("an orthographic parallelScale is restated in anchor units", async () => {
-  const { cameraInAnchorCoordinates } = await loadLodModule();
-  const view = {
-    projection: "orthographic",
-    viewProj: IDENTITY,
-    position: [5, 8, 7],
-    parallelScale: 8,
-    viewportHeightCssPx: 600,
-  };
-
-  const local = cameraInAnchorCoordinates(view, SIMILARITY);
-
-  assert.equal(local.projection, "orthographic");
-  // parallelScale is a world height, and the anchor scales local units by 2,
-  // so the same viewport spans half as many anchor units.
-  assert.equal(local.parallelScale, 4);
-  assert.equal(local.viewportHeightCssPx, 600);
-  // An identity anchor leaves it untouched.
-  assert.equal(cameraInAnchorCoordinates(view, null).parallelScale, 8);
 });
 
 test("viewport metrics are measured in CSS pixels at non-unit DPR", async () => {

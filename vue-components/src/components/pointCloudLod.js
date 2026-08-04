@@ -43,14 +43,11 @@ import {
 // module scope, so the core entry stays loadable without the peer.
 import { createRendererAdapter } from "pointcloud-lod/vtk";
 
-import { mat4 } from "../glMatrix";
 import { getWorldToClipMatrix } from "./cameraMatrix";
 import { isLiveInstance, isPositiveFinite } from "./predicates";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 
 export const POINT_CLOUD_LOD_BLOCK_KEY = "pointCloudLod";
-
-const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 // One memory pool per page: every LOD controller — across all views and
 // registries — renders on the same GPU, so resident tile bytes come out of
@@ -260,87 +257,6 @@ export function readCameraView(renderer, renderWindow) {
   return { ...common, projection: "orthographic", parallelScale };
 }
 
-// The library's frustum/SSE math assumes a uniform-scale anchor transform:
-// affine bottom row, orthogonal columns, equal column lengths. Returns that
-// uniform scale, or null when the matrix is not a similarity.
-function similarityScale(m) {
-  if (
-    m.length !== 16 ||
-    !Array.from(m).every(Number.isFinite) ||
-    Math.abs(m[3]) > 1e-9 ||
-    Math.abs(m[7]) > 1e-9 ||
-    Math.abs(m[11]) > 1e-9 ||
-    Math.abs(m[15] - 1) > 1e-9
-  ) {
-    return null;
-  }
-  const columns = [
-    [m[0], m[1], m[2]],
-    [m[4], m[5], m[6]],
-    [m[8], m[9], m[10]],
-  ];
-  const lengths = columns.map((column) => Math.hypot(...column));
-  const scale = lengths[0];
-  const tolerance = Math.max(1e-9, scale * 1e-6);
-  if (
-    !isPositiveFinite(scale) ||
-    lengths.some((length) => Math.abs(length - scale) > tolerance)
-  ) {
-    return null;
-  }
-  for (let left = 0; left < 3; left += 1) {
-    for (let right = left + 1; right < 3; right += 1) {
-      const dot = columns[left].reduce(
-        (sum, value, axis) => sum + value * columns[right][axis],
-        0,
-      );
-      if (Math.abs(dot) > scale * tolerance) return null;
-    }
-  }
-  return scale;
-}
-
-function transformPoint(matrix, point) {
-  return [
-    matrix[0] * point[0] +
-      matrix[4] * point[1] +
-      matrix[8] * point[2] +
-      matrix[12],
-    matrix[1] * point[0] +
-      matrix[5] * point[1] +
-      matrix[9] * point[2] +
-      matrix[13],
-    matrix[2] * point[0] +
-      matrix[6] * point[1] +
-      matrix[10] * point[2] +
-      matrix[14],
-  ];
-}
-
-// Restate the world camera in the anchor's local frame, where the tile
-// octree's bounds and spacings live.
-export function cameraInAnchorCoordinates(view, matrix) {
-  if (!view) return null;
-  const base = matrix ?? IDENTITY_MATRIX;
-  const scale = similarityScale(base);
-  if (scale === null) return null;
-  const inverse = mat4.invert(new Float64Array(16), base);
-  if (!inverse) return null;
-  const local = {
-    ...view,
-    // Plain Array, not Float64Array: pointcloud-lod's Mat16 is ArrayLike<number>.
-    viewProj: mat4.multiply(new Array(16), view.viewProj, base),
-    position: transformPoint(inverse, view.position),
-  };
-  // Perspective screen-space error is a ratio of two lengths, so a uniform
-  // anchor scale cancels out of it. Parallel projection has no such ratio:
-  // parallelScale is an absolute world height and must be restated in anchor
-  // units alongside the spacings it is compared against.
-  return local.projection === "orthographic"
-    ? { ...local, parallelScale: local.parallelScale / scale }
-    : local;
-}
-
 // Scoped point pick against ONE streamed cloud, addressed by its durable
 // sourceAssetId (never the tile-service id inside the endpoint, never "the
 // frontmost cloud"). Returns the wire-shaped solve:
@@ -357,10 +273,11 @@ export function cameraInAnchorCoordinates(view, matrix) {
 // comparing them against what it asked for is verifying the query really ran
 // against the cloud it named.
 //
-// The anchor's live UserMatrix is read per query: the camera is restated in
-// anchor coordinates through it, and a hit — solved on the anchor-local ray —
-// is transformed back through the SAME matrix, so `world` is display
-// scene-local ENU even while a correction preview is mid-flight.
+// The anchor's live UserMatrix is read per query and handed to the
+// controller as its model matrix before solving, so the sweep runs under the
+// transform the user is looking at and the hit comes back in world
+// coordinates — display scene-local ENU even while a correction preview is
+// mid-flight.
 export function pickPointCloudPoint(
   registry,
   sourceAssetId,
@@ -399,11 +316,8 @@ export function pickPointCloudPoint(
   // mapper/actor association in its own copy of the scene.
   const transformNodeId = context?.synchronizerContext?.getInstanceId?.(actor);
   if (transformNodeId === null || transformNodeId === undefined) return null;
-  const baseMatrix = actor.getUserMatrix?.() ?? null;
-  const view = cameraInAnchorCoordinates(
-    readCameraView(hostRenderer, context?.renderWindow),
-    baseMatrix,
-  );
+  entry.controller.setModelMatrix(actor.getUserMatrix?.() ?? null);
+  const view = readCameraView(hostRenderer, context?.renderWindow);
   if (!view) return null;
   // The caller measures the cursor on the canvas; the library sweeps in the
   // host renderer's own viewport (top-left origin, spanning its css size).
@@ -432,7 +346,7 @@ export function pickPointCloudPoint(
   return {
     status: "hit",
     ...provenance,
-    world: transformPoint(baseMatrix ?? IDENTITY_MATRIX, result.pointOnRay),
+    world: result.pointOnRay,
     distance_px: result.distancePx,
   };
 }
@@ -732,13 +646,16 @@ function updateEntry(registry, entry, context, worldViewFor, scheduleRender) {
 
   const baseMatrix = actor.getUserMatrix?.() ?? null;
   entry.adapter.setBaseMatrix(baseMatrix);
+  // The controller owns the camera restatement the anchor transform needs;
+  // this side only reads the matrix off the actor and hands it over.
+  entry.controller.setModelMatrix(baseMatrix);
   entry.adapter.setDevicePixelRatio(getDevicePixelRatio());
   // Hiding stops the draw at once; disable submission before updating the
   // camera, and when showing store the latest camera while inactive and only
   // then reactivate, so the first selection uses the current view.
   if (!drawEnabled) entry.controller.setActive(false);
   entry.adapter.setVisible(drawEnabled);
-  const view = cameraInAnchorCoordinates(worldViewFor(renderer), baseMatrix);
+  const view = worldViewFor(renderer);
   if (view) {
     entry.controller.setCamera(view);
   }

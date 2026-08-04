@@ -174,6 +174,28 @@ export function useSceneSync(
     );
   }
 
+  // Which mirrored nodes name `nodeId` in the given ref slot. The mirror is
+  // the wire's own statement of the scene graph, so a block handler needing a
+  // related node (an anchor actor for a mapper, the renderer hosting it)
+  // resolves the association here instead of scanning live vtk collections.
+  function referrersOf(nodeId, slot) {
+    const target = String(nodeId);
+    const ids = [];
+    if (!mirror) return ids;
+    for (const [id, node] of mirror.entries()) {
+      const ref = node.refs?.[slot];
+      if (ref === target || (Array.isArray(ref) && ref.includes(target))) {
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  // Advances once per applied sync message — the only time actor/renderer
+  // topology can change, which is what lets per-frame passes reuse
+  // associations resolved from the mirror.
+  let sceneTopologyVersion = 0;
+
   // Stage a texture source for this view's external-texture registry;
   // vtkProjectedTextureMapper instances resolve it by textureKey at render
   // time. Upload happens on the next render — triggering that render stays
@@ -532,6 +554,9 @@ export function useSceneSync(
       renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),
       scheduleRender: () => renderRequestCallback?.(),
+      referrersOf,
+      getInstance,
+      topologyVersion: sceneTopologyVersion,
     });
   }
 
@@ -545,6 +570,7 @@ export function useSceneSync(
 
   // The post-apply pass every applied message runs, snapshot or ops.
   function afterApply() {
+    sceneTopologyVersion += 1;
     bindPrimaryCameraToRenderers();
     beforeRender();
     dragPreview.reapply();

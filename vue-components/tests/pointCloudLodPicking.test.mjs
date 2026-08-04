@@ -7,6 +7,7 @@ import { after, test } from "node:test";
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
 import {
   IDENTITY,
+  anchorGraph,
   loadLodModule,
   makePct1,
   stubFetch,
@@ -124,10 +125,31 @@ async function settle(rounds = 12) {
   }
 }
 
+// The graph statement the anchor resolver reads: each cloud's anchor actor
+// resolves live from the renderers' actor lists, so a test that deletes or
+// swaps an actor is editing the graph too.
+function graphFor(clouds, renderers) {
+  const graph = anchorGraph();
+  for (const renderer of renderers) graph.addRenderer(renderer);
+  for (const { nodeId, mapper } of clouds) {
+    graph.setAnchor(
+      nodeId,
+      () =>
+        renderers
+          .flatMap((renderer) => renderer.getActors?.() ?? [])
+          .find((actor) => actor.getMapper?.() === mapper) ?? null,
+    );
+  }
+  return graph;
+}
+
 // Apply a block per cloud, run the update pass, and let streaming settle.
+// `update` re-runs the pass with the same context — what the post-apply pass
+// does after a message changes the scene.
 async function streamClouds(lod, clouds, renderers) {
   const registry = new Map();
   const scheduleRender = () => {};
+  const graph = graphFor(clouds, renderers);
   for (const { nodeId, block, mapper } of clouds) {
     lod.applyPointCloudLodBlock(
       registry,
@@ -137,14 +159,22 @@ async function streamClouds(lod, clouds, renderers) {
       scheduleRender,
     );
   }
-  lod.updatePointCloudLods(registry, {
-    renderers,
-    renderWindow: RENDER_WINDOW,
-    scheduleRender,
-  });
+  const update = () =>
+    lod.updatePointCloudLods(registry, {
+      renderers,
+      renderWindow: RENDER_WINDOW,
+      scheduleRender,
+      referrersOf: graph.referrersOf,
+      getInstance: graph.getInstance,
+    });
+  update();
   await settle();
+  updatePassFor.set(registry, update);
   return registry;
 }
+
+// The post-apply update pass belonging to each streamed registry.
+const updatePassFor = new WeakMap();
 
 test("a scoped pick hits through the LIVE anchor matrix and lands in display world", async () => {
   const lod = await loadLodModule();
@@ -412,11 +442,14 @@ test("cursor coordinates are shifted into the host renderer's viewport", async (
   const renderer = makeRenderer([anchor], IDENTITY, [0.5, 0, 1, 0.5]);
   const renderWindow = { getViews: () => [{ getSize: () => [400, 200] }] };
   const registry = new Map();
+  const graph = graphFor([{ nodeId: "42", mapper: anchor.mapper }], [renderer]);
   lod.applyPointCloudLodBlock(registry, "42", BLOCK, anchor.mapper, () => {});
   lod.updatePointCloudLods(registry, {
     renderers: [renderer],
     renderWindow,
     scheduleRender: () => {},
+    referrersOf: graph.referrersOf,
+    getInstance: graph.getInstance,
   });
   await settle();
   assert.equal(renderer.added.length, 1, "tile streamed");
@@ -509,13 +542,19 @@ test("a dead or re-parented anchor makes the scoped pick unavailable", async () 
   anchor.actor.mapper = anchor.mapper;
 
   // Actor gone from its cached host renderer (the server re-staged the
-  // layer): the cached camera is nobody's camera now.
+  // layer): the cached camera is nobody's camera now. Topology only changes
+  // inside an applied message, so the post-apply pass has re-resolved the
+  // anchor before any pick can run.
   anchors.pop();
+  updatePassFor.get(registry)();
   assert.equal(
     lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context),
     null,
   );
+  // Re-staged back: the next post-apply pass re-resolves and re-streams.
   anchors.push(anchor);
+  updatePassFor.get(registry)();
+  await settle();
   assert.equal(
     lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context).status,
     "hit",
@@ -914,7 +953,11 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
     {
       createManagedSyncContext: () => ({
         synchronizerContext: {
-          getInstance: () => null,
+          // Resolves the mirrored node ids to their live instances — the
+          // anchor resolver reads the pairing from the mirror, then asks
+          // here for the objects.
+          getInstance: (id) =>
+            id === "42-actor" ? anchor.actor : id === "1" ? renderer : null,
           // The real context resolves any synced instance to its node id;
           // the pick asks it for the anchor actor's, to name in the solve's
           // staleness list.
@@ -923,6 +966,20 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
         },
         syncRenderWindow: renderWindow,
         cleanup() {},
+      }),
+      // The mirrored graph statement the anchor resolver reads: the actor
+      // node rides mapper node "42", hosted by synced renderer node "1".
+      createMirrorStore: () => ({
+        entries: () =>
+          new Map([
+            ["42-actor", { refs: { mapper: "42" } }],
+            ["1", { refs: { viewProps: ["42-actor"] } }],
+          ]).entries(),
+        get: () => null,
+        applyOps() {},
+        clear() {},
+        gcBlobCache() {},
+        toObject: () => ({}),
       }),
       createReconciler: () => ({
         registerBlockHandler(key, handler) {
@@ -1030,12 +1087,30 @@ test("setArmedCloudPick governs the clicks the scene emits", async () => {
     {
       createManagedSyncContext: () => ({
         synchronizerContext: {
-          getInstance: () => null,
+          // Resolves the mirrored node ids to their live instances — the
+          // anchor resolver reads the pairing from the mirror, then asks
+          // here for the objects.
+          getInstance: (id) =>
+            id === "42-actor" ? anchor.actor : id === "1" ? renderer : null,
           getInstanceId: (instance) =>
             instance === anchor.actor ? ACTOR_NODE_ID : null,
         },
         syncRenderWindow: renderWindow,
         cleanup() {},
+      }),
+      // The mirrored graph statement the anchor resolver reads: the actor
+      // node rides mapper node "42", hosted by synced renderer node "1".
+      createMirrorStore: () => ({
+        entries: () =>
+          new Map([
+            ["42-actor", { refs: { mapper: "42" } }],
+            ["1", { refs: { viewProps: ["42-actor"] } }],
+          ]).entries(),
+        get: () => null,
+        applyOps() {},
+        clear() {},
+        gcBlobCache() {},
+        toObject: () => ({}),
       }),
       createReconciler: () => ({
         registerBlockHandler(key, handler) {

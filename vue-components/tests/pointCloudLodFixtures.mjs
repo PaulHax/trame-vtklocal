@@ -77,3 +77,62 @@ export function stubFetch({ positions = POSITIONS, rgb = RGB } = {}) {
   };
   return calls;
 }
+
+/**
+ * A mirrored-scene-graph stand-in for LOD test contexts: `referrersOf` and
+ * `getInstance` answer from declared anchors and renderers the way the real
+ * mirror answers from wire refs — the anchor actor node is named
+ * `<mapperNodeId>-actor`, renderers `renderer-N`. Anchors are declared as
+ * getters and hosting is derived live from each declared renderer's actor
+ * list, so a test that adds, removes, or swaps an anchor actor is editing
+ * the graph the resolver reads — exactly as an applied message does.
+ */
+export function anchorGraph() {
+  const anchors = new Map();
+  const renderers = new Map();
+  let rendererCount = 0;
+  const actorNode = (mapperId) => `${mapperId}-actor`;
+  const anchorInstance = (mapperId) => {
+    const held = anchors.get(mapperId);
+    return typeof held === "function" ? held() : held;
+  };
+  return {
+    addRenderer(renderer) {
+      const id = `renderer-${rendererCount}`;
+      rendererCount += 1;
+      renderers.set(id, renderer);
+      return id;
+    },
+    setAnchor(mapperNodeId, actorOrGetter) {
+      anchors.set(String(mapperNodeId), actorOrGetter);
+    },
+    removeAnchor(mapperNodeId) {
+      anchors.delete(String(mapperNodeId));
+    },
+    referrersOf(nodeId, slot) {
+      const target = String(nodeId);
+      if (slot === "mapper") {
+        return anchors.has(target) ? [actorNode(target)] : [];
+      }
+      if (slot === "viewProps") {
+        const mapperId = [...anchors.keys()].find(
+          (id) => actorNode(id) === target,
+        );
+        const actor = mapperId === undefined ? null : anchorInstance(mapperId);
+        if (!actor) return [];
+        return [...renderers.entries()]
+          .filter(([, renderer]) => renderer.getActors?.().includes(actor))
+          .map(([id]) => id);
+      }
+      return [];
+    },
+    getInstance(id) {
+      const key = String(id);
+      const mapperId = [...anchors.keys()].find(
+        (mapper) => actorNode(mapper) === key,
+      );
+      if (mapperId !== undefined) return anchorInstance(mapperId) ?? null;
+      return renderers.get(key) ?? null;
+    },
+  };
+}

@@ -7,6 +7,7 @@ import { after, test } from "node:test";
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
 import {
   IDENTITY,
+  anchorGraph,
   loadLodModule,
   makePct1,
   stubFetch,
@@ -81,6 +82,10 @@ async function makeView() {
   const renderWindow = { getViews: () => [{ getSize: () => [200, 100] }] };
   const registry = new Map();
   const clouds = new Map();
+  // The graph statement the anchor resolver reads. Anchors resolve through a
+  // getter so a test swapping `cloud.anchor` is also editing the graph.
+  const graph = anchorGraph();
+  for (const renderer of renderers) graph.addRenderer(renderer);
   let renders = 0;
   const scheduleRender = () => {
     renders += 1;
@@ -92,6 +97,7 @@ async function makeView() {
       const mapper = { isDeleted: () => false };
       cloud = { mapper, anchor: makeAnchor(mapper) };
       clouds.set(id, cloud);
+      graph.setAnchor(id, () => clouds.get(id)?.anchor);
     }
     module.applyPointCloudLodBlock(
       registry,
@@ -124,6 +130,8 @@ async function makeView() {
         renderers,
         renderWindow,
         scheduleRender,
+        referrersOf: graph.referrersOf,
+        getInstance: graph.getInstance,
       }),
     row: (id) =>
       module
@@ -630,4 +638,64 @@ test("a cloud walks the whole fixed, adaptive, hidden, removed and restored cycl
   } finally {
     view.dispose();
   }
+});
+
+test("anchor resolution reruns only when the topology version advances", async () => {
+  const module = await loadModule("/src/components/pointCloudLod.js");
+  stubFetch();
+  const renderers = [makeRenderer(), makeRenderer()];
+  const renderWindow = { getViews: () => [{ getSize: () => [200, 100] }] };
+  const registry = new Map();
+  const mapper = { isDeleted: () => false };
+  const anchor = makeAnchor(mapper);
+  const graph = anchorGraph();
+  for (const renderer of renderers) graph.addRenderer(renderer);
+  graph.setAnchor("42", anchor);
+  let lookups = 0;
+  const referrersOf = (nodeId, slot) => {
+    lookups += 1;
+    return graph.referrersOf(nodeId, slot);
+  };
+  const update = (topologyVersion) =>
+    module.updatePointCloudLods(registry, {
+      renderers,
+      renderWindow,
+      scheduleRender: () => {},
+      referrersOf,
+      getInstance: graph.getInstance,
+      topologyVersion,
+    });
+
+  renderers[0].addActor(anchor);
+  module.applyPointCloudLodBlock(
+    registry,
+    "42",
+    { ...BLOCK },
+    mapper,
+    () => {},
+  );
+  update(1);
+  await settle();
+  const afterFirst = lookups;
+  assert.ok(afterFirst > 0, "the first pass resolved from the graph");
+  update(1);
+  update(1);
+  assert.equal(lookups, afterFirst, "same version, cached association");
+
+  // The server re-stages the anchor into the second renderer. A pass on the
+  // same version keeps the cached association — only a message can move an
+  // actor, and a message bumps the version, whose pass sees the move.
+  renderers[0].removeActor(anchor);
+  renderers[1].addActor(anchor);
+  update(1);
+  assert.ok(
+    renderers[0].actors.length > 0,
+    "tiles still with the cached host inside the version",
+  );
+  update(2);
+  await settle();
+  update(2);
+  assert.equal(renderers[0].actors.length, 0, "old host emptied");
+  assert.ok(renderers[1].actors.length > 1, "tiles migrated with the anchor");
+  module.disposePointCloudLods(registry);
 });

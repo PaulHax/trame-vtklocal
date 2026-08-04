@@ -7,6 +7,7 @@ import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
 import {
+  anchorGraph,
   loadLodModule,
   makePct1,
   stubFetch,
@@ -99,7 +100,7 @@ function makeRenderer(camera) {
     getViewport: () => [0, 0, 1, 1],
   };
   const renderWindow = { getViews: () => [{ getSize: () => [1600, 900] }] };
-  return { anchorMapper, renderer, renderWindow };
+  return { anchorMapper, anchorActor, renderer, renderWindow };
 }
 
 // One adaptive cloud rendering into one view, driven exactly the way a host
@@ -108,13 +109,20 @@ async function makeAdaptiveView() {
   const module = await loadModule("/src/components/pointCloudLod.js");
   stubFetch();
   const camera = makeCamera();
-  const { anchorMapper, renderer, renderWindow } = makeRenderer(camera);
+  const { anchorMapper, anchorActor, renderer, renderWindow } =
+    makeRenderer(camera);
   const registry = new Map();
+  // The graph statement the anchor resolver reads.
+  const graph = anchorGraph();
+  graph.addRenderer(renderer);
+  graph.setAnchor("42", anchorActor);
   const context = {
     renderers: [renderer],
     renderWindow,
     scheduleRender: () => {},
     motionDebounceMs: DEBOUNCE_MS,
+    referrersOf: graph.referrersOf,
+    getInstance: graph.getInstance,
   };
   module.applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, () => {});
   const repaint = () => module.updatePointCloudLods(registry, context);
@@ -357,7 +365,8 @@ async function makeSyncedView() {
   camera.getFocalPoint = () => [0, 0, 0];
   camera.getViewUp = () => [0, 0, 1];
   camera.getClippingRange = () => [1, 1000];
-  const { anchorMapper, renderer, renderWindow } = makeRenderer(camera);
+  const { anchorMapper, anchorActor, renderer, renderWindow } =
+    makeRenderer(camera);
   // Only synced renderers carry the scene, and only they are searched for
   // anchors.
   renderer.get = () => ({ remoteId: "5" });
@@ -387,9 +396,27 @@ async function makeSyncedView() {
     },
     {
       createManagedSyncContext: () => ({
-        synchronizerContext: {},
+        synchronizerContext: {
+          // Resolves the mirrored node ids to their live instances.
+          getInstance: (id) =>
+            id === "42-actor" ? anchorActor : id === "5" ? renderer : null,
+        },
         syncRenderWindow: renderWindow,
         cleanup() {},
+      }),
+      // The mirrored graph statement the anchor resolver reads: the actor
+      // node rides mapper node "42", hosted by synced renderer node "5".
+      createMirrorStore: () => ({
+        entries: () =>
+          new Map([
+            ["42-actor", { refs: { mapper: "42" } }],
+            ["5", { refs: { viewProps: ["42-actor"] } }],
+          ]).entries(),
+        get: () => null,
+        applyOps() {},
+        clear() {},
+        gcBlobCache() {},
+        toObject: () => ({}),
       }),
       createReconciler: () => ({
         registerBlockHandler: (key, handler) => blockHandlers.set(key, handler),

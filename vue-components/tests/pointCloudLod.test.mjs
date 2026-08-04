@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
 import {
   IDENTITY,
+  anchorGraph,
   loadLodModule,
   makePct1,
   stubFetch,
@@ -55,7 +56,23 @@ function makeSceneStubs() {
     getViewport: () => [0, 0, 1, 1],
   };
   const renderWindow = { getViews: () => [{ getSize: () => [200, 100] }] };
-  return { anchorMapper, anchorActor, renderer, renderWindow, added, removed };
+  // The graph statement the anchor resolver reads: node "42" is the marked
+  // mapper, its anchor actor rides this renderer.
+  const graph = anchorGraph();
+  graph.addRenderer(renderer);
+  graph.setAnchor("42", anchorActor);
+  const { referrersOf, getInstance } = graph;
+  return {
+    anchorMapper,
+    anchorActor,
+    renderer,
+    renderWindow,
+    added,
+    removed,
+    graph,
+    referrersOf,
+    getInstance,
+  };
 }
 
 async function settle(rounds = 12) {
@@ -72,8 +89,16 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     disposePointCloudLods,
   } = await loadLodModule();
   const fetchCalls = stubFetch();
-  const { anchorMapper, anchorActor, renderer, renderWindow, added, removed } =
-    makeSceneStubs();
+  const {
+    anchorMapper,
+    anchorActor,
+    renderer,
+    renderWindow,
+    added,
+    removed,
+    referrersOf,
+    getInstance,
+  } = makeSceneStubs();
 
   let renders = 0;
   const scheduleRender = () => {
@@ -87,6 +112,8 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
 
@@ -118,6 +145,8 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   assert.equal(
     added.some((actor) => actor.getVisibility()),
@@ -129,6 +158,8 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   assert.equal(added.length, 0, "hidden cloud owns no tile actors");
   assert.equal(
@@ -166,6 +197,8 @@ test("block + update streams tiles into the renderer and mirrors anchor state", 
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
   assert.equal(added.length, 1, "visible cloud rebuilds one tile actor");
@@ -188,14 +221,23 @@ test("an initially hidden cloud defers hierarchy and tile requests until shown",
     disposePointCloudLods,
   } = await loadLodModule();
   const fetchCalls = stubFetch();
-  const { anchorMapper, anchorActor, renderer, renderWindow, added } =
-    makeSceneStubs();
+  const {
+    anchorMapper,
+    anchorActor,
+    renderer,
+    renderWindow,
+    added,
+    referrersOf,
+    getInstance,
+  } = makeSceneStubs();
   anchorActor.visibility = 0;
   const registry = new Map();
   const context = {
     renderers: [renderer],
     renderWindow,
     scheduleRender: () => {},
+    referrersOf,
+    getInstance,
   };
 
   applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, () => {});
@@ -226,7 +268,15 @@ test("tiles are hosted in the renderer containing the anchor, not the first", as
     disposePointCloudLods,
   } = await loadLodModule();
   stubFetch();
-  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+  const {
+    anchorMapper,
+    renderer,
+    renderWindow,
+    added,
+    graph,
+    referrersOf,
+    getInstance,
+  } = makeSceneStubs();
   // A synced renderer ahead of the anchor's (e.g. the annotation layer).
   const otherAdded = [];
   const otherRenderer = {
@@ -238,6 +288,7 @@ test("tiles are hosted in the renderer containing the anchor, not the first", as
       if (at >= 0) otherAdded.splice(at, 1);
     },
   };
+  graph.addRenderer(otherRenderer);
 
   const registry = new Map();
   const scheduleRender = () => {};
@@ -246,6 +297,8 @@ test("tiles are hosted in the renderer containing the anchor, not the first", as
     renderers: [otherRenderer, renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
 
@@ -258,8 +311,15 @@ test("a null block disposes the entry and its actors", async () => {
   const { applyPointCloudLodBlock, updatePointCloudLods } =
     await loadLodModule();
   stubFetch();
-  const { anchorMapper, renderer, renderWindow, added, removed } =
-    makeSceneStubs();
+  const {
+    anchorMapper,
+    renderer,
+    renderWindow,
+    added,
+    removed,
+    referrersOf,
+    getInstance,
+  } = makeSceneStubs();
 
   const registry = new Map();
   const scheduleRender = () => {};
@@ -268,6 +328,8 @@ test("a null block disposes the entry and its actors", async () => {
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
   assert.equal(added.length, 1);
@@ -282,7 +344,8 @@ test("a revision change swaps the tile source endpoint", async () => {
   const { applyPointCloudLodBlock, updatePointCloudLods } =
     await loadLodModule();
   const fetchCalls = stubFetch();
-  const { anchorMapper, renderer, renderWindow } = makeSceneStubs();
+  const { anchorMapper, renderer, renderWindow, referrersOf, getInstance } =
+    makeSceneStubs();
 
   const registry = new Map();
   const scheduleRender = () => {};
@@ -291,6 +354,8 @@ test("a revision change swaps the tile source endpoint", async () => {
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
 
@@ -305,6 +370,8 @@ test("a revision change swaps the tile source endpoint", async () => {
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
 
@@ -408,7 +475,14 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
     disposePointCloudLods,
   } = await loadLodModule();
   stubFetch();
-  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+  const {
+    anchorMapper,
+    renderer,
+    renderWindow,
+    added,
+    referrersOf,
+    getInstance,
+  } = makeSceneStubs();
 
   const registry = new Map();
   const scheduleRender = () => {};
@@ -425,6 +499,8 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
   assert.equal(added.length, 1, "adaptive cloud still streams a tile");
@@ -437,6 +513,8 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
   assert.equal(
@@ -457,7 +535,14 @@ test("progressive density keeps controller and renderer draw counts aligned", as
     disposePointCloudLods,
   } = await loadLodModule();
   stubFetch();
-  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+  const {
+    anchorMapper,
+    renderer,
+    renderWindow,
+    added,
+    referrersOf,
+    getInstance,
+  } = makeSceneStubs();
 
   const registry = new Map();
   const scheduleRender = () => {};
@@ -466,6 +551,8 @@ test("progressive density keeps controller and renderer draw counts aligned", as
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
 
@@ -489,7 +576,8 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
     disposePointCloudLods,
   } = await loadLodModule();
   stubFetch();
-  const { anchorMapper, renderer, renderWindow } = makeSceneStubs();
+  const { anchorMapper, renderer, renderWindow, referrersOf, getInstance } =
+    makeSceneStubs();
   const registry = new Map();
   const scheduleRender = () => {};
 
@@ -504,6 +592,8 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   await settle();
   assert.equal(
@@ -522,6 +612,8 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
     renderers: [renderer],
     renderWindow,
     scheduleRender,
+    referrersOf,
+    getInstance,
   });
   assert.equal(
     describePointCloudLodRegistry(registry)[0].stats.refinementCutoffPx,

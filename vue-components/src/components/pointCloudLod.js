@@ -3,14 +3,15 @@
 //
 // A block arrival creates a registry entry keyed by the anchor mapper's node
 // id; the entry lazily builds a pointcloud-lod HttpTileSource + LOD
-// controller + renderer adapter once the anchor actor is found (actor access
-// resolves lazily at update time, mirroring distanceToCameraGlyphs: block
-// application order inside a message is arbitrary, so the anchor actor may
-// not be wired to a renderer yet when the block lands). The anchor may live
-// in ANY of the view's synced renderers — views layer world geometry, video
-// underlay, and annotations as separate VTK renderers — and the streamed tile
-// actors are hosted in the same renderer as the anchor so they depth-composite
-// in the anchor's layer. Camera state feeds the controller on every applied
+// controller + renderer adapter once the anchor actor resolves. Resolution
+// happens at update time from the mirrored scene graph — the actor node whose
+// `mapper` slot names this entry, and the renderer whose `viewProps` carry
+// that actor — re-run once per applied sync message, since only a message can
+// change the topology. The anchor may live in ANY of the view's synced
+// renderers — views layer world geometry, video underlay, and annotations as
+// separate VTK renderers — and the streamed tile actors are hosted in the
+// same renderer as the anchor so they depth-composite in the anchor's layer.
+// Camera state feeds the controller on every applied
 // message and interactor render; anchor actor state (UserMatrix correction,
 // visibility, point size) fans out to the streamed tile actors on the same
 // cadence. Streaming, budgets, cancellation, and caching all live in the
@@ -486,17 +487,15 @@ export function enrichGestureWithCloudSolve(
 }
 
 // Whether the cached anchor is still the live actor this entry streams into:
-// the same live instance, still bound to the entry's mapper, still held by its
-// host renderer. The update pass and the pick query must agree on what makes an
-// anchor valid — a pick solved against an actor the renderer no longer uses is
-// not a pick of what the user sees — so both read this one predicate.
+// the same live instance, still bound to the entry's mapper. The update pass
+// and the pick query must agree on what makes an anchor valid — a pick solved
+// against an actor the scene no longer uses is not a pick of what the user
+// sees — so both read this one predicate. Renderer membership needs no
+// per-frame check: actor/renderer topology only changes when a sync message
+// is applied, and every applied message re-resolves the anchor.
 function anchorStillValid(entry) {
   const actor = entry?.actor;
-  return Boolean(
-    isLiveInstance(actor) &&
-      actor.getMapper?.() === entry.mapper &&
-      entry.hostRenderer?.getActors?.().includes(actor),
-  );
+  return Boolean(isLiveInstance(actor) && actor.getMapper?.() === entry.mapper);
 }
 
 // Server-synced actors carry visibility as 0/1 ints, not booleans; only a
@@ -506,29 +505,47 @@ function actorIsVisible(actor) {
   return visibility === undefined ? true : !!visibility;
 }
 
-// Resolve the anchor actor and the renderer hosting it. The anchor can live
-// in any synced renderer, so the search spans them all; the cached hit is
-// revalidated against its cached renderer first.
-function findAnchor(entry, renderers) {
-  if (anchorStillValid(entry) && renderers.includes(entry.hostRenderer)) {
-    return { actor: entry.actor, renderer: entry.hostRenderer };
-  }
-  for (const renderer of renderers) {
-    const actor = renderer
-      .getActors?.()
-      ?.find(
-        (candidate) =>
-          isLiveInstance(candidate) && candidate.getMapper?.() === entry.mapper,
-      );
-    if (actor) {
-      entry.actor = actor;
-      entry.hostRenderer = renderer;
-      return { actor, renderer };
+// The wire already states the anchor pairing: exactly one mirrored actor node
+// carries this entry's node in its `mapper` slot, and the renderer hosting it
+// lists that actor among its `viewProps`. Resolution is a lookup against that
+// statement — never a scan of live renderer actor lists, which are dominated
+// by this module's own streamed tile actors.
+function resolveAnchor(entry, context) {
+  const { referrersOf, getInstance, renderers } = context;
+  if (!referrersOf || !getInstance) return null;
+  for (const actorNodeId of referrersOf(entry.id, "mapper")) {
+    const actor = getInstance(actorNodeId);
+    if (!isLiveInstance(actor) || actor.getMapper?.() !== entry.mapper) {
+      continue;
+    }
+    for (const rendererNodeId of referrersOf(actorNodeId, "viewProps")) {
+      const renderer = getInstance(rendererNodeId);
+      if (renderer && renderers.includes(renderer)) {
+        return { actor, renderer };
+      }
     }
   }
-  entry.actor = null;
-  entry.hostRenderer = null;
   return null;
+}
+
+// The anchor actor and the renderer hosting it, resolved once per applied
+// sync message: `context.topologyVersion` advances with each applied message,
+// and interactor renders in between cannot move an actor between renderers,
+// so passes within one version reuse the cached association. A context
+// without a version (no gating information) resolves every pass.
+function findAnchor(entry, context) {
+  const version = Number.isFinite(context.topologyVersion)
+    ? context.topologyVersion
+    : null;
+  if (version === null || entry.anchorVersion !== version) {
+    const anchor = resolveAnchor(entry, context);
+    entry.anchorVersion = version;
+    entry.actor = anchor?.actor ?? null;
+    entry.hostRenderer = anchor?.renderer ?? null;
+  }
+  return anchorStillValid(entry)
+    ? { actor: entry.actor, renderer: entry.hostRenderer }
+    : null;
 }
 
 // Block handler for the reconcile engine: `pointCloudLod` block changes land
@@ -566,6 +583,7 @@ export function applyPointCloudLodBlock(
       mapper: isLiveInstance(instance) ? instance : null,
       actor: null,
       hostRenderer: null,
+      anchorVersion: null,
       config,
       appliedEndpoint: null,
       appliedBudget: null,
@@ -635,10 +653,10 @@ function reconcileBudgetMode(registry, entry, drawEnabled) {
 
 // `worldViewFor(renderer)` is the pass's rendered camera for that renderer,
 // read once and shared with the motion classifier.
-function updateEntry(registry, entry, renderers, worldViewFor, scheduleRender) {
+function updateEntry(registry, entry, context, worldViewFor, scheduleRender) {
   const { config } = entry;
 
-  const anchor = findAnchor(entry, renderers);
+  const anchor = findAnchor(entry, context);
   if (!anchor) {
     // Two situations reach here and only one of them is a retry. A block can
     // land before its anchor actor is wired to a renderer (block application
@@ -844,7 +862,7 @@ export function updatePointCloudLods(registry, context) {
     return views.get(renderer);
   };
   for (const entry of registry.values()) {
-    updateEntry(registry, entry, renderers, worldViewFor, render);
+    updateEntry(registry, entry, context, worldViewFor, render);
   }
   // After the loop, which is what fills the view map.
   viewGovernorOf(registry)?.noteRenderedCameras(views, render);

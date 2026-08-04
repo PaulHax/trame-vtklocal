@@ -64,14 +64,14 @@ function getSharedMemoryPool() {
 }
 
 // The view governor belongs to the VIEW, not to a cloud: one adaptive budget
-// split across every adaptive cloud drawing into it. The library fixes its
-// options at construction, so a wire block that changes them replaces the
-// instance — together with the memberships and motion references that instance
-// was holding. The stored key is what the current instance was built from.
+// split across every adaptive cloud drawing into it. It is created with the
+// first adaptive cloud and disposed with the last; a wire block that changes
+// the options reconfigures the instance in place (`setOptions`), so
+// memberships and motion references ride through options changes untouched.
 const viewGovernors = new WeakMap();
 
 function viewGovernorOf(registry) {
-  return viewGovernors.get(registry)?.governor ?? null;
+  return viewGovernors.get(registry) ?? null;
 }
 
 // What a cloud draws when its block configures neither an explicit point budget
@@ -203,8 +203,7 @@ function classifyCameraMotion(registry, views, debounceMs, scheduleRender) {
 // one rather than clamping it. So they are validated here under the library's
 // own policy — targets strictly positive, budgets whole and ordered — and a
 // block carrying an unusable one is as unusable as a block with no endpoint.
-// Absent fields stay absent so the library's defaults apply; the key order is
-// fixed because the reconciler compares option sets by their JSON.
+// Absent fields stay absent so the library's defaults apply.
 function normalizeAdaptiveOptions(block) {
   const raw = block.adaptiveOptions ?? {};
   if (typeof raw !== "object") {
@@ -856,9 +855,11 @@ function desiredGovernorOptions(registry) {
   return null;
 }
 
-// Motion is a property of the view, so a governor replaced mid-drag or mid
-// playback burst inherits what the view was holding — otherwise the swap would
-// read as the camera having stopped and quality would jump mid-gesture.
+// Motion is a property of the view, so a governor created or disposed
+// mid-drag or mid playback burst inherits what the view was holding —
+// otherwise the boundary would read as the camera having stopped and quality
+// would jump mid-gesture. Options changes never come through here: the
+// governor absorbs those in place, references intact.
 function retakeMotionReferences(registry, governor) {
   for (const slot of explicitMotionSlots.get(registry) ?? []) {
     slot.reference?.release();
@@ -870,27 +871,36 @@ function retakeMotionReferences(registry, governor) {
   motion.reference = governor?.beginMotion("inferred") ?? null;
 }
 
-// The library fixes a governor's options at construction, so reconciling a
-// changed wire block means replacing the instance. Memberships belong to the
-// instance that issued them: they are released here and the pass's entry loop
-// re-registers every adaptive cloud against the new governor.
+// The governor exists exactly while the view has an adaptive cloud. Options
+// from a changed wire block are forwarded as-is — the library treats an
+// equivalent bag as a no-op — so only the create and dispose boundaries have
+// any ceremony: memberships belong to the instance that issued them, and the
+// dispose path releases them so no cloud keeps drawing to a share of a
+// governor that no longer exists.
 function reconcileViewGovernor(registry) {
   const options = desiredGovernorOptions(registry);
-  const key = options === null ? null : JSON.stringify(options);
   const current = viewGovernors.get(registry) ?? null;
-  if ((current?.key ?? null) === key) return;
-  for (const entry of registry.values()) {
-    if (!entry.governorMember) continue;
-    entry.governorMember.release();
-    entry.governorMember = null;
-    // The released allocation belonged to the old instance, so whichever mode
-    // this entry lands in has to state its budget again.
-    entry.appliedBudget = null;
+  if (options !== null && current) {
+    current.setOptions(options);
+    return;
   }
-  current?.governor.dispose();
-  const governor = key === null ? null : createViewGovernor(options);
-  if (governor) viewGovernors.set(registry, { governor, key });
-  else viewGovernors.delete(registry);
+  if (options === null && !current) return;
+  if (current) {
+    for (const entry of registry.values()) {
+      if (!entry.governorMember) continue;
+      entry.governorMember.release();
+      entry.governorMember = null;
+      // The released allocation belonged to the disposed instance, so
+      // whichever mode this entry lands in has to state its budget again.
+      entry.appliedBudget = null;
+    }
+    current.dispose();
+    viewGovernors.delete(registry);
+    retakeMotionReferences(registry, null);
+    return;
+  }
+  const governor = createViewGovernor(options);
+  viewGovernors.set(registry, governor);
   retakeMotionReferences(registry, governor);
 }
 

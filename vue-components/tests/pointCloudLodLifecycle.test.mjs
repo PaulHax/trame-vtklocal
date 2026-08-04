@@ -400,7 +400,7 @@ test("a cloud hidden while its first tiles load shows them when it is revealed",
   }
 });
 
-test("changing adaptive options rebuilds the governor and re-registers every cloud", async () => {
+test("changing adaptive options reconfigures the governor for every cloud", async () => {
   const view = await makeView();
   try {
     const first = view.apply("42", pinnedAdaptive(300000));
@@ -411,8 +411,8 @@ test("changing adaptive options rebuilds the governor and re-registers every clo
     assert.equal(view.governor().aggregateBudget, 300000);
     assert.equal(view.governor().targetFrameTimeMs, 33);
 
-    // A new wire block: a bigger ceiling and a slacker settled target. The
-    // library fixes these at construction, so this can only be a rebuild.
+    // A new wire block: a bigger ceiling and a slacker settled target,
+    // absorbed by the governor in place — memberships included.
     view.apply("42", pinnedAdaptive(500000, { stationaryTargetMs: 50 }));
     view.update();
 

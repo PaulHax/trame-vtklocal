@@ -77,8 +77,8 @@ export function useSceneSync(
   let syncedRootId = null;
   let renderedCamera = null;
   let clientCamera = null;
-  let cameraInteractionDepth = 0;
-  let cameraReportInteractionDepth = 0;
+  // One entry per open camera gesture, holding that gesture's `report` flag.
+  const cameraInteractionStack = [];
   let cameraReportOptions = { during: "none", terminal: true };
   let pendingCameraReport = false;
   let cameraReportFrame = 0;
@@ -297,12 +297,7 @@ export function useSceneSync(
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
-    // Both counters, or a re-init during an open gesture leaves the report
-    // counter permanently one above the interaction counter: every later
-    // gesture then ends with it still positive and never sends its terminal
-    // camera again.
-    cameraInteractionDepth = 0;
-    cameraReportInteractionDepth = 0;
+    cameraInteractionStack.length = 0;
     renderedCamera = null;
     cancelCameraReport();
     distanceToCameraGlyphs.clear();
@@ -341,7 +336,7 @@ export function useSceneSync(
       rootInstance: syncRenderWindow,
       shouldDeferProps: (_id, node) =>
         cameraAuthority === "server" &&
-        cameraInteractionDepth > 0 &&
+        cameraInteractionStack.length > 0 &&
         node?.type === "vtkCamera",
     });
 
@@ -702,31 +697,32 @@ export function useSceneSync(
     if (during === "none") cancelCameraReport();
   }
 
-  // Camera interaction is reference-counted: overlapping gesture sources (e.g.
-  // a wheel-idle timer and a drag) each begin/end independently, and the shared
-  // camera channel must stay live until the LAST one ends. A boolean would let
-  // one source's end silence another's in-flight reports.
+  // Camera interaction is a stack, not a boolean: overlapping gesture sources
+  // (e.g. a wheel-idle timer and a drag) each begin/end independently, and the
+  // shared camera channel must stay live until the LAST one ends. A boolean
+  // would let one source's end silence another's in-flight reports. Each entry
+  // carries its own `report` flag, so an end can only retract what its begin
+  // pushed — the two can never drift apart.
   function beginCameraInteraction({ report = true } = {}) {
-    cameraInteractionDepth += 1;
-    if (report) cameraReportInteractionDepth += 1;
-    if (cameraInteractionDepth === 1) {
+    cameraInteractionStack.push(!!report);
+    if (cameraInteractionStack.length === 1) {
       beginPointCloudLodInteraction(pointCloudLods);
     }
   }
 
   function cameraInteraction() {
-    if (cameraReportInteractionDepth > 0) reportCamera();
+    if (cameraInteractionStack.includes(true)) reportCamera();
   }
 
-  function endCameraInteraction({ report = true } = {}) {
-    if (cameraInteractionDepth === 0) return;
-    cameraInteractionDepth -= 1;
-    const reportEnded = report && cameraReportInteractionDepth > 0;
-    if (reportEnded) cameraReportInteractionDepth -= 1;
-    if (reportEnded && cameraReportInteractionDepth === 0) {
+  // The gesture's own `report` flag comes off the stack, so callers need pass
+  // nothing here — whatever `begin` declared is what `end` retracts.
+  function endCameraInteraction() {
+    if (cameraInteractionStack.length === 0) return;
+    const reported = cameraInteractionStack.pop();
+    if (reported && !cameraInteractionStack.includes(true)) {
       reportCamera({ terminal: true });
     }
-    if (cameraInteractionDepth > 0) return;
+    if (cameraInteractionStack.length > 0) return;
     endPointCloudLodInteraction(pointCloudLods);
     reconciler?.flushDeferredProps?.();
     renderRequestCallback?.();

@@ -266,9 +266,36 @@ test("programmatic interaction shares lifecycle without reporting camera echo", 
     scene.enableCameraReports({ during: "interaction", terminal: true });
     scene.beginCameraInteraction({ report: false });
     scene.cameraInteraction();
-    scene.endCameraInteraction({ report: false });
+    scene.endCameraInteraction();
     fakeWindow.flush();
     assert.equal(events.filter((event) => event.name === "camera").length, 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("a reporting gesture is retracted by its end whatever the caller says", async () => {
+  const previousWindow = globalThis.window;
+  const fakeWindow = makeWindow();
+  globalThis.window = fakeWindow;
+  try {
+    const { scene, events } = await makeScene();
+    scene.enableCameraReports({ during: "interaction", terminal: true });
+
+    // The end carries the wrong flag for the gesture that is open. The
+    // gesture's own flag rides the stack, so it is still the one retracted:
+    // the terminal report fires and nothing stays owed.
+    scene.beginCameraInteraction();
+    scene.endCameraInteraction({ report: false });
+    fakeWindow.flush();
+    assert.equal(events.filter((event) => event.name === "camera").length, 1);
+
+    // A later, non-reporting gesture is unaffected by the mismatched pair.
+    scene.beginCameraInteraction({ report: false });
+    scene.cameraInteraction();
+    scene.endCameraInteraction();
+    fakeWindow.flush();
+    assert.equal(events.filter((event) => event.name === "camera").length, 1);
   } finally {
     globalThis.window = previousWindow;
   }

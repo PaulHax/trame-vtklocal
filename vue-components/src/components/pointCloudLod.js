@@ -660,21 +660,22 @@ function updateEntry(registry, entry, context, worldViewFor, scheduleRender) {
     entry.controller.setCamera(view);
   }
   if (drawEnabled) entry.controller.setActive(true);
-  const controllerStats = entry.controller.stats();
+  // The narrow per-frame read, not the full stats() diagnostic snapshot.
   // Read after the active state settles: a ceiling taken while the cloud was
   // still inactive is zero, which would throw away the very reuse pool the
   // reactivation is about to draw from — and leaves a hidden cloud's retired
   // actors alive instead of releasing them.
-  entry.adapter.setResourceCeilingBytes(controllerStats.memoryBudgetBytes);
+  const inputs = entry.controller.governorInputs();
+  entry.adapter.setResourceCeilingBytes(inputs.memoryBudgetBytes);
   // The governor needs the memory ceiling to bound the aggregate before it
   // splits it, and the physical work counts to know whether another frame is
   // still worth painting.
   entry.governorMember?.update({
     active: drawEnabled,
-    projectedImportance: controllerStats.selection.projectedImportance,
-    memoryCeilingPoints: controllerStats.memoryCeilingPoints,
-    physicalTileOperations: controllerStats.physicalTileOperations,
-    physicalHierarchyOperations: controllerStats.physicalHierarchyOperations,
+    projectedImportance: inputs.projectedImportance,
+    memoryCeilingPoints: inputs.memoryCeilingPoints,
+    physicalTileOperations: inputs.physicalTileOperations,
+    physicalHierarchyOperations: inputs.physicalHierarchyOperations,
   });
 }
 

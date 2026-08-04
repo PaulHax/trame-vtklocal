@@ -9,7 +9,6 @@ import {
   IDENTITY,
   anchorGraph,
   loadLodModule,
-  makePct1,
   stubFetch,
 } from "./pointCloudLodFixtures.mjs";
 

@@ -6,12 +6,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
-import {
-  anchorGraph,
-  loadLodModule,
-  makePct1,
-  stubFetch,
-} from "./pointCloudLodFixtures.mjs";
+import { anchorGraph, stubFetch } from "./pointCloudLodFixtures.mjs";
 
 after(async () => {
   await closeModuleLoader();

@@ -185,6 +185,7 @@ function classifyCameraMotion(registry, views, debounceMs, scheduleRender) {
   state.views = views;
   const governor = viewGovernorOf(registry);
   if (!moved || !governor) return;
+  governor.recordCameraChange();
   if (!state.reference) state.reference = governor.beginMotion("inferred");
   if (state.timer !== null) clearTimeout(state.timer);
   state.timer = setTimeout(() => {
@@ -444,8 +445,8 @@ export function cameraInAnchorCoordinates(view, matrix) {
 // sourceAssetId (never the tile-service id inside the endpoint, never "the
 // frontmost cloud"). Returns the wire-shaped solve:
 //
-//   { status: "hit", asset_id, revision, node_id, world, distance_px }
-//   { status: "miss", asset_id, revision, node_id }
+//   { status: "hit", asset_id, revision, nodes, world, distance_px }
+//   { status: "miss", asset_id, revision, nodes }
 //   null — unavailable: unknown or duplicate identity, unresolved anchor,
 //   hidden cloud, non-drawing host renderer, unreadable camera, or a
 //   non-similarity anchor transform.
@@ -493,9 +494,9 @@ export function pickPointCloudPoint(
   if (rendererDraws !== undefined && !rendererDraws) return null;
   // The transform the pick is solved through rides the ACTOR, while the LOD
   // block (and so `entry.id`) rides its mapper. The client resolved that
-  // pairing to read the matrix, so it reports the actor's node id too — the
-  // consumer can then check both nodes for staleness without rediscovering
-  // the mapper/actor association in its own copy of the scene.
+  // pairing to read the matrix, so it can name both nodes in the solve's
+  // staleness list — the consumer checks them without rediscovering the
+  // mapper/actor association in its own copy of the scene.
   const transformNodeId = context?.synchronizerContext?.getInstanceId?.(actor);
   if (transformNodeId === null || transformNodeId === undefined) return null;
   const baseMatrix = actor.getUserMatrix?.() ?? null;
@@ -519,8 +520,11 @@ export function pickPointCloudPoint(
   const provenance = {
     asset_id: entry.config.sourceAssetId,
     revision: entry.config.revision,
-    node_id: entry.id,
-    transform_node_id: String(transformNodeId),
+    // The scene nodes this solve was measured through, named by the client the
+    // same way a glyph pick names its own: the mapper carrying the LOD block
+    // that was swept, and the actor carrying the transform the result was
+    // converted through.
+    nodes: [String(entry.id), String(transformNodeId)],
   };
   if (result.status !== "hit") {
     return { status: "miss", ...provenance };
@@ -628,13 +632,6 @@ function findAnchor(entry, renderers) {
   return null;
 }
 
-function disposeEntry(entry) {
-  entry?.governorMember?.release();
-  if (entry) entry.governorMember = null;
-  entry?.controller?.dispose();
-  entry?.adapter?.dispose();
-}
-
 // Block handler for the reconcile engine: `pointCloudLod` block changes land
 // here as (nodeId, block|null, instance). `scheduleRender` must be the view's
 // coalescing render request.
@@ -654,7 +651,7 @@ export function applyPointCloudLodBlock(
 
   if (!config) {
     if (existing) {
-      disposeEntry(existing);
+      resetStreaming(existing);
       registry.delete(id);
       scheduleRender?.();
     }
@@ -713,6 +710,8 @@ function reconcileBudgetMode(registry, entry, drawEnabled) {
         id: entry.id,
         active: drawEnabled,
         setPointBudget: (points) => entry.controller?.setPointBudget(points),
+        setDensityFraction: (fraction) =>
+          entry.controller?.setDensityFraction(fraction),
       }) ?? null;
     // The governor owns the number now; forget ours so leaving adaptive
     // re-applies a fixed budget over whatever it last allocated.
@@ -789,6 +788,7 @@ function updateEntry(registry, entry, renderers, worldViewFor, scheduleRender) {
         source,
         // Late-bound: the adapter is replaced when the anchor migrates.
         onTiles: (batch) => entry.adapter?.applyBatch(batch),
+        onDrawPlan: (plan) => entry.adapter?.applyDrawPlan(plan),
         scheduleRender,
         presentation: config.presentation,
         onPointDiameterCssPx: (diameterCssPx) =>
@@ -1042,7 +1042,7 @@ export function disposePointCloudLods(registry) {
     return;
   }
   for (const entry of registry.values()) {
-    disposeEntry(entry);
+    resetStreaming(entry);
   }
   registry.clear();
   const motion = cameraMotionByRegistry.get(registry);

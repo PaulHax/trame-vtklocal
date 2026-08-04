@@ -12,6 +12,7 @@ import {
 
 import "@kitware/vtk-wasm/style.css";
 import { RemoteSession } from "@kitware/vtk-wasm/remote";
+import { getDevicePixelRatio } from "./viewportMetrics";
 
 const WASM_HANDLERS = {};
 
@@ -217,8 +218,9 @@ export default {
 
     async function resize() {
       const { width, height } = container.value.getBoundingClientRect();
-      const w = Math.floor(width * window.devicePixelRatio + 0.5);
-      const h = Math.floor(height * window.devicePixelRatio + 0.5);
+      const devicePixelRatio = getDevicePixelRatio();
+      const w = Math.floor(width * devicePixelRatio + 0.5);
+      const h = Math.floor(height * devicePixelRatio + 0.5);
       await wasmManager.setSize(props.renderWindow, w, h);
     }
     let resizeObserver = new ResizeObserver(resize);

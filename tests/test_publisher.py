@@ -601,18 +601,17 @@ def test_event_is_current_truth_table():
 
         cases = [
             # (event, node_id, expected)
-            ({"seq": seq, "pick": {"nodeId": mapper_id}}, None, True),
-            ({"seq": seq + 5, "pick": {"nodeId": mapper_id}}, None, True),
-            ({"seq": seq}, mapper_id, True),  # explicit node id, no pick
-            ({"seq": seq - 1, "pick": {"nodeId": mapper_id}}, None, False),
-            ({"pick": {"nodeId": mapper_id}}, None, False),  # missing seq
-            ({"seq": None, "pick": {"nodeId": mapper_id}}, None, False),
-            ({"seq": float(seq), "pick": {"nodeId": mapper_id}}, None, False),
-            ({"seq": True, "pick": {"nodeId": mapper_id}}, None, False),
-            ({"seq": seq}, None, False),  # no node id anywhere
-            ({"seq": seq, "pick": None}, None, False),
-            ({"seq": seq, "pick": {"nodeId": "999999"}}, None, False),  # unknown
-            ({"seq": seq, "pick": {"nodeId": mapper_id}}, "999999", False),
+            ({"seq": seq}, mapper_id, True),
+            ({"seq": seq + 5}, mapper_id, True),
+            ({"seq": seq - 1}, mapper_id, False),
+            ({}, mapper_id, False),  # missing seq
+            ({"seq": None}, mapper_id, False),
+            ({"seq": float(seq)}, mapper_id, False),
+            ({"seq": True}, mapper_id, False),
+            # The node is always the caller's to name; there is no fallback to
+            # anything inside the event.
+            ({"seq": seq, "pick": {"nodeId": mapper_id}}, None, False),
+            ({"seq": seq}, "999999", False),  # unknown node
             (None, mapper_id, False),  # not an event mapping
         ]
         for event, node_id, expected in cases:
@@ -631,27 +630,25 @@ def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
     try:
         object_manager = scene.api.vtk_object_manager
         actor_id = str(object_manager.GetId(scene.handles["actor"]))
-        event = {"seq": publisher.store.seq, "pick": {"nodeId": actor_id}}
-        assert publisher.event_is_current(event)
+        event = {"seq": publisher.store.seq}
+        assert publisher.event_is_current(event, actor_id)
 
         # Any op touching the node bumps its last-touched seq past the event.
         scene.handles["actor"].SetVisibility(False)
         publisher.sync()
-        assert not publisher.event_is_current(event)
-        assert publisher.event_is_current({**event, "seq": publisher.store.seq})
+        assert not publisher.event_is_current(event, actor_id)
+        assert publisher.event_is_current({"seq": publisher.store.seq}, actor_id)
 
         # A removed node is unknown -> stale, however fresh the seq claims.
         polydata, _points = make_line_polydata()
         actor2, _mapper2 = add_actor(scene.handles["renderer"], polydata)
         publisher.sync()
         actor2_id = str(object_manager.GetId(actor2))
-        assert publisher.event_is_current(
-            {"seq": publisher.store.seq, "pick": {"nodeId": actor2_id}}
-        )
+        assert publisher.event_is_current({"seq": publisher.store.seq}, actor2_id)
         scene.handles["renderer"].RemoveActor(actor2)
         publisher.sync()
         assert not publisher.event_is_current(
-            {"seq": publisher.store.seq + 100, "pick": {"nodeId": actor2_id}}
+            {"seq": publisher.store.seq + 100}, actor2_id
         )
     finally:
         publisher.cleanup()
@@ -663,16 +660,16 @@ def test_patch_array_staleness_counts_by_default_and_relaxes_mid_gesture(
     scene, publisher, server = publisher_env
     _start_retention(scene, publisher, server)
     dataset_id = _dataset_id(scene)
-    event = {"seq": publisher.store.seq, "pick": {"nodeId": dataset_id}}
+    event = {"seq": publisher.store.seq}
 
     _touch_point(scene, 12, (8.0, 7.0, 6.0))
     publisher.sync()
     server.protocol.drain()
 
     # The patch moved the very points the pick was measured against.
-    assert not publisher.event_is_current(event)
+    assert not publisher.event_is_current(event, dataset_id)
     # Mid-gesture callers opt out so their own confirmations don't stale them.
-    assert publisher.event_is_current(event, strict=False)
+    assert publisher.event_is_current(event, dataset_id, strict=False)
 
 
 def test_parsed_state_cache_skips_unchanged_referenced_states():

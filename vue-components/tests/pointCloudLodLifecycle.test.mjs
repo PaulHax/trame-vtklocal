@@ -5,6 +5,12 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import {
+  IDENTITY,
+  loadLodModule,
+  makePct1,
+  stubFetch,
+} from "./pointCloudLodFixtures.mjs";
 
 after(async () => {
   await closeModuleLoader();
@@ -31,52 +37,6 @@ async function settle(rounds = 12) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
-
-function makePct1(positions, rgb) {
-  const bytes = 40 + positions.length * 4 + (rgb ? rgb.length : 0);
-  const buffer = new ArrayBuffer(bytes);
-  const view = new DataView(buffer);
-  for (let index = 0; index < 4; index += 1) {
-    view.setUint8(index, "PCT1".charCodeAt(index));
-  }
-  view.setUint32(4, positions.length / 3, true);
-  view.setUint32(8, rgb ? 1 : 0, true);
-  new Float32Array(buffer, 40, positions.length).set(positions);
-  if (rgb) {
-    new Uint8Array(buffer, 40 + positions.length * 4, rgb.length).set(rgb);
-  }
-  return buffer;
-}
-
-function stubFetch() {
-  const calls = [];
-  globalThis.fetch = async (url) => {
-    calls.push(String(url));
-    if (String(url).includes("/hierarchy/")) {
-      return new Response(
-        JSON.stringify({
-          nodes: {
-            "0-0-0-0": {
-              pointCount: 2,
-              children: [],
-              page: null,
-              bounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
-              spacing: 0.1,
-            },
-          },
-        }),
-        { status: 200 },
-      );
-    }
-    return new Response(
-      makePct1([0.1, 0.1, 0.1, -0.1, -0.1, -0.1], [255, 0, 0, 0, 200, 0]),
-      { status: 200 },
-    );
-  };
-  return calls;
-}
-
-const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 function makeAnchor(mapper) {
   return {

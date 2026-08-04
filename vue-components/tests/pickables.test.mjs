@@ -439,5 +439,33 @@ test("preview metadata and bound points node id ride the pick result", async () 
 
   assert.equal(hit.preview, "plane");
   assert.equal(hit.pointsNodeId, "poly");
+  // The pick names every node its screen position was measured through, so the
+  // server validates the client's own dependency list rather than a fixed pair.
+  assert.deepEqual(hit.nodes, [String(hit.nodeId), "poly"]);
   assert.deepEqual(hit.plane, { origin: [0, 0, 0], normal: [0, 0, 1] });
+});
+
+test("a pick whose input point set cannot be resolved names no nodes", async () => {
+  const pickables = await loadPickables();
+  const vtk = await loadVtk();
+  const { mapper } = buildMapper(vtk, [0, 0, 0]);
+  const registry = pickables.createPickableRegistry();
+  pickables.applyPickableBlock(registry, "m", { grabPx: 20 }, mapper);
+  const view = makeContext();
+  const hit = pickables.pickAt(registry, 400, 200, {
+    renderer: view.renderer,
+    renderWindow: view.renderWindow,
+    synchronizerContext: {
+      getInstance: () => mapper,
+      // The store cannot name the mapper's input, so currency is unknowable.
+      getInstanceId: () => null,
+    },
+  });
+
+  assert.equal(hit.pointsNodeId, null);
+  assert.equal(
+    hit.nodes,
+    null,
+    "unknown dependencies read as stale downstream",
+  );
 });

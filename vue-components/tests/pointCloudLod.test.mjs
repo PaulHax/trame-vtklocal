@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import {
+  IDENTITY,
+  loadLodModule,
+  makePct1,
+  stubFetch,
+} from "./pointCloudLodFixtures.mjs";
 
 after(async () => {
   await closeModuleLoader();
 });
-
-async function loadLodModule() {
-  return loadModule("/src/components/pointCloudLod.js");
-}
 
 const BLOCK = {
   sourceAssetId: "asset-1",
@@ -20,53 +22,6 @@ const BLOCK = {
   hasRgb: true,
   pointBudget: 100000,
 };
-
-const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-
-function makePct1(positions, rgb) {
-  const pointCount = positions.length / 3;
-  const bytes = 40 + positions.length * 4 + (rgb ? rgb.length : 0);
-  const buffer = new ArrayBuffer(bytes);
-  const view = new DataView(buffer);
-  for (let i = 0; i < 4; i += 1) view.setUint8(i, "PCT1".charCodeAt(i));
-  view.setUint32(4, pointCount, true);
-  view.setUint32(8, rgb ? 1 : 0, true);
-  view.setFloat64(16, 0, true);
-  view.setFloat64(24, 0, true);
-  view.setFloat64(32, 0, true);
-  new Float32Array(buffer, 40, positions.length).set(positions);
-  if (rgb)
-    new Uint8Array(buffer, 40 + positions.length * 4, rgb.length).set(rgb);
-  return buffer;
-}
-
-function stubFetch() {
-  const calls = [];
-  globalThis.fetch = async (url) => {
-    calls.push(String(url));
-    if (String(url).includes("/hierarchy/")) {
-      return new Response(
-        JSON.stringify({
-          nodes: {
-            "0-0-0-0": {
-              pointCount: 2,
-              children: [],
-              page: null,
-              bounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
-              spacing: 0.1,
-            },
-          },
-        }),
-        { status: 200 },
-      );
-    }
-    return new Response(
-      makePct1([0.1, 0.1, 0.1, -0.1, -0.1, -0.1], [255, 0, 0, 0, 200, 0]),
-      { status: 200 },
-    );
-  };
-  return calls;
-}
 
 function makeSceneStubs() {
   const anchorMapper = { isDeleted: () => false };
@@ -399,10 +354,8 @@ test("interaction begins reach controllers synchronously", async () => {
 });
 
 test("a synchronous interaction end preserves the lifecycle pair", async () => {
-  const {
-    beginPointCloudLodInteraction,
-    endPointCloudLodInteraction,
-  } = await loadLodModule();
+  const { beginPointCloudLodInteraction, endPointCloudLodInteraction } =
+    await loadLodModule();
   const calls = [];
   const registry = new Map([
     [
@@ -423,10 +376,8 @@ test("a synchronous interaction end preserves the lifecycle pair", async () => {
 });
 
 test("nested controller interactions preserve every lifecycle event", async () => {
-  const {
-    beginPointCloudLodInteraction,
-    endPointCloudLodInteraction,
-  } = await loadLodModule();
+  const { beginPointCloudLodInteraction, endPointCloudLodInteraction } =
+    await loadLodModule();
   const calls = [];
   const registry = new Map([
     [
@@ -498,6 +449,38 @@ test("an adaptive block streams tiles and accepts frame timings", async () => {
   assert.equal(registry.size, 0);
 });
 
+test("progressive density keeps controller and renderer draw counts aligned", async () => {
+  const {
+    applyPointCloudLodBlock,
+    updatePointCloudLods,
+    describePointCloudLodRegistry,
+    disposePointCloudLods,
+  } = await loadLodModule();
+  stubFetch();
+  const { anchorMapper, renderer, renderWindow, added } = makeSceneStubs();
+
+  const registry = new Map();
+  const scheduleRender = () => {};
+  applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, scheduleRender);
+  updatePointCloudLods(registry, {
+    renderers: [renderer],
+    renderWindow,
+    scheduleRender,
+  });
+  await settle();
+
+  assert.equal(added.length, 1);
+  const tileActor = added[0];
+  registry.get("42").controller.setDensityFraction(0.25);
+
+  const cloud = describePointCloudLodRegistry(registry)[0];
+  assert.ok(cloud.stats.drawnPoints < cloud.gpuResidentPoints);
+  assert.equal(cloud.drawnPoints, cloud.stats.drawnPoints);
+  assert.equal(added[0], tileActor, "thinning must not replace the tile actor");
+
+  disposePointCloudLods(registry);
+});
+
 test("refinementCutoffPx reaches the controller and updates in place", async () => {
   const {
     applyPointCloudLodBlock,
@@ -548,37 +531,23 @@ test("refinementCutoffPx reaches the controller and updates in place", async () 
 });
 
 // Rotation by 90 degrees about z, uniform scale 2, translation (5, 6, 7).
-const SIMILARITY = [
-  0, 2, 0, 0,
-  -2, 0, 0, 0,
-  0, 0, 2, 0,
-  5, 6, 7, 1,
-];
+const SIMILARITY = [0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 2, 0, 5, 6, 7, 1];
 
 // Composite projection matrices in the layout getCompositeProjectionMatrix
 // returns (row-major; getWorldToClipMatrix transposes them). A 90° vertical
 // field of view at the stub's 2:1 aspect: f = cot(45°) = 1.
 const PERSPECTIVE_COMPOSITE = [
-  0.5, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, -1.002, -0.2,
-  0, 0, -1, 0,
+  0.5, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1.002, -0.2, 0, 0, -1, 0,
 ];
 // The same camera rendered through a uniformly doubled view transform: every
 // world-facing row doubles. The fovY read off the matrix is a ratio of two
 // such rows, so the scale must cancel.
 const PERSPECTIVE_COMPOSITE_SCALED = [
-  1, 0, 0, 0,
-  0, 2, 0, 0,
-  0, 0, -2.004, -0.2,
-  0, 0, -2, 0,
+  1, 0, 0, 0, 0, 2, 0, 0, 0, 0, -2.004, -0.2, 0, 0, -2, 0,
 ];
 // parallelScale 8 at the same aspect: the vertical row is 1/8.
 const ORTHO_COMPOSITE = [
-  0.0625, 0, 0, 0,
-  0, 0.125, 0, 0,
-  0, 0, -0.01, -0.5,
-  0, 0, 0, 1,
+  0.0625, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, -0.01, -0.5, 0, 0, 0, 1,
 ];
 
 function makeCameraStub(overrides) {
@@ -680,7 +649,10 @@ test("camera selection uses the inverse of anchor translation rotation and scale
 
   const local = cameraInAnchorCoordinates(view, SIMILARITY);
 
-  assert.deepEqual(local.position.map((value) => Math.round(value)), [1, 0, 0]);
+  assert.deepEqual(
+    local.position.map((value) => Math.round(value)),
+    [1, 0, 0],
+  );
   assert.deepEqual(local.viewProj, SIMILARITY);
   assert.equal(local.projection, "perspective");
   // A field of view is an angle: uniform anchor scale cancels out of it.

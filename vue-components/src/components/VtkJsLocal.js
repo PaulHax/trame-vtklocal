@@ -13,6 +13,7 @@ import { useSceneSync } from "./useSceneSync";
 import { bindDistanceToCameraInteractorRenderEvent } from "./distanceToCameraGlyphs";
 import { createViewApi } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
+import { getDevicePixelRatio } from "./viewportMetrics";
 
 export default {
   emits: [
@@ -85,7 +86,7 @@ export default {
       if (!container.value || !openGLRenderWindow) return;
 
       const { width, height } = container.value.getBoundingClientRect();
-      const devicePixelRatio = window.devicePixelRatio || 1;
+      const devicePixelRatio = getDevicePixelRatio();
       const w = Math.floor(width * devicePixelRatio);
       const h = Math.floor(height * devicePixelRatio);
 

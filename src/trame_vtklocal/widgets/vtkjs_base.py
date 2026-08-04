@@ -139,13 +139,14 @@ class VtkJsBaseView(HtmlElement):
         if self._publisher:
             self._publisher.request_resync()
 
-    def event_is_current(self, event, node_id=None, strict=True):
-        """Whether a seq-stamped client event is current for its target node.
+    def event_is_current(self, event, node_id, strict=True):
+        """Whether a seq-stamped client event is current for one scene node.
 
         Array patches count by default (they move the picked points);
         ``strict=False`` counts structural upserts only, for mid-gesture
-        events whose own confirmations ride the same channel. ``node_id``
-        defaults to ``event["pick"]["nodeId"]``; unknown/removed is stale.
+        events whose own confirmations ride the same channel. ``node_id`` is
+        named by the caller — a gesture reports every node its measurement
+        depended on, and each is checked in turn; unknown/removed is stale.
         """
         if not self._publisher:
             return False

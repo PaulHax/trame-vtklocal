@@ -5,14 +5,16 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import {
+  IDENTITY,
+  loadLodModule,
+  makePct1,
+  stubFetch,
+} from "./pointCloudLodFixtures.mjs";
 
 after(async () => {
   await closeModuleLoader();
 });
-
-async function loadLodModule() {
-  return loadModule("/src/components/pointCloudLod.js");
-}
 
 const BLOCK = {
   sourceAssetId: "asset-1",
@@ -23,8 +25,6 @@ const BLOCK = {
   hasRgb: true,
   pointBudget: 100000,
 };
-
-const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 // Rotation by 90 degrees about z, uniform scale 2, translation kept small so
 // the transformed cloud stays inside the identity camera's frustum.
@@ -55,54 +55,9 @@ const BEHIND_FAR_PLANE = [
   0, 0, 5, 1,
 ];
 
-function makePct1(positions, rgb) {
-  const pointCount = positions.length / 3;
-  const bytes = 40 + positions.length * 4 + (rgb ? rgb.length : 0);
-  const buffer = new ArrayBuffer(bytes);
-  const view = new DataView(buffer);
-  for (let i = 0; i < 4; i += 1) view.setUint8(i, "PCT1".charCodeAt(i));
-  view.setUint32(4, pointCount, true);
-  view.setUint32(8, rgb ? 1 : 0, true);
-  view.setFloat64(16, 0, true);
-  view.setFloat64(24, 0, true);
-  view.setFloat64(32, 0, true);
-  new Float32Array(buffer, 40, positions.length).set(positions);
-  if (rgb)
-    new Uint8Array(buffer, 40 + positions.length * 4, rgb.length).set(rgb);
-  return buffer;
-}
-
 // Two points in anchor-local coordinates. Under the identity camera they
 // project to css (110, 45) and (90, 55) on the 200x100 viewport; under
 // SIMILARITY they land at (130, 30) and (170, 50).
-const POSITIONS = [0.1, 0.1, 0.1, -0.1, -0.1, -0.1];
-
-function stubFetch() {
-  const calls = [];
-  globalThis.fetch = async (url) => {
-    calls.push(String(url));
-    if (String(url).includes("/hierarchy/")) {
-      return new Response(
-        JSON.stringify({
-          nodes: {
-            "0-0-0-0": {
-              pointCount: 2,
-              children: [],
-              page: null,
-              bounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
-              spacing: 0.1,
-            },
-          },
-        }),
-        { status: 200 },
-      );
-    }
-    return new Response(makePct1(POSITIONS, [255, 0, 0, 0, 200, 0]), {
-      status: 200,
-    });
-  };
-  return calls;
-}
 
 function makeAnchor() {
   const mapper = { isDeleted: () => false };
@@ -215,7 +170,7 @@ test("a scoped pick hits through the LIVE anchor matrix and lands in display wor
   // Provenance comes from the matched entry, not the request.
   assert.equal(solve.asset_id, "asset-1");
   assert.equal(solve.revision, "rev1");
-  assert.equal(solve.node_id, "42");
+  assert.deepEqual(solve.nodes, ["42", ACTOR_NODE_ID]);
   // Anchor-local hit (0.1, 0.1, 0.1) through the live similarity:
   // rotate 90° about z, scale 2, translate (0.5, 0.2, 0) → (0.3, 0.4, 0.2).
   const expected = [0.3, 0.4, 0.2];
@@ -252,8 +207,7 @@ test("a valid sweep with nothing nearby is an explicit miss carrying provenance"
     status: "miss",
     asset_id: "asset-1",
     revision: "rev1",
-    node_id: "42",
-    transform_node_id: ACTOR_NODE_ID,
+    nodes: ["42", ACTOR_NODE_ID],
   });
   lod.disposePointCloudLods(registry);
 });
@@ -269,16 +223,16 @@ test("a solve reports the anchor actor's node id, and is unavailable without one
     [renderer],
   );
 
-  // node_id names the mapper carrying the LOD block; transform_node_id names
-  // the actor carrying the UserMatrix the answer was converted through. The
-  // consumer needs both to prove the solve is not stale, and cannot pair them
-  // itself without re-deriving the association the client already resolved.
+  // The solve names both nodes it was measured through: the mapper carrying
+  // the LOD block, and the actor carrying the UserMatrix the answer was
+  // converted through. The consumer needs both to prove the solve is not
+  // stale, and cannot pair them itself without re-deriving the association
+  // the client already resolved.
   const solve = lod.pickPointCloudPoint(registry, "asset-1", 130, 30, {
     renderWindow: RENDER_WINDOW,
     synchronizerContext: SYNC_CONTEXT,
   });
-  assert.equal(solve.node_id, "42");
-  assert.equal(solve.transform_node_id, ACTOR_NODE_ID);
+  assert.deepEqual(solve.nodes, ["42", ACTOR_NODE_ID]);
 
   // An actor the synchronizer cannot name leaves the transform's currency
   // unprovable, so the query is unavailable — never a miss, which would
@@ -403,7 +357,7 @@ test("a pick scoped to one asset never falls through to another visible cloud", 
   };
   const solveA = lod.pickPointCloudPoint(registry, "asset-1", 110, 45, context);
   assert.equal(solveA.status, "hit");
-  assert.equal(solveA.node_id, "42");
+  assert.deepEqual(solveA.nodes, ["42", ACTOR_NODE_ID]);
 
   // Scoping to B must answer from B alone: an explicit miss under B's own
   // provenance, never A's hit wearing B's name.
@@ -412,8 +366,7 @@ test("a pick scoped to one asset never falls through to another visible cloud", 
     status: "miss",
     asset_id: "asset-B",
     revision: "revB",
-    node_id: "43",
-    transform_node_id: ACTOR_NODE_ID,
+    nodes: ["43", ACTOR_NODE_ID],
   });
 
   lod.disposePointCloudLods(registry);
@@ -962,9 +915,9 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
       createManagedSyncContext: () => ({
         synchronizerContext: {
           getInstance: () => null,
-          // The real context resolves any synced instance to its node id; the
-          // pick asks it for the anchor actor's, to report as
-          // transform_node_id.
+          // The real context resolves any synced instance to its node id;
+          // the pick asks it for the anchor actor's, to name in the solve's
+          // staleness list.
           getInstanceId: (instance) =>
             instance === anchor.actor ? ACTOR_NODE_ID : null,
         },
@@ -1019,7 +972,7 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
   assert.equal(solve.status, "hit");
   assert.equal(solve.asset_id, "asset-1");
   assert.equal(solve.revision, "rev1");
-  assert.equal(solve.node_id, "42");
+  assert.deepEqual(solve.nodes, ["42", ACTOR_NODE_ID]);
   for (const axis of [0, 1, 2]) {
     assert.ok(
       Math.abs(solve.world[axis] - 0.1) < 1e-6,

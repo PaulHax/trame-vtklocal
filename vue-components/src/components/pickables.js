@@ -317,8 +317,14 @@ export function pickAt(
   if (!best) {
     return null;
   }
-  // nodeId is the picked mapper's scene-store node id; it rides every gesture
-  // payload's `pick` so the server's event_is_current can default to it.
+  // nodeId and pointsNodeId are the picked mapper and its input point set,
+  // addressed individually for the client's own use: the drag preview binds
+  // the live points array through pointsNodeId and marks both nodes modified.
+  // Staleness is not their job — that is `nodes` below.
+  const pointsNodeId =
+    best.pointsNodeId === null || best.pointsNodeId === undefined
+      ? null
+      : String(best.pointsNodeId);
   return {
     nodeId: best.nodeId,
     pointIndex: best.pointIndex,
@@ -326,10 +332,15 @@ export function pickAt(
     tags: best.tags,
     preview: best.preview,
     plane: best.plane,
-    pointsNodeId:
-      best.pointsNodeId === null || best.pointsNodeId === undefined
-        ? null
-        : String(best.pointsNodeId),
+    pointsNodeId,
+    // The sole staleness contract: every scene node this pick's screen
+    // position was measured through — the mapper carrying the glyph, and the
+    // point set it drew that glyph from (a point move can republish only the
+    // latter). The client names its own dependencies so the server validates a
+    // list rather than a fixed pair, and a pick that grows a third one needs
+    // no server change. Null means the client could not establish them, which
+    // the server reads as stale.
+    nodes: pointsNodeId === null ? null : [String(best.nodeId), pointsNodeId],
     distancePx: Math.sqrt(best.distSq),
     world: best.world,
     grabOffset: best.grabOffset,

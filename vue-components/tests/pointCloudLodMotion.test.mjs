@@ -6,6 +6,11 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import {
+  loadLodModule,
+  makePct1,
+  stubFetch,
+} from "./pointCloudLodFixtures.mjs";
 
 after(async () => {
   await closeModuleLoader();
@@ -33,42 +38,6 @@ async function settle(rounds = 12) {
   for (let index = 0; index < rounds; index += 1) {
     await sleep(0);
   }
-}
-
-function makePct1(positions) {
-  const buffer = new ArrayBuffer(40 + positions.length * 4);
-  const view = new DataView(buffer);
-  for (let index = 0; index < 4; index += 1) {
-    view.setUint8(index, "PCT1".charCodeAt(index));
-  }
-  view.setUint32(4, positions.length / 3, true);
-  view.setUint32(8, 0, true);
-  new Float32Array(buffer, 40, positions.length).set(positions);
-  return buffer;
-}
-
-function stubFetch() {
-  globalThis.fetch = async (url) => {
-    if (String(url).includes("/hierarchy/")) {
-      return new Response(
-        JSON.stringify({
-          nodes: {
-            "0-0-0-0": {
-              pointCount: 2,
-              children: [],
-              page: null,
-              bounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
-              spacing: 0.1,
-            },
-          },
-        }),
-        { status: 200 },
-      );
-    }
-    return new Response(makePct1([0.1, 0.1, 0.1, -0.1, -0.1, -0.1]), {
-      status: 200,
-    });
-  };
 }
 
 // A camera in the magnitudes the map really renders with: a Mercator-scaled

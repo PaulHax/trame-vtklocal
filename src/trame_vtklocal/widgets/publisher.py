@@ -60,23 +60,23 @@ def _node_ref_ids(node):
             yield from value
 
 
-def event_is_current(store, event, node_id=None, strict=True):
-    """Whether a seq-stamped client event is current for the node it targets.
+def event_is_current(store, event, node_id, strict=True):
+    """Whether a seq-stamped client event is current for one scene node.
 
     The event's ``seq`` (the client's applied cursor when it built the event)
     must be an int at or above the node's last touch — array patches count,
     they move the points a pick measures (``strict=False`` skips them, for
     mid-gesture events whose own confirmations ride this channel).
-    ``node_id`` defaults to the picked node id; unknown/removed is stale.
+
+    The node is always named by the caller: a client gesture reports the whole
+    list of nodes its measurement depended on, and each is checked in turn.
+    An unknown or removed node is stale.
     """
     if not isinstance(event, Mapping):
         return False
     seq = event.get("seq")
     if isinstance(seq, bool) or not isinstance(seq, int):
         return False
-    if node_id is None:
-        pick = event.get("pick")
-        node_id = pick.get("nodeId") if isinstance(pick, Mapping) else None
     if node_id is None:
         return False
     last_seq = store.last_seq_touching(node_id, strict=strict)
@@ -260,7 +260,7 @@ class ScenePublisher:
     def last_seq_touching(self, node_id, strict=True):
         return self._store.last_seq_touching(node_id, strict=strict)
 
-    def event_is_current(self, event, node_id=None, strict=True):
+    def event_is_current(self, event, node_id, strict=True):
         """Whether a seq-stamped client event is current (see module helper)."""
         return event_is_current(self._store, event, node_id, strict=strict)
 

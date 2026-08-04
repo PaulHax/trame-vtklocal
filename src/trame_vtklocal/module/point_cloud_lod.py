@@ -17,7 +17,9 @@ POINT_CLOUD_LOD_BLOCK = "pointCloudLod"
 POINT_CLOUD_PRESENTATION_BLOCK = "pointCloudPresentation"
 
 # The client's adaptive floor. Mirrored here so a max_budget below the floor is
-# rejected while marking rather than thrown from a render pass.
+# rejected while marking rather than thrown from a render pass. Python cannot
+# import the library's DEFAULTS.minBudget, so verify_chain.py reads it from the
+# resolved package and refuses to ship a bundle this copy has drifted from.
 DEFAULT_ADAPTIVE_MIN_BUDGET = 200_000
 
 _MAPPER_CONFIGS = weakref.WeakKeyDictionary()

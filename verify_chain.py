@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -28,6 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PIN_FILE = ROOT / "vtkjs-fork.env"
 VUE = ROOT / "vue-components"
+POINT_CLOUD_LOD_PY = ROOT / "src" / "trame_vtklocal" / "module" / "point_cloud_lod.py"
 
 # The bundle is minified, so class names are mangled but the strings vtk.js
 # registers itself with survive verbatim. Quote style differs per bundler
@@ -134,6 +136,63 @@ def check_pointcloud_lod() -> dict:
     return {"version": version, "resolved": resolved, "integrity": integrity}
 
 
+def node_json(source: str, what: str):
+    """Evaluate an ESM snippet with `pointcloud-lod` resolved as the bundle
+    resolves it, and read back what it prints as JSON."""
+    try:
+        out = subprocess.check_output(
+            ["node", "--input-type=module", "-e", source],
+            cwd=VUE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        die(f"node is not on PATH, so {what} cannot be read from the library")
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.decode().strip().splitlines()
+        die(
+            f"reading {what} from pointcloud-lod failed: {detail[-1] if detail else ''}"
+        )
+    return json.loads(out)
+
+
+def check_adaptive_floor() -> dict:
+    """The Python marker's adaptive floor must be the library's own floor.
+
+    ``point_cloud_lod.py`` rejects a ``max_budget`` below the floor while
+    marking a mapper, but Python cannot import the number the JS validator
+    enforces, so it holds a copy. The library's index.ts publishes
+    ``DEFAULTS`` precisely so hosts read the floor instead of restating it —
+    read it here, or a policy change leaves the two validators disagreeing
+    about which configurations are legal.
+    """
+    library = node_json(
+        'const m = await import("pointcloud-lod");'
+        "console.log(JSON.stringify(m.DEFAULTS?.minBudget ?? null));",
+        "DEFAULTS.minBudget",
+    )
+    if not isinstance(library, (int, float)):
+        die(
+            "pointcloud-lod no longer exports DEFAULTS.minBudget; the Python "
+            f"marker's floor in {POINT_CLOUD_LOD_PY.name} has nothing to track"
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "trame_vtklocal_point_cloud_lod", POINT_CLOUD_LOD_PY
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    python = module.DEFAULT_ADAPTIVE_MIN_BUDGET
+
+    if python != library:
+        die(
+            f"{POINT_CLOUD_LOD_PY.name} DEFAULT_ADAPTIVE_MIN_BUDGET is {python:_} but "
+            f"pointcloud-lod DEFAULTS.minBudget is {library:_}. The two validators "
+            "would accept different max_budget values; set the Python copy to the "
+            "library's floor."
+        )
+    return {"minBudget": library}
+
+
 def check_no_vtkjs_range() -> None:
     """No published @kitware/vtk.js carries vtkPointGaussianMapper, so any
     declared range is a promise npm could satisfy with a build that cannot
@@ -216,12 +275,13 @@ def main() -> None:
     vtkjs = check_vtkjs(pin)
     pointcloud_lod = check_pointcloud_lod()
     check_no_vtkjs_range()
+    adaptive = check_adaptive_floor()
     bundle = check_bundle(args.umd)
 
     build_info = {
         "bridgeCommit": git_output(ROOT, "rev-parse", "HEAD"),
         "vtkjs": vtkjs,
-        "pointcloudLod": pointcloud_lod,
+        "pointcloudLod": {**pointcloud_lod, **adaptive},
         "bundle": bundle,
     }
     args.build_info.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +290,7 @@ def main() -> None:
     print(f"  vtk.js         : {vtkjs['commit']} ({vtkjs['branch']})")
     print(f"  pointcloud-lod : {pointcloud_lod['version']}")
     print(f"                   {pointcloud_lod['integrity']}")
+    print(f"  adaptive floor : {adaptive['minBudget']:_} (library == Python)")
     print(f"  bundle sha256  : {bundle['sha256']}")
     print(f"  bundle carries : {', '.join(bundle['present'])}")
     print(f"  build info     : {args.build_info}")

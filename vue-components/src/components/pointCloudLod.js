@@ -25,11 +25,11 @@
 // Renders are requested exclusively through the view's coalescing render
 // callback; nothing here calls renderWindow.render().
 //
-// The per-render update is also where rendered-camera motion is classified:
-// every camera that reaches LOD passes through here, so pointer gestures,
-// locked-video playback, timeline scrubbing, programmatic animation and
-// server-applied camera commands are all covered without any of them having to
-// announce itself.
+// The per-render update also forwards every rendered camera to the governor's
+// motion classifier: every camera that reaches LOD passes through here, so
+// pointer gestures, locked-video playback, timeline scrubbing, programmatic
+// animation and server-applied camera commands are all covered without any of
+// them having to announce itself.
 
 import {
   DEFAULTS as LOD_DEFAULTS,
@@ -88,115 +88,15 @@ const DEFAULT_POINT_BUDGET = 2_000_000;
 // maximum the library then throws on the moment the policy moves.
 const DEFAULT_ADAPTIVE_MIN_BUDGET = LOD_DEFAULTS.minBudget;
 
-// How long the camera must hold still before the inferred motion reference is
-// released. Long enough to bridge a dropped playback frame or a slow scrub
-// step, short enough that a single camera jump refines almost immediately.
-// This is what every view runs on: `context.motionDebounceMs` exists so a test
-// can shorten it, not as deployment configuration, and nothing in the
-// component chain supplies one.
-const DEFAULT_MOTION_DEBOUNCE_MS = 250;
-
-// Relative, with an absolute floor of the same size, because these numbers span
-// Mercator units (~1) and ENU metres (~1e6) in the same matrix. Recomputing a
-// double-precision camera product every frame moves the last bits — a few 1e-16
-// of the terms behind each entry — while the smallest camera change that moves a
-// pixel sits orders above 1e-9, so recomputation jitter never enters the moving
-// regime and no real motion is missed. Entries that are small differences of
-// huge terms would eat that margin; the one place the rendered matrix does that,
-// the scene-derived clip depth range, is left out of the comparison entirely.
-const MOTION_RELATIVE_EPSILON = 1e-9;
-
-function movedBeyondJitter(previous, next) {
-  return (
-    Math.abs(previous - next) >
-    MOTION_RELATIVE_EPSILON * Math.max(1, Math.abs(previous), Math.abs(next))
-  );
-}
-
-// World-to-clip entries that describe where the camera is looking, in the
-// column-major layout getWorldToClipMatrix returns (index = column * 4 + row).
-// The clip-z row (2, 6, 10, 14) is deliberately left out: hosts fold a depth
-// remap derived from the scene's visible bounds into it, so a tile arriving or
-// being evicted rewrites those four numbers while the camera stands perfectly
-// still. Everything a camera move does to the rendered image shows up in the
-// x, y and w rows; the one motion that lives only in clip z — dollying an
-// orthographic camera along its view axis — shows up in the eye point below.
-const MOTION_MATRIX_INDICES = [0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15];
-
-// Everything about the camera that changes what LOD selects: where it looks
-// from and at, the eye point, the viewport height screen-space error is
-// measured in, and the projection's sizing scalar.
-function cameraMotionScalars(view) {
-  return [
-    ...MOTION_MATRIX_INDICES.map((index) => Number(view.viewProj[index])),
-    ...view.position,
-    view.viewportHeightCssPx,
-    view.projection === "orthographic" ? view.parallelScale : view.fovY,
-  ];
-}
-
-function cameraMoved(previous, next) {
-  // The first camera a renderer supplies is the baseline, not a movement.
-  if (!previous) return false;
-  if (previous.projection !== next.projection) return true;
-  const before = cameraMotionScalars(previous);
-  const after = cameraMotionScalars(next);
-  return before.some((value, index) => movedBeyondJitter(value, after[index]));
-}
-
-// The two kinds of motion reference a view holds: one inferred reference per
-// burst of rendered-camera motion, and one slot per explicit gesture. Slots
-// rather than bare references because the governor can be replaced mid-gesture
-// (see reconcileViewGovernor), and the replacement has to inherit what the
-// view was holding.
-const cameraMotionByRegistry = new WeakMap();
+// One slot per explicit gesture the view is holding. Slots rather than bare
+// references because the governor can be created or disposed mid-gesture, and
+// a governor created mid-gesture has to inherit what the view was holding.
+// Inferred (rendered-camera) motion is the library's: the governor classifies
+// the cameras this module forwards. That classification is non-reporting by
+// construction — it compares cameras the host has already rendered, so
+// nothing there can echo a server-provided camera back upstream as a user
+// camera report.
 const explicitMotionSlots = new WeakMap();
-
-function getCameraMotion(registry) {
-  let state = cameraMotionByRegistry.get(registry);
-  if (!state) {
-    state = { views: new Map(), reference: null, timer: null };
-    cameraMotionByRegistry.set(registry, state);
-  }
-  return state;
-}
-
-function releaseInferredMotion(state) {
-  if (state.timer !== null) clearTimeout(state.timer);
-  state.timer = null;
-  state.reference?.release();
-  state.reference = null;
-}
-
-// One inferred motion reference per burst of motion, never one per frame: the
-// governor restarts its moving track whenever the first reference is taken, so
-// a per-frame reference would keep resetting the window it needs to learn from.
-// The reference is non-reporting by construction — this compares cameras the
-// host has already rendered, so nothing here can echo a server-provided camera
-// back upstream as a user camera report.
-function classifyCameraMotion(registry, views, debounceMs, scheduleRender) {
-  const state = getCameraMotion(registry);
-  let moved = false;
-  for (const [renderer, view] of views) {
-    if (view && cameraMoved(state.views.get(renderer), view)) moved = true;
-  }
-  // Replace rather than merge: a renderer that stops hosting an anchor must not
-  // keep a stale baseline that reads as motion when it comes back.
-  state.views = views;
-  const governor = viewGovernorOf(registry);
-  if (!moved || !governor) return;
-  governor.recordCameraChange();
-  if (!state.reference) state.reference = governor.beginMotion("inferred");
-  if (state.timer !== null) clearTimeout(state.timer);
-  state.timer = setTimeout(() => {
-    state.timer = null;
-    state.reference?.release();
-    state.reference = null;
-    // The settled regime cannot refine quality it never measures, so hand the
-    // host one frame to start from.
-    scheduleRender();
-  }, debounceMs);
-}
 
 // The adaptive quality options travel with a cloud but configure the view's
 // governor, which takes them as construction options and throws on an unusable
@@ -856,19 +756,16 @@ function desiredGovernorOptions(registry) {
 }
 
 // Motion is a property of the view, so a governor created or disposed
-// mid-drag or mid playback burst inherits what the view was holding —
-// otherwise the boundary would read as the camera having stopped and quality
-// would jump mid-gesture. Options changes never come through here: the
-// governor absorbs those in place, references intact.
+// mid-drag inherits the explicit gestures the view is holding — otherwise the
+// boundary would read as the camera having stopped and quality would jump
+// mid-gesture. Inferred motion needs no equivalent: its baselines and burst
+// reference live inside the governor itself. Options changes never come
+// through here: the governor absorbs those in place, references intact.
 function retakeMotionReferences(registry, governor) {
   for (const slot of explicitMotionSlots.get(registry) ?? []) {
     slot.reference?.release();
     slot.reference = governor?.beginMotion("explicit") ?? null;
   }
-  const motion = cameraMotionByRegistry.get(registry);
-  if (!motion?.reference) return;
-  motion.reference.release();
-  motion.reference = governor?.beginMotion("inferred") ?? null;
 }
 
 // The governor exists exactly while the view has an adaptive cloud. Options
@@ -877,8 +774,17 @@ function retakeMotionReferences(registry, governor) {
 // any ceremony: memberships belong to the instance that issued them, and the
 // dispose path releases them so no cloud keeps drawing to a share of a
 // governor that no longer exists.
-function reconcileViewGovernor(registry) {
-  const options = desiredGovernorOptions(registry);
+function reconcileViewGovernor(registry, motionDebounceMs) {
+  const adaptive = desiredGovernorOptions(registry);
+  // `context.motionDebounceMs` exists so a test can shorten the inferred
+  // burst debounce; nothing in the component chain supplies one, so every
+  // view runs on the library's own default.
+  const options =
+    adaptive !== null &&
+    Number.isFinite(motionDebounceMs) &&
+    motionDebounceMs >= 0
+      ? { ...adaptive, motionDebounceMs }
+      : adaptive;
   const current = viewGovernors.get(registry) ?? null;
   if (options !== null && current) {
     current.setOptions(options);
@@ -912,28 +818,24 @@ export function updatePointCloudLods(registry, context) {
   if (!registry) {
     return;
   }
+  const { renderers, renderWindow, scheduleRender, motionDebounceMs } =
+    context || {};
   // Before anything else, including the early returns: entries must register
   // against the governor the current wire blocks describe and never one built
   // from an older block — and a view that has lost its last adaptive cloud must
   // lose the governor too, or it goes on asking for frames for nobody.
-  reconcileViewGovernor(registry);
-  const { renderers, renderWindow, scheduleRender, motionDebounceMs } =
-    context || {};
+  reconcileViewGovernor(registry, motionDebounceMs);
   if (registry.size === 0 || !renderers?.length || !renderWindow) {
     // No cloud is being selected for, so nothing this pass could see is a
-    // camera baseline. Keeping the last one means the first pass after a cloud
-    // comes back compares against a camera from before it left and reads all
-    // the travel since as motion — the cloud's opening selection then runs in
-    // the moving regime for a gesture nobody made. Dropping the baseline makes
-    // that first camera the baseline again, exactly as it is on a fresh view.
-    const motion = cameraMotionByRegistry.get(registry);
-    if (motion) motion.views = new Map();
+    // camera baseline; forget the old ones so the first camera after a cloud
+    // comes back is a baseline again, exactly as on a fresh view.
+    viewGovernorOf(registry)?.resetMotionBaselines();
     return;
   }
   const render = scheduleRender ?? (() => {});
   // The cameras this pass actually hands to LOD, one entry per host renderer:
-  // the classifier compares them against the previous pass, and reading each
-  // renderer once keeps the matrix work off the per-entry path.
+  // the governor's classifier compares them against the previous pass, and
+  // reading each renderer once keeps the matrix work off the per-entry path.
   const views = new Map();
   const worldViewFor = (renderer) => {
     if (!views.has(renderer)) {
@@ -945,14 +847,7 @@ export function updatePointCloudLods(registry, context) {
     updateEntry(registry, entry, renderers, worldViewFor, render);
   }
   // After the loop, which is what fills the view map.
-  classifyCameraMotion(
-    registry,
-    views,
-    Number.isFinite(motionDebounceMs) && motionDebounceMs >= 0
-      ? motionDebounceMs
-      : DEFAULT_MOTION_DEBOUNCE_MS,
-    render,
-  );
+  viewGovernorOf(registry)?.noteRenderedCameras(views, render);
 }
 
 // Report one frame's wall-time (ms) to the view governor, feeding the
@@ -1055,9 +950,6 @@ export function disposePointCloudLods(registry) {
     resetStreaming(entry);
   }
   registry.clear();
-  const motion = cameraMotionByRegistry.get(registry);
-  if (motion) releaseInferredMotion(motion);
-  cameraMotionByRegistry.delete(registry);
   // Hand the references back before dropping the slots holding them. The
   // governor is disposed on the next line, which makes the counts moot — but
   // "we release everything we took" has to be true of this teardown on its own

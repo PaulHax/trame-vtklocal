@@ -57,7 +57,7 @@ export default {
     let cameraSubscriptions = [];
 
     function renderScene() {
-      scene.updateDistanceToCameraGlyphs();
+      scene.beforeRender();
       // Measure the paint's wall-time for the adaptive-quality budget loop.
       const start = performance.now();
       try {
@@ -129,10 +129,7 @@ export default {
       interactor.bindEvents(container.value);
       interactorRenderSubscription = bindDistanceToCameraInteractorRenderEvent(
         interactor,
-        () => {
-          scene.updateDistanceToCameraGlyphs();
-          scene.updatePointCloudLods();
-        },
+        scene.beforeRender,
       );
       scene.enableCameraReports({ during: "interaction", terminal: true });
       // The Start/End/InteractionEvent trio fires on the interactor STYLE;

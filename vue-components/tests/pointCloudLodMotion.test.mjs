@@ -411,7 +411,7 @@ async function makeSyncedView() {
     onRenderNeeded() {},
   });
   blockHandlers.get("pointCloudLod")("42", BLOCK, anchorMapper);
-  scene.updatePointCloudLods();
+  scene.beforeRender();
   await settle();
   return {
     scene,
@@ -433,7 +433,7 @@ test("a server-applied camera drives quality without being reported back", async
     // repaints it. Nothing here is a user gesture.
     for (let frame = 0; frame < 6; frame += 1) {
       view.camera.panBy(4);
-      view.scene.updatePointCloudLods();
+      view.scene.beforeRender();
       await sleep(30);
     }
     const moving = view.scene.getSyncDiagnostics().pointCloudLod.governor;

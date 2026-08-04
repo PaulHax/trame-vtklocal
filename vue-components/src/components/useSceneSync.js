@@ -535,11 +535,18 @@ export function useSceneSync(
     });
   }
 
+  // Everything the scene owes a frame before it is painted. Views ask for this
+  // one pass, so a new pre-paint pass is added here and nowhere else — no view
+  // has to carry its own copy of the list (they had already diverged).
+  function beforeRender() {
+    updateDistanceToCameraGlyphsForRender();
+    updatePointCloudLodsForRender();
+  }
+
   // The post-apply pass every applied message runs, snapshot or ops.
   function afterApply() {
     bindPrimaryCameraToRenderers();
-    updateDistanceToCameraGlyphsForRender();
-    updatePointCloudLodsForRender();
+    beforeRender();
     dragPreview.reapply();
   }
 
@@ -793,8 +800,7 @@ export function useSceneSync(
     setEmitBackgroundClick: gestures.setEmitBackgroundClick,
     setShouldGrab: gestures.setShouldGrab,
     setHoverEnabled: gestures.setHoverEnabled,
-    updateDistanceToCameraGlyphs: updateDistanceToCameraGlyphsForRender,
-    updatePointCloudLods: updatePointCloudLodsForRender,
+    beforeRender,
     recordFrameDuration,
     recordHostFrame,
     getSyncDiagnostics,

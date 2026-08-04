@@ -69,8 +69,7 @@ export default {
         renderRequestedCallbackWithDistanceToCamera();
         return;
       }
-      scene.updateDistanceToCameraGlyphs();
-      scene.updatePointCloudLods();
+      scene.beforeRender();
       paintAndRecord(() => externalRenderWindow?.renderExternal?.());
     }
 
@@ -130,8 +129,7 @@ export default {
     //     vtk.js so the render issues no gl.getParameter readbacks (each one
     //     is a synchronous CPU/GPU stall). Omit to let vtk.js query.
     function renderExternal(options = {}) {
-      scene.updateDistanceToCameraGlyphs();
-      scene.updatePointCloudLods();
+      scene.beforeRender();
       const hostState =
         "framebuffer" in options
           ? {
@@ -150,10 +148,10 @@ export default {
           ? (...args) => paintAndRecord(() => callback(...args))
           : null;
       renderRequestedCallbackWithDistanceToCamera = timedCallback
-        ? createDistanceToCameraRenderCallback(() => {
-            scene.updateDistanceToCameraGlyphs();
-            scene.updatePointCloudLods();
-          }, timedCallback)
+        ? createDistanceToCameraRenderCallback(
+            scene.beforeRender,
+            timedCallback,
+          )
         : null;
       externalRenderWindow?.setRenderCallback?.(
         renderRequestedCallbackWithDistanceToCamera,

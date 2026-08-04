@@ -949,7 +949,7 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
     { grabPx: 8, priority: 0, tags: { depth_asset_id: "asset-1" } },
     glyphMapper,
   );
-  scene.updatePointCloudLods();
+  scene.beforeRender();
   await settle();
   assert.equal(renderer.added.length, 1, "tile streamed through the scene");
 
@@ -1062,7 +1062,7 @@ test("setArmedCloudPick governs the clicks the scene emits", async () => {
     { grabPx: 8, priority: 0, tags: { depth_asset_id: "asset-decoy" } },
     glyphMapper,
   );
-  scene.updatePointCloudLods();
+  scene.beforeRender();
   await settle();
   assert.equal(renderer.added.length, 1, "tile streamed through the scene");
 
@@ -1124,7 +1124,7 @@ test("setArmedCloudPick governs the clicks the scene emits", async () => {
     { grabPx: 8, priority: 0, tags: { depth_asset_id: "asset-decoy" } },
     glyphMapper,
   );
-  scene.updatePointCloudLods();
+  scene.beforeRender();
   await settle();
   click(90, 55);
   payload = lastPointerEvent();

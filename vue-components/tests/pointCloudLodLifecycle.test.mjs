@@ -361,10 +361,16 @@ test("hiding an adaptive cloud frees its share and showing it takes one back", a
     assert.equal(governor.activeMembers, 1, "a hidden cloud claims nothing");
     assert.deepEqual(
       governor.members.map((member) => member.activeConstraint),
-      // The pinned floor and ceiling are what bounds the drawing cloud here.
-      ["configured-maximum", "inactive"],
+      // Nothing bounds the drawing cloud any more: the pinned budget is far
+      // larger than this fixture, so it draws everything it has.
+      ["demand", "inactive"],
     );
-    assert.equal(governor.members[0].allocatedShare, 300000, "all of it");
+    assert.equal(
+      governor.members[0].allocatedShare,
+      governor.members[0].demandPoints,
+      "all of what it asked for",
+    );
+    assert.ok(governor.members[0].demandPoints > 0);
     assert.equal(view.row("43").drawnTiles, 0);
 
     second.anchor.visibility = 1;
@@ -505,7 +511,9 @@ test("removing an adaptive cloud entirely leaves the rest of the view running", 
       view.governor().members.map((member) => member.id),
       ["43"],
     );
-    assert.equal(view.governor().members[0].allocatedShare, 300000);
+    const survivor = view.governor().members[0];
+    assert.ok(survivor.demandPoints > 0);
+    assert.equal(survivor.allocatedShare, survivor.demandPoints);
     assert.equal(view.tileActors().length, 1, "only the survivor's tiles");
   } finally {
     view.dispose();

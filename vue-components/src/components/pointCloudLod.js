@@ -686,12 +686,14 @@ function updateEntry(registry, entry, context, worldViewFor, scheduleRender) {
   const inputs = entry.controller.governorInputs();
   entry.adapter.setResourceCeilingBytes(inputs.memoryBudgetBytes);
   // The governor needs the memory ceiling to bound the aggregate before it
-  // splits it, and the physical work counts to know whether another frame is
-  // still worth painting.
+  // splits it, the demand to stop this cloud holding a share it cannot spend,
+  // and the physical work counts to know whether another frame is still worth
+  // painting.
   entry.governorMember?.update({
     active: drawEnabled,
     projectedImportance: inputs.projectedImportance,
     memoryCeilingPoints: inputs.memoryCeilingPoints,
+    demandPoints: inputs.demandPoints,
     physicalTileOperations: inputs.physicalTileOperations,
     physicalHierarchyOperations: inputs.physicalHierarchyOperations,
   });

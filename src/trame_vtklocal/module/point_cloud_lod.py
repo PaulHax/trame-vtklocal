@@ -10,6 +10,7 @@ does. Coordinate correction stays on the anchor actor's UserMatrix, which the
 client fans out to every streamed tile.
 """
 
+import math
 import weakref
 
 POINT_CLOUD_LOD_TYPE = "vtkPointCloudLodMapper"
@@ -26,22 +27,37 @@ _MAPPER_CONFIGS = weakref.WeakKeyDictionary()
 _PRESENTATION_CONFIGS = weakref.WeakKeyDictionary()
 
 
+def _is_positive_finite(value):
+    """The client's ``isPositiveFinite``, mirrored.
+
+    A presentation value the client rejects costs the whole ``pointCloudLod``
+    block — normalizeConfig returns null and the cloud never renders — so the
+    same rule has to hold here, where the caller still sees the error.
+    """
+    return math.isfinite(value) and value > 0
+
+
 def _as_presentation(value):
     if not isinstance(value, dict):
         raise ValueError("presentation must be a Fixed or Auto object")
     mode = value.get("mode")
     if mode == "fixed":
         diameter = float(value["diameterCssPx"])
-        if not diameter > 0:
-            raise ValueError("Fixed diameterCssPx must be positive")
+        if not _is_positive_finite(diameter):
+            raise ValueError("Fixed diameterCssPx must be positive and finite")
         return {"mode": "fixed", "diameterCssPx": diameter}
     if mode == "auto":
         user_scale = float(value["userScale"])
         minimum = float(value["minDiameterCssPx"])
         maximum = float(value["maxDiameterCssPx"])
-        if not user_scale > 0 or not 0 < minimum <= maximum:
+        if (
+            not _is_positive_finite(user_scale)
+            or not _is_positive_finite(minimum)
+            or not _is_positive_finite(maximum)
+            or minimum > maximum
+        ):
             raise ValueError(
-                "Auto scale and diameter clamps must be positive and ordered"
+                "Auto scale and diameter clamps must be positive, finite and ordered"
             )
         return {
             "mode": "auto",
@@ -103,7 +119,6 @@ def mark_point_cloud_lod(
     endpoint,
     point_count,
     presentation,
-    has_rgb=True,
     point_budget=None,
     adaptive=False,
     adaptive_options=None,
@@ -152,7 +167,6 @@ def mark_point_cloud_lod(
         "revision": str(revision),
         "endpoint": str(endpoint),
         "pointCount": point_count,
-        "hasRgb": bool(has_rgb),
         "adaptive": bool(adaptive),
         "presentation": _as_presentation(presentation),
     }
@@ -191,8 +205,8 @@ def point_cloud_lod_config(mapper):
 
 def mark_point_cloud_presentation(mapper, *, diameter_css_px):
     diameter = float(diameter_css_px)
-    if not diameter > 0:
-        raise ValueError("diameter_css_px must be positive")
+    if not _is_positive_finite(diameter):
+        raise ValueError("diameter_css_px must be positive and finite")
     config = {"mode": "fixed", "diameterCssPx": diameter}
     _PRESENTATION_CONFIGS[mapper] = config
     mapper.Modified()

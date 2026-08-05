@@ -83,16 +83,15 @@ def resolve_ref_payload(object_manager, ref, live_hot_array):
 
 def nodes_reference_missing_blob(object_manager, nodes):
     """Whether non-empty content arrays cite a missing manager blob."""
-
-    def blob_empty(hash_value):
-        return registered_blob(object_manager, hash_value) is None
-
     for node in nodes:
         for entry in (node.get("arrays") or {}).values():
             if not isinstance(entry, dict) or not entry.get("size"):
                 continue
             ref = entry.get("ref")
-            if ref and any(blob_empty(value) for value in ref_manager_hashes([ref])):
+            if ref and any(
+                registered_blob(object_manager, hash_value) is None
+                for hash_value in ref_manager_hashes([ref])
+            ):
                 return True
     return False
 

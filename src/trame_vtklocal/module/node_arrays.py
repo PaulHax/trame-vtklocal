@@ -114,10 +114,6 @@ def registered_blob(object_manager, hash_value):
         return blob
 
 
-def _blob_present(object_manager, hash_value):
-    return registered_blob(object_manager, hash_value) is not None
-
-
 def _register_field_array_blob(object_manager, array, location):
     # vtkObjectManager doesn't serialize vtkDataSetAttributes arrays, so
     # bridge them by hand: md5-address the raw bytes and register the blob
@@ -131,7 +127,7 @@ def _register_field_array_blob(object_manager, array, location):
         entry = dict(cached[1])
         entry["location"] = location
         hash_value = entry["ref"][len(REF_CONTENT_PREFIX):]
-        if _blob_present(object_manager, hash_value):
+        if registered_blob(object_manager, hash_value) is not None:
             return entry
 
     # ``np.array(vtkBitArray)`` exposes VTK's packed backing bytes instead of

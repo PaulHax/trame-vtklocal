@@ -11,39 +11,13 @@ import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { bindDistanceToCameraInteractorRenderEvent } from "./distanceToCameraGlyphs";
-import { createViewApi } from "./viewApi";
+import { createViewApi, VIEW_EMITS, VIEW_PROPS } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
 import { getDevicePixelRatio } from "./viewportMetrics";
 
 export default {
-  emits: [
-    "updated",
-    "camera",
-    "command",
-    "onReady",
-    "beforeSceneLoaded",
-    "afterSceneLoaded",
-    "messageApplied",
-    "pointerEvent",
-  ],
-  props: {
-    renderWindow: {
-      type: Number,
-      required: true,
-    },
-    cameraAuthority: {
-      type: String,
-      default: "server",
-      validator: (value) => value === "server" || value === "client",
-    },
-    wsClient: {
-      type: Object,
-    },
-    viewKey: {
-      type: String,
-      default: null,
-    },
-  },
+  emits: VIEW_EMITS,
+  props: VIEW_PROPS,
   setup(props, { emit }) {
     const trame = inject("trame");
     const container = ref(null);

@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.camera_authority import validate_camera_authority
 from trame_vtklocal.module.node_translator import (
+    node_ref_ids,
     scene_reader,
     translate_object,
     translate_scene,
@@ -50,14 +51,6 @@ from trame_vtklocal.widgets.hot_arrays import (
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
 RESYNC_BASE_SEQ = -1
-
-
-def _node_ref_ids(node):
-    for value in (node.get("refs") or {}).values():
-        if isinstance(value, str):
-            yield value
-        else:
-            yield from value
 
 
 def event_is_current(store, event, node_id, strict=True):
@@ -325,7 +318,7 @@ class ScenePublisher:
         # every renderer's prop tree and rewires every dtc-fed mapper, so
         # entering it once (not per step) halves that walk and the rewire
         # MTime churn. Every VTK touch below is serialization work.
-        with self._tracker_suppress():
+        with self._tracker.suppress():
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
                 self._update_pipeline_producers(batch.producers)
                 self._refresh_object_states(batch.refresh_ids)
@@ -393,8 +386,8 @@ class ScenePublisher:
     def _prune_object_manager(self, include_blobs=False):
         # vtkObjectManager retains every state/blob it has ever seen; dead
         # objects and states are pruned per tick, blobs only at construction
-        # (the per-frame PruneUnusedBlobs sweep grows with uptime — targeted
-        # UnRegisterBlob via the blob registry replaces it).
+        # (a per-frame PruneUnusedBlobs sweep grows with uptime — the blob
+        # registry retires them with targeted UnRegisterBlob instead).
         methods = ("PruneUnusedObjects", "PruneUnusedStates")
         if include_blobs:
             methods = (*methods, "PruneUnusedBlobs")
@@ -406,7 +399,7 @@ class ScenePublisher:
     def _refresh_window_states(self):
         """Render + refresh the whole window's serialized states (eager init)."""
         object_manager = self._object_manager
-        with self._tracker_suppress():
+        with self._tracker.suppress():
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
                 if hasattr(self._render_window, "Render"):
                     self._render_window.Render()
@@ -443,15 +436,12 @@ class ScenePublisher:
             if update is not None:
                 update()
 
-    def _tracker_suppress(self):
-        return self._tracker.suppress()
-
     # ------------------------------------------------------------------
     # Translation
     # ------------------------------------------------------------------
 
     def _translate_full_scene(self):
-        with self._tracker_suppress():
+        with self._tracker.suppress():
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
                 return translate_scene(
                     self._object_manager,
@@ -491,7 +481,7 @@ class ScenePublisher:
             nodes[node_id] = node
             pending.extend(
                 ref_id
-                for ref_id in _node_ref_ids(node)
+                for ref_id in node_ref_ids(node)
                 if ref_id not in nodes and ref_id not in known
             )
         # Only nodes new to the store can cite a dropped blob: a node

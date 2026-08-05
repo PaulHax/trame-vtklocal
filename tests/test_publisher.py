@@ -734,11 +734,9 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
     over the same VTK object (unchanged MTime), must re-broadcast its content
     blob with real bytes.
 
-    Regression: a landmark clear on a second video load tore down the shared
-    crosshair glyph source; removing it UnRegisterBlob'd its points blob, and
-    the object manager then served a cached, blob-less state on re-entry, so the
-    payload broadcast empty and the client cached an empty array — the glyph
-    stamped nothing and every landmark rendered invisible.
+    Removal UnRegisterBlob's the points blob, and the object manager serves a
+    cached, blob-less state on re-entry; an empty payload leaves the client
+    caching an empty array, so the mapper stamps nothing.
     """
     scene = make_basic_scene()
     server = _FakeServer()

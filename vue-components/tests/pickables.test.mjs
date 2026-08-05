@@ -407,9 +407,6 @@ test("pickAt reuses projected positions until points or camera change", async ()
   matrix = [2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   pickables.pickAt(registry, 400, 200, options);
   assert.notEqual(registry.get("m").projectionCache, firstCache);
-
-  pickables.invalidatePickableProjectionCache(registry);
-  assert.equal(registry.get("m").projectionCache, null);
 });
 
 test("preview metadata and bound points node id ride the pick result", async () => {

@@ -291,6 +291,16 @@ def changed_ids(before, after):
     }
 
 
+def blob_size(object_manager, hash_value):
+    """Registered blob length (0 when the hash is gone).
+
+    VTK >= 9.6 answers an unknown hash with an EMPTY array rather than None,
+    so length — never ``is not None`` — is the liveness test.
+    """
+    blob = object_manager.GetBlob(hash_value)
+    return 0 if blob is None else memoryview(blob).nbytes
+
+
 def commit_scene(scene, nodes):
     store = SceneStore(str(scene.render_window_id))
     result = store.transact().upsert_nodes(nodes).commit()
@@ -320,7 +330,7 @@ def test_scene_commits_to_store_without_dangling_refs(scene_factory):
             assert pack_cell_array_payload(object_manager, ref)
         else:
             assert ref.startswith("c:")
-            assert object_manager.GetBlob(ref[len("c:"):]) is not None
+            assert blob_size(object_manager, ref[len("c:"):])
 
 
 @pytest.mark.parametrize("scene_factory", SCENE_FACTORIES)
@@ -716,18 +726,24 @@ def test_field_array_blob_registration_caches_by_mtime():
 
     first = translate(scene)[dataset_id]["arrays"][key]
     (hash_value,) = ref_manager_hashes([first["ref"]])
+    live_bytes = blob_size(object_manager, hash_value)
+    assert live_bytes
 
     # Unchanged array: same ref, blob live, registration still stamped.
     second = translate(scene)[dataset_id]["arrays"][key]
     assert second == first
-    assert object_manager.GetBlob(hash_value) is not None
+    assert blob_size(object_manager, hash_value) == live_bytes
 
     # The blob GC retired the hash while the node was out of the scene: a
     # cache hit alone must not serve a ref whose payload is gone.
     object_manager.UnRegisterBlob(hash_value)
+    assert not blob_size(object_manager, hash_value), (
+        "UnRegisterBlob no longer drops the payload, so the re-registration "
+        "this test covers is not being exercised"
+    )
     third = translate(scene)[dataset_id]["arrays"][key]
     assert third["ref"] == first["ref"]
-    assert object_manager.GetBlob(hash_value) is not None
+    assert blob_size(object_manager, hash_value) == live_bytes
 
     # Content change -> new MTime -> new content ref.
     tcoords = scene.handles["tcoords"]
@@ -736,7 +752,7 @@ def test_field_array_blob_registration_caches_by_mtime():
     changed = translate(scene)[dataset_id]["arrays"][key]
     assert changed["ref"] != first["ref"]
     (changed_hash,) = ref_manager_hashes([changed["ref"]])
-    assert object_manager.GetBlob(changed_hash) is not None
+    assert blob_size(object_manager, changed_hash) == live_bytes
 
 
 @pytest.mark.parametrize(
@@ -828,9 +844,9 @@ def test_field_array_datatype_matches_the_concrete_vtk_class(np_dtype, expected_
 def test_uint8_rgb_survives_as_a_uint8_contract():
     """Full-range RGB advertises Uint8Array and round-trips every channel.
 
-    The datatype-map bug labeled ``vtkTypeUInt8Array`` (GetDataType()=3) as
-    ``Int8Array``, so the client read 128 as -128 and 255 as -1. This asserts
-    both the contract and the below/above-127 payload values from the plan.
+    ``vtkTypeUInt8Array`` (GetDataType()=3) mislabeled as ``Int8Array`` makes
+    the client read 128 as -128 and 255 as -1, so the payload values straddle
+    127 in both directions.
     """
     colors = np.array(
         [[0, 127, 128], [255, 0, 127], [128, 255, 0], [127, 128, 255]],

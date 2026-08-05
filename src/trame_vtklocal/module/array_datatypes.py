@@ -12,8 +12,7 @@ from vtkmodules.util import vtkConstants
 # JS typed-array constructor per VTK scalar type, keyed by the type *constant
 # name*; the numeric GetDataType() ids are resolved from vtkConstants below,
 # never hand-written (VTK 9.x transposes them — UNSIGNED_CHAR=3, SHORT=4,
-# UNSIGNED_SHORT=5, SIGNED_CHAR=15 — and a stale literal advertised uint8 RGB as
-# Int8Array).
+# UNSIGNED_SHORT=5, SIGNED_CHAR=15).
 VTK_DATATYPE_JS_BY_NAME = {
     "VTK_BIT": "Uint8Array",  # packed bits; unsigned storage on the client
     "VTK_CHAR": "Int8Array",

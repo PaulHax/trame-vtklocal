@@ -98,9 +98,7 @@ class ObjectManagerAPI(LinkProtocol):
         left it this commit (including hot-array refs it minted but never
         adopted). Refs strip to raw manager hashes (``v:`` refs have none);
         the stale hashes are batched and retired by a debounced
-        :meth:`flush_stale_blobs`. This replaces per-frame
-        ``PruneUnusedBlobs()``, whose sweep cost grows with the historical
-        blob table.
+        :meth:`flush_stale_blobs`.
         """
         rw_id = int(rw_id)
         current = ref_manager_hashes(live_refs)
@@ -349,6 +347,9 @@ class ObjectManagerAPI(LinkProtocol):
         ignore_ids = []
         cameras = []
         force_push = []
+        # An id that is not a live render window still answers, with no
+        # interactor and no cameras.
+        interactor = None
         if renderWindow:
             interactor = self.vtk_object_manager.GetId(renderWindow.interactor)
             renderers = renderWindow.GetRenderers()

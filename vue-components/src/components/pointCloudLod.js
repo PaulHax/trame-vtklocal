@@ -544,6 +544,13 @@ function reconcileBudgetMode(registry, entry, drawEnabled) {
         setDensityFraction: (fraction) =>
           entry.controller?.setDensityFraction(fraction),
       }) ?? null;
+    // A member starts at workPending: false, so a cloud that registers while
+    // its first tiles are already in flight would look idle until the next
+    // work change.
+    const pending = entry.controller?.stats().workPending;
+    if (pending !== undefined) {
+      entry.governorMember?.update({ workPending: pending });
+    }
     // The governor owns the number now; forget ours so leaving adaptive
     // re-applies a fixed budget over whatever it last allocated.
     entry.appliedBudget = null;
@@ -620,6 +627,17 @@ function updateEntry(registry, entry, context, worldViewFor, scheduleRender) {
         // Late-bound: the adapter is replaced when the anchor migrates.
         onTiles: (batch) => entry.adapter?.applyBatch(batch),
         onDrawPlan: (plan) => entry.adapter?.applyDrawPlan(plan),
+        // `workPending` costs a walk of the selected set, so the library keeps
+        // it off the per-frame read and reports it here instead. Without it the
+        // governor takes capacity samples from frames drawn on an incomplete
+        // tile set -- notably across a retry backoff, where no physical
+        // operation is running -- and the budget oscillates instead of settling.
+        onWorkChange: () => {
+          const pending = entry.controller?.stats().workPending;
+          if (pending !== undefined) {
+            entry.governorMember?.update({ workPending: pending });
+          }
+        },
         scheduleRender,
         presentation: config.presentation,
         onPointDiameterCssPx: (diameterCssPx) =>

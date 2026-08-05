@@ -313,27 +313,31 @@ export function createPickableGestures({
     if (hoverEnabled && !drag) scheduleHover(null);
   }
 
+  function attachHoverListeners() {
+    hoverCanvas?.addEventListener?.("pointermove", onHoverMove);
+    hoverCanvas?.addEventListener?.("pointerleave", onHoverLeave);
+  }
+
+  function detachHoverListeners() {
+    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
+    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+  }
+
   function bindHoverCanvas() {
     const canvas = getCanvas();
     if (canvas === hoverCanvas) return;
-    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
-    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+    detachHoverListeners();
     hoverCanvas = canvas;
-    if (hoverEnabled) {
-      hoverCanvas?.addEventListener?.("pointermove", onHoverMove);
-      hoverCanvas?.addEventListener?.("pointerleave", onHoverLeave);
-    }
+    if (hoverEnabled) attachHoverListeners();
   }
 
   function setHoverEnabled(enabled) {
     hoverEnabled = !!enabled;
     dropHover();
-    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
-    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+    detachHoverListeners();
     if (hoverEnabled) {
       bindHoverCanvas();
-      hoverCanvas?.addEventListener?.("pointermove", onHoverMove);
-      hoverCanvas?.addEventListener?.("pointerleave", onHoverLeave);
+      attachHoverListeners();
     }
   }
 
@@ -388,8 +392,7 @@ export function createPickableGestures({
     rafHandle = 0;
     pendingMove = null;
     dropHover();
-    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
-    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
+    detachHoverListeners();
     hoverCanvas = null;
   }
 

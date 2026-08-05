@@ -117,7 +117,8 @@ def _make_node(node_type, props, refs, arrays, blocks):
     return node
 
 
-def _node_ref_ids(node):
+def node_ref_ids(node):
+    """Every node id a node's ref slots point at."""
     for value in node.get("refs", {}).values():
         if isinstance(value, str):
             yield value
@@ -407,6 +408,6 @@ def translate_scene(
             continue
         nodes[node_id] = node
         pending.extend(
-            int(ref_id) for ref_id in _node_ref_ids(node) if ref_id not in nodes
+            int(ref_id) for ref_id in node_ref_ids(node) if ref_id not in nodes
         )
     return nodes

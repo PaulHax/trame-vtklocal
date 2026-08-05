@@ -55,21 +55,31 @@ test("every promised view API key is implemented by the scene", async () => {
   assert.deepEqual(missing, [], `scene is missing: ${missing.join(", ")}`);
 });
 
-test("a backend may add methods but never shadow a common API key", async () => {
+// The backend layer composes over the scene: it contributes the view-specific
+// entries, and any common key it names wins over the scene's method.
+test("a backend adds its own entries and overrides the common keys it names", async () => {
   const { COMMON_VIEW_API_KEYS, createViewApi } = await loadModule(
     "/src/components/viewApi.js",
   );
   const scene = await buildScene();
+  const backendResetCamera = () => {};
   const api = createViewApi(scene, {
     container: {},
     render() {},
     resize() {},
+    resetCamera: backendResetCamera,
   });
 
-  for (const key of COMMON_VIEW_API_KEYS) {
+  assert.equal(api.resetCamera, backendResetCamera);
+  const unnamed = COMMON_VIEW_API_KEYS.filter((key) => key !== "resetCamera");
+  for (const key of unnamed) {
     assert.equal(api[key], scene[key], `${key} is not the scene's own method`);
   }
   assert.equal(typeof api.render, "function");
+  assert.deepEqual(
+    Object.keys(api).sort(),
+    [...COMMON_VIEW_API_KEYS, "container", "render", "resize"].sort(),
+  );
 });
 
 // The scoped cloud pick must be reachable from BOTH view implementations —

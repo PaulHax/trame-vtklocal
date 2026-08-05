@@ -218,16 +218,17 @@ class LocalView(HtmlElement):
     def unregister_vtk_object(self, vtk_instance):
         """Unregister external element (i.e. widget) from the scene so it can removed from tracking"""
         if vtk_instance in self.__registered_obj:
-            self.api.unregister(self._render_window, vtk_instance)
+            self.api.unregister_widget(self._render_window, vtk_instance)
+            self.__registered_obj.remove(vtk_instance)
             return True
 
         return False
 
     def unregister_all_vtk_objects(self):
         """Unregister all external element (i.e. widget) from the scene"""
-        for vtk_instance in self.__registered_obj:
-            self.api.unregister(self._render_window, vtk_instance)
-            self.__registered_obj.remove(vtk_instance)
+        for vtk_instance in list(self.__registered_obj):
+            self.api.unregister_widget(self._render_window, vtk_instance)
+        self.__registered_obj.clear()
 
     def export(self, format="zip", **kwargs):
         """Export standalone scene for WASMViewer

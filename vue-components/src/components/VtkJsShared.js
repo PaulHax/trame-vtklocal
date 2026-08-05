@@ -9,41 +9,12 @@ import vtkExternalContextRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/Ext
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
-import { createViewApi } from "./viewApi";
+import { createViewApi, VIEW_EMITS, VIEW_PROPS } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
 
 export default {
-  emits: [
-    "updated",
-    "camera",
-    "command",
-    "onReady",
-    "beforeSceneLoaded",
-    "afterSceneLoaded",
-    "messageApplied",
-    "pointerEvent",
-  ],
-  props: {
-    renderWindow: {
-      type: Number,
-      required: true,
-    },
-    cameraAuthority: {
-      type: String,
-      default: "server",
-      validator: (value) => value === "server" || value === "client",
-    },
-    // The trame ref name this view is mounted under (e.g. "vtkMapView_map").
-    // The Python widget sets it to the same value it uses for `ref`, so
-    // consumers resolve the view via window.trameVtklocal.whenView(refName).
-    viewKey: {
-      type: String,
-      default: null,
-    },
-    wsClient: {
-      type: Object,
-    },
-  },
+  emits: VIEW_EMITS,
+  props: VIEW_PROPS,
   setup(props, { emit }) {
     const trame = inject("trame");
     const client = props.wsClient || trame?.client;
@@ -69,8 +40,7 @@ export default {
         renderRequestedCallbackWithDistanceToCamera();
         return;
       }
-      scene.beforeRender();
-      paintAndRecord(() => externalRenderWindow?.renderExternal?.());
+      renderExternal();
     }
 
     const scene = useSceneSync({

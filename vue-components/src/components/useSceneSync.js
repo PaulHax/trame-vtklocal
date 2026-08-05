@@ -546,10 +546,8 @@ export function useSceneSync(
     // controller debounces selection internally, so per-message and
     // per-interactor-render calls stay cheap.
     updatePointCloudPresentations(pointCloudPresentations);
-    // No `motionDebounceMs` here: no component accepts one, so passing it
-    // through was configuration nothing but a test could ever set. The
-    // classifier's own constant is the debounce every view runs on; give this
-    // a prop the day a deployment actually needs a different one.
+    // No `motionDebounceMs` here: the classifier's own constant is the
+    // debounce every view runs on.
     return updatePointCloudLods(pointCloudLods, {
       renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),
@@ -562,7 +560,7 @@ export function useSceneSync(
 
   // Everything the scene owes a frame before it is painted. Views ask for this
   // one pass, so a new pre-paint pass is added here and nowhere else — no view
-  // has to carry its own copy of the list (they had already diverged).
+  // has to carry its own copy of the list.
   function beforeRender() {
     updateDistanceToCameraGlyphsForRender();
     updatePointCloudLodsForRender();

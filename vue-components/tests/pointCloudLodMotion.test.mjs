@@ -6,7 +6,14 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
-import { anchorGraph, stubFetch } from "./pointCloudLodFixtures.mjs";
+import {
+  HIERARCHY,
+  POSITIONS,
+  RGB,
+  anchorGraph,
+  makePct1,
+  stubFetch,
+} from "./pointCloudLodFixtures.mjs";
 
 after(async () => {
   await closeModuleLoader();
@@ -531,5 +538,63 @@ test("overlapping motion sources end the regime only with the last one", async (
     assert.equal(stats.targetFrameTimeMs, 33);
   } finally {
     view.dispose();
+  }
+});
+
+test("a cloud waiting on a retry backoff still reports pending work", async () => {
+  // The two physical-operation counters the per-frame read carries both go to
+  // zero while a failed tile sits in its retry backoff, so `workPending` is the
+  // only thing left saying the frame is drawn on an incomplete tile set. A host
+  // that never reports it lets the governor take a capacity sample from a
+  // cheap, half-empty frame and raise the budget it will have to cut back.
+  const module = await loadModule("/src/components/pointCloudLod.js");
+  let failTiles = true;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.includes("/hierarchy/")) {
+      return new Response(JSON.stringify(HIERARCHY), { status: 200 });
+    }
+    if (failTiles) return new Response("", { status: 503 });
+    return new Response(makePct1(POSITIONS, RGB), { status: 200 });
+  };
+
+  const camera = makeCamera();
+  const { anchorMapper, anchorActor, renderer, renderWindow } =
+    makeRenderer(camera);
+  const registry = new Map();
+  const graph = anchorGraph();
+  graph.addRenderer(renderer);
+  graph.setAnchor("42", anchorActor);
+  const context = {
+    renderers: [renderer],
+    renderWindow,
+    scheduleRender: () => {},
+    motionDebounceMs: DEBOUNCE_MS,
+    referrersOf: graph.referrersOf,
+    getInstance: graph.getInstance,
+  };
+  module.applyPointCloudLodBlock(registry, "42", BLOCK, anchorMapper, () => {});
+  try {
+    module.updatePointCloudLods(registry, context);
+    await settle();
+    // Let the failure land and the backoff arm, with nothing in flight.
+    for (let i = 0; i < 10; i += 1) {
+      module.updatePointCloudLods(registry, context);
+      await settle();
+    }
+
+    const stats = module.describePointCloudLodGovernor(registry);
+    assert.equal(
+      stats.activity.workPending,
+      true,
+      "a tile still owed but not in flight is pending work",
+    );
+    assert.equal(
+      stats.activity.measurementEligible,
+      false,
+      "so the frame is not an eligible capacity sample",
+    );
+  } finally {
+    module.disposePointCloudLods(registry);
   }
 });

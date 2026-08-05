@@ -22,12 +22,6 @@ export function createPickableRegistry() {
   return new Map();
 }
 
-export function invalidatePickableProjectionCache(registry) {
-  for (const entry of registry?.values?.() || []) {
-    entry.projectionCache = null;
-  }
-}
-
 function normalizeConfig(config) {
   if (!config || typeof config !== "object") {
     return null;
@@ -369,7 +363,6 @@ export function describePickableRegistry(registry) {
 export default {
   createPickableRegistry,
   applyPickableBlock,
-  invalidatePickableProjectionCache,
   pickAt,
   describePickableRegistry,
 };

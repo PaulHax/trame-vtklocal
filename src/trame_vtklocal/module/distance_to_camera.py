@@ -47,7 +47,7 @@ def _rewire_scope():
         _REWIRE_DEPTH -= 1
 
 
-def mapper_input_algorithm(vtk_mapper, port_index=0, connection_index=0):
+def mapper_input_algorithm(vtk_mapper):
     if vtk_mapper is None:
         return None
 
@@ -55,7 +55,7 @@ def mapper_input_algorithm(vtk_mapper, port_index=0, connection_index=0):
     if get_input_algorithm is None:
         return None
 
-    for args in ((port_index, connection_index), ()):
+    for args in ((0, 0), ()):
         try:
             return get_input_algorithm(*args)
         except TypeError:
@@ -113,10 +113,8 @@ def distance_to_camera_input_data_object(vtk_algorithm):
         return None
 
 
-def mapper_distance_to_camera_input(vtk_mapper, port_index=0, connection_index=0):
-    input_algorithm = mapper_input_algorithm(
-        vtk_mapper, port_index, connection_index
-    )
+def mapper_distance_to_camera_input(vtk_mapper):
+    input_algorithm = mapper_input_algorithm(vtk_mapper)
     return (
         input_algorithm,
         distance_to_camera_input_data_object(input_algorithm),

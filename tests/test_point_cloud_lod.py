@@ -80,7 +80,6 @@ def test_marked_mapper_translates_with_type_and_block():
     assert block["endpoint"] == "/pointcloud/cloud-1/abc123"
     assert block["pointCount"] == 9_128_231
     assert block["presentation"] == CONFIG["presentation"]
-    assert block["hasRgb"] is True
     # No configured point budget: the client default applies (fixed mode) and
     # adaptive mode has no point ceiling at all.
     assert "pointBudget" not in block
@@ -289,10 +288,45 @@ def test_validation_errors():
         pcl.mark_point_cloud_lod(mapper, **{**CONFIG, "point_budget": 0})
 
 
-def test_legacy_asset_id_keyword_fails_loudly():
-    """The rename to ``source_asset_id`` is breaking on purpose.
+def test_presentation_rejects_non_finite_values():
+    """Non-finite sizing is a silently invisible cloud unless it raises here.
 
-    A compatibility alias or a ``**kwargs`` sink would let old callers keep
+    The client's normalizeConfig gates every presentation number through
+    ``isPositiveFinite`` and drops the WHOLE ``pointCloudLod`` block when one
+    fails, so an infinity that reaches the wire renders nothing and reports
+    nothing.
+    """
+    _, _, mapper, _ = _make_scene()
+
+    def presentation(**overrides):
+        return {**CONFIG, "presentation": {**CONFIG["presentation"], **overrides}}
+
+    for overrides in (
+        {"userScale": float("inf")},
+        {"userScale": float("nan")},
+        {"minDiameterCssPx": float("inf")},
+        {"maxDiameterCssPx": float("inf")},
+    ):
+        with pytest.raises(ValueError, match="positive, finite and ordered"):
+            pcl.mark_point_cloud_lod(mapper, **presentation(**overrides))
+
+    with pytest.raises(ValueError, match="diameterCssPx must be positive and finite"):
+        pcl.mark_point_cloud_lod(
+            mapper,
+            **{
+                **CONFIG,
+                "presentation": {"mode": "fixed", "diameterCssPx": float("inf")},
+            },
+        )
+    with pytest.raises(ValueError, match="diameter_css_px must be positive and finite"):
+        pcl.mark_point_cloud_presentation(mapper, diameter_css_px=float("inf"))
+
+
+def test_legacy_asset_id_keyword_fails_loudly():
+    """``asset_id`` is not an accepted keyword; the durable id is
+    ``source_asset_id``.
+
+    A compatibility alias or a ``**kwargs`` sink would let a caller keep
     passing ``asset_id`` — silently marking anchors with no durable identity.
     """
     _, _, mapper, _ = _make_scene()

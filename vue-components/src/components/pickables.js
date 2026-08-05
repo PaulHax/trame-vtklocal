@@ -33,7 +33,7 @@ function normalizeConfig(config) {
   }
 
   const priority = Number(config.priority);
-  const preview = ["screen", "plane"].includes(config.preview)
+  const preview = ["screen", "plane", "cloud"].includes(config.preview)
     ? config.preview
     : null;
   const plane =

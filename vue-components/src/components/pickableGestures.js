@@ -106,10 +106,12 @@ export function createPickableGestures({
   }
 
   // Every payload leaves through here: enrichment sees exactly what emits.
-  function emitPayload(payload) {
+  function emitPayload(payload, beforeEmit = null) {
     const enriched =
       typeof enrichPayload === "function" ? enrichPayload(payload) : null;
-    emit(enriched || payload);
+    const outgoing = enriched || payload;
+    beforeEmit?.(outgoing);
+    emit(outgoing);
   }
 
   function setCursor(canvas, value) {
@@ -142,8 +144,7 @@ export function createPickableGestures({
     const payload = pendingMove;
     pendingMove = null;
     if (!drag || !payload) return;
-    onDragMove(payload);
-    emitPayload(payload);
+    emitPayload(payload, onDragMove);
   }
 
   function scheduleMove(payload) {
@@ -192,8 +193,7 @@ export function createPickableGestures({
       active.grabOffset,
       flags,
     );
-    onDragEnd(payload);
-    emitPayload(payload);
+    emitPayload(payload, onDragEnd);
 
     try {
       active.canvas?.releasePointerCapture?.(active.pointerId);
@@ -248,8 +248,7 @@ export function createPickableGestures({
       pickResult,
       grabOffset,
     );
-    onDragStart(payload);
-    emitPayload(payload);
+    emitPayload(payload, onDragStart);
     return true;
   }
 

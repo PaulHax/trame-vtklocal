@@ -53,8 +53,8 @@ def make_pickable(
     grab = float(grab_px) if grab_px is not None else float("nan")
     if not math.isfinite(grab) or grab <= 0:
         raise ValueError("grab_px must be a positive number")
-    if preview not in (None, "screen", "plane"):
-        raise ValueError("preview must be None, 'screen', or 'plane'")
+    if preview not in (None, "screen", "plane", "cloud"):
+        raise ValueError("preview must be None, 'screen', 'plane', or 'cloud'")
     normalized_plane = None
     if plane is not None:
         if not isinstance(plane, dict):

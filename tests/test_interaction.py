@@ -102,6 +102,15 @@ def test_pickable_preview_configuration_round_trips():
     assert block["plane"] == plane
 
 
+def test_pickable_cloud_preview_configuration_round_trips():
+    api, _rw, mapper, render_window_id = _make_scene()
+    pick.make_pickable(mapper, grab_px=12, preview="cloud")
+
+    (node,) = _find_pickable_nodes(_translate(api, render_window_id))
+    block = node["blocks"][pick.PICKABLE_STATE_KEY]
+    assert block["preview"] == "cloud"
+
+
 def test_retag_bumps_mtime_and_reaches_the_state():
     api, _rw, mapper, render_window_id = _make_scene()
     pick.make_pickable(mapper, tags={"rev": 1}, grab_px=10.0)

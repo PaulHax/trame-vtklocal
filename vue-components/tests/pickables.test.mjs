@@ -442,6 +442,27 @@ test("preview metadata and bound points node id ride the pick result", async () 
   assert.deepEqual(hit.plane, { origin: [0, 0, 0], normal: [0, 0, 1] });
 });
 
+test("cloud preview metadata rides the pick result", async () => {
+  const pickables = await loadPickables();
+  const vtk = await loadVtk();
+  const { mapper } = buildMapper(vtk, [0, 0, 0]);
+  const registry = pickables.createPickableRegistry();
+  pickables.applyPickableBlock(
+    registry,
+    "m",
+    { grabPx: 20, preview: "cloud" },
+    mapper,
+  );
+  const view = makeContext();
+  const hit = pickables.pickAt(registry, 400, 200, {
+    renderer: view.renderer,
+    renderWindow: view.renderWindow,
+    synchronizerContext: contextFor(new Map([["m", mapper]])),
+  });
+
+  assert.equal(hit.preview, "cloud");
+});
+
 test("a pick whose input point set cannot be resolved names no nodes", async () => {
   const pickables = await loadPickables();
   const vtk = await loadVtk();

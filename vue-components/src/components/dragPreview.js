@@ -3,15 +3,12 @@
 
 import { mat4 } from "../glMatrix";
 import { getWorldToClipMatrix } from "./cameraMatrix";
+import { viewAsTypedArray } from "./sync/base64";
 
 const EPSILON = 1e-9;
 
 function unproject(inverse, x, y, z) {
-  const w =
-    inverse[3] * x +
-    inverse[7] * y +
-    inverse[11] * z +
-    inverse[15];
+  const w = inverse[3] * x + inverse[7] * y + inverse[11] * z + inverse[15];
   if (Math.abs(w) < EPSILON) return null;
   return [
     (inverse[0] * x + inverse[4] * y + inverse[8] * z + inverse[12]) / w,
@@ -61,6 +58,15 @@ export function createDragPreview({
   }
 
   function previewWorld(payload) {
+    if (active.pick.preview === "cloud") {
+      const world = payload?.cloud_solve?.world;
+      return payload?.cloud_solve?.status === "hit" &&
+        Array.isArray(world) &&
+        world.length === 3 &&
+        world.every(Number.isFinite)
+        ? world.map(Number)
+        : null;
+    }
     const pointer = payload?.pointer;
     const camera = getCamera?.();
     const metrics = getViewportMetrics?.();
@@ -119,6 +125,43 @@ export function createDragPreview({
     return true;
   }
 
+  function readBoundWorld() {
+    if (!active) return null;
+    const values = getBoundArray?.(active.pointsNodeId, "points")?.getData?.();
+    const pointIndex = currentPointIndex();
+    const offset = pointIndex * 3;
+    if (pointIndex < 0 || !values || offset + 2 >= values.length) return null;
+    return [values[offset], values[offset + 1], values[offset + 2]];
+  }
+
+  function patchTouchesPoint(op) {
+    if (
+      !active ||
+      op?.op !== "patchArray" ||
+      String(op.id) !== active.pointsNodeId ||
+      op.key !== "points"
+    ) {
+      return false;
+    }
+    const pointIndex = currentPointIndex();
+    if (pointIndex < 0) return false;
+    let length = 0;
+    try {
+      length = viewAsTypedArray(op.data, op.dataType).length;
+    } catch {
+      return false;
+    }
+    const pointStart = pointIndex * 3;
+    const patchStart = Number(op.offset);
+    const patchEnd = patchStart + length;
+    return patchStart < pointStart + 3 && patchEnd > pointStart;
+  }
+
+  function messageConfirmsPoint(message) {
+    if (!active || !Array.isArray(message?.ops)) return false;
+    return message.ops.some(patchTouchesPoint);
+  }
+
   function start(payload) {
     const pick = payload?.pick;
     if (!pick?.preview || pick.pointsNodeId == null) {
@@ -134,27 +177,50 @@ export function createDragPreview({
       // index fallback and ids can never resolve it.
       trackById: Array.isArray(ids) && ids[pick.pointIndex] != null,
       world: null,
+      confirmedWorld: null,
       expectedLength: null,
     };
+    active.confirmedWorld = readBoundWorld();
     return true;
   }
 
   function move(payload) {
-    return active ? write(previewWorld(payload)) : false;
+    if (!active) return false;
+    const world = previewWorld(payload);
+    if (active.pick.preview === "cloud" && !world) {
+      const confirmedWorld = active.confirmedWorld;
+      if (active.world && confirmedWorld) write(confirmedWorld);
+      if (active) active.world = null;
+      return false;
+    }
+    return write(world);
   }
 
-  function reapply() {
+  function reapply(message = null) {
+    if (messageConfirmsPoint(message)) {
+      active.confirmedWorld = readBoundWorld();
+    }
     return active?.world ? write(active.world) : false;
   }
 
-  function end() {
+  function end(payload = null) {
+    const solvedWorld =
+      active?.pick.preview === "cloud" ? previewWorld(payload) : null;
+    if (solvedWorld && !payload?.cancelled) {
+      write(solvedWorld);
+      active = null;
+      return;
+    }
+    const confirmedWorld = active?.confirmedWorld;
+    if (active?.world && confirmedWorld) write(confirmedWorld);
     active = null;
   }
 
   function targets(nodeId) {
     const id = String(nodeId);
-    return !!active &&
-      (active.pick.nodeId === id || active.pointsNodeId === id);
+    return (
+      !!active && (active.pick.nodeId === id || active.pointsNodeId === id)
+    );
   }
 
   return { start, move, reapply, end, targets, isActive: () => !!active };

@@ -419,6 +419,7 @@ export function useSceneSync(
       cache: blobCache,
       callbacks: {
         beforeSnapshot() {
+          dragPreview.end();
           if (!disposed) emit?.("beforeSceneLoaded");
         },
         afterSnapshot() {
@@ -426,7 +427,7 @@ export function useSceneSync(
         },
         onSnapshotApplied(snapshot) {
           if (disposed) return;
-          afterApply();
+          afterApply(snapshot);
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
           if (!snapshot.commands?.some((command) => command?.render === true)) {
@@ -435,7 +436,7 @@ export function useSceneSync(
         },
         onApplied(message) {
           if (disposed) return;
-          afterApply();
+          afterApply(message);
           noteMessageApplied(message);
           if (!Array.isArray(message?.ops) || message.ops.length) {
             renderRequestCallback?.();
@@ -567,11 +568,11 @@ export function useSceneSync(
   }
 
   // The post-apply pass every applied message runs, snapshot or ops.
-  function afterApply() {
+  function afterApply(message) {
     sceneTopologyVersion += 1;
     bindPrimaryCameraToRenderers();
     beforeRender();
-    dragPreview.reapply();
+    dragPreview.reapply(message);
   }
 
   // The adaptive budget never schedules a frame of its own: the host paints,

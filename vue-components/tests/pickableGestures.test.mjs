@@ -500,12 +500,14 @@ test("removing the active target emits a terminal cancelled drag end", async () 
 test("enrichPayload runs after rAF coalescing and its result is what emits", async () => {
   const h = makeHarness();
   const enriched = [];
+  const previewed = [];
   const g = await createGestures(h, {
     factory: {
       enrichPayload: (payload) => {
         enriched.push(payload);
         return { ...payload, cloud_solve: { at: payload.pointer } };
       },
+      onDragMove: (payload) => previewed.push(payload),
     },
   });
 
@@ -522,6 +524,8 @@ test("enrichPayload runs after rAF coalescing and its result is what emits", asy
   // own pointer — grab offset (+5, -3) already applied.
   assert.deepEqual(move.cloud_solve, { at: { x: 205, y: 87 } });
   assert.deepEqual(move.pointer, { x: 205, y: 87 });
+  assert.equal(previewed.length, 1);
+  assert.deepEqual(previewed[0].cloud_solve, move.cloud_solve);
 
   h.windowRef.dispatch("pointerup", pointerEvent(220, 100));
   const end = h.events.at(-1);

@@ -65,6 +65,136 @@ test("screen drag preview updates one bound point and remains an overlay", async
   assert.equal(preview.targets("mapper"), false);
 });
 
+test("ending a preview restores the last server-confirmed point", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const values = new Float32Array([0, 0, 0, 9, 9, 9]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({
+    getCamera: () => ({
+      getCompositeProjectionMatrix: () => IDENTITY,
+      getDirectionOfProjection: () => [0, 0, -1],
+    }),
+    getViewportMetrics: () => ({ width: 100, height: 100, aspect: 1 }),
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    world: [0, 0, 0],
+    preview: "screen",
+  };
+
+  assert.equal(preview.start({ pick }), true);
+  assert.equal(preview.move({ pointer: { x: 75, y: 50 } }), true);
+  assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
+
+  // The server confirms a cloud-depth point. It remains hidden by the active
+  // screen-plane preview, then becomes authoritative when the drag ends even
+  // if drag.end itself is a server-side no-op because the point is unchanged.
+  values.set([2, 3, 4], 0);
+  preview.reapply({
+    ops: [
+      {
+        op: "patchArray",
+        id: "points",
+        key: "points",
+        offset: 0,
+        data: new Float32Array([2, 3, 4]),
+        dataType: "Float32Array",
+      },
+    ],
+  });
+  assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
+
+  // A patch to another point must not replace the saved confirmation with the
+  // optimistic coordinate currently occupying this point's array slot.
+  values.set([7, 8, 9], 3);
+  preview.reapply({
+    ops: [
+      {
+        op: "patchArray",
+        id: "points",
+        key: "points",
+        offset: 3,
+        data: new Float32Array([7, 8, 9]),
+        dataType: "Float32Array",
+      },
+    ],
+  });
+  preview.end();
+
+  assert.deepEqual(Array.from(values.slice(0, 3)), [2, 3, 4]);
+  assert.deepEqual(Array.from(values.slice(3, 6)), [7, 8, 9]);
+});
+
+test("cloud drag uses solved world hits instead of a screen plane", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const values = new Float32Array([0, 0, 0]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    world: [0, 0, 0],
+    preview: "cloud",
+  };
+
+  assert.equal(preview.start({ pick }), true);
+  assert.equal(
+    preview.move({
+      pointer: { x: 75, y: 50 },
+      cloud_solve: { status: "hit", world: [2, 3, 4] },
+    }),
+    true,
+  );
+  assert.deepEqual(Array.from(values), [2, 3, 4]);
+
+  values.set([2, 3, 4]);
+  preview.reapply({
+    ops: [
+      {
+        op: "patchArray",
+        id: "points",
+        key: "points",
+        offset: 0,
+        data: new Float32Array([2, 3, 4]),
+        dataType: "Float32Array",
+      },
+    ],
+  });
+  preview.move({
+    pointer: { x: 80, y: 55 },
+    cloud_solve: { status: "hit", world: [5, 6, 7] },
+  });
+  assert.deepEqual(Array.from(values), [5, 6, 7]);
+
+  assert.equal(
+    preview.move({
+      pointer: { x: 85, y: 60 },
+      cloud_solve: { status: "miss" },
+    }),
+    false,
+  );
+  assert.deepEqual(Array.from(values), [2, 3, 4]);
+
+  preview.end({
+    cloud_solve: { status: "hit", world: [8, 9, 10] },
+  });
+  assert.deepEqual(Array.from(values), [8, 9, 10]);
+});
+
 test("preview ends when the bound points array is structurally replaced", async () => {
   const { createDragPreview } = await loadModule(
     "/src/components/dragPreview.js",
@@ -216,10 +346,7 @@ test("plane drag preview honors vtk.js row-major composite matrices", async () =
   // carries its offset at index 3, not 12. An identity matrix (the test
   // above) cannot see a transpose mistake; this one can.
   const ROW_MAJOR_TRANSLATE_X = [
-    1, 0, 0, 5,
-    0, 1, 0, 0,
-    0, 0, 1, 0,
-    0, 0, 0, 1,
+    1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
   ];
   const values = new Float32Array([-5, 0, 0]);
   const array = { getData: () => values, modified() {} };

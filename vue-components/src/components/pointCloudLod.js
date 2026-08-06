@@ -442,11 +442,10 @@ function resolveAnchor(entry, context) {
   return null;
 }
 
-// The anchor actor and the renderer hosting it, resolved once per applied
-// sync message: `context.topologyVersion` advances with each applied message,
-// and interactor renders in between cannot move an actor between renderers,
-// so passes within one version reuse the cached association. A context
-// without a version (no gating information) resolves every pass.
+// The anchor actor and renderer hosting it, resolved once per combined scene
+// topology revision. Applied-instance identity and mirrored ref-edge changes
+// advance that revision; prop/array-only messages do not. A context without a
+// version (no gating information) resolves every pass.
 function findAnchor(entry, context) {
   const version = Number.isFinite(context.topologyVersion)
     ? context.topologyVersion

@@ -175,27 +175,18 @@ export function useSceneSync(
     );
   }
 
-  // Which mirrored nodes name `nodeId` in the given ref slot. The mirror is
-  // the wire's own statement of the scene graph, so a block handler needing a
-  // related node (an anchor actor for a mapper, the renderer hosting it)
-  // resolves the association here instead of scanning live vtk collections.
+  // Which desired nodes name `nodeId` in the given ref slot. The mirror
+  // maintains the reverse index as operations land, so association queries
+  // are proportional to actual referrers rather than scene size.
   function referrersOf(nodeId, slot) {
-    const target = String(nodeId);
-    const ids = [];
-    if (!mirror) return ids;
-    for (const [id, node] of mirror.entries()) {
-      const ref = node.refs?.[slot];
-      if (ref === target || (Array.isArray(ref) && ref.includes(target))) {
-        ids.push(id);
-      }
-    }
-    return ids;
+    return mirror?.referrersOf?.(nodeId, slot) || [];
   }
 
-  // Advances once per applied sync message — the only time actor/renderer
-  // topology can change, which is what lets per-frame passes reuse
-  // associations resolved from the mirror.
-  let sceneTopologyVersion = 0;
+  function getSceneTopologyVersion() {
+    return (
+      (mirror?.refRevision?.() ?? 0) + (reconciler?.instanceRevision?.() ?? 0)
+    );
+  }
 
   // Stage a texture source for this view's external-texture registry;
   // vtkProjectedTextureMapper instances resolve it by textureKey at render
@@ -494,6 +485,10 @@ export function useSceneSync(
         }
       }
     }
+    const appliedIdentity = reconciler?.describeAppliedRegistry?.() ?? {
+      instanceRevision: 0,
+      records: [],
+    };
     return {
       mySeq,
       live,
@@ -503,6 +498,14 @@ export function useSceneSync(
       lastAppliedOp,
       queueLength: bufferLength,
       syncedRootId,
+      appliedIdentity: {
+        ...appliedIdentity,
+        records: appliedIdentity.records.map((record) => ({
+          ...record,
+          desiredType: mirror?.get?.(record.id)?.type ?? null,
+          referrerCount: mirror?.referrerCount?.(record.id) ?? 0,
+        })),
+      },
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
         distanceToCameraGlyphs,
       ),
@@ -556,7 +559,7 @@ export function useSceneSync(
       scheduleRender: () => renderRequestCallback?.(),
       referrersOf,
       getInstance,
-      topologyVersion: sceneTopologyVersion,
+      topologyVersion: getSceneTopologyVersion(),
     });
   }
 
@@ -586,7 +589,6 @@ export function useSceneSync(
 
   // The post-apply pass every applied message runs, snapshot or ops.
   function afterApply(message) {
-    sceneTopologyVersion += 1;
     bindPrimaryCameraToRenderers();
     protectPreviewBindings();
     beforeRender();

@@ -975,6 +975,12 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
             ["1", { refs: { viewProps: ["42-actor"] } }],
           ]).entries(),
         get: () => null,
+        referrersOf(id, slot) {
+          if (String(id) === "42" && slot === "mapper") return ["42-actor"];
+          if (String(id) === "42-actor" && slot === "viewProps") return ["1"];
+          return [];
+        },
+        refRevision: () => 1,
         applyOps() {},
         clear() {},
         gcBlobCache() {},
@@ -985,6 +991,7 @@ test("a drag on a tagged pickable emits a pointerEvent carrying the real scoped 
           blockHandlers.set(key, handler);
           return () => {};
         },
+        instanceRevision: () => 0,
         teardown() {},
       }),
       createSceneEngine: () => ({
@@ -1106,6 +1113,12 @@ test("setArmedCloudPick governs the clicks the scene emits", async () => {
             ["1", { refs: { viewProps: ["42-actor"] } }],
           ]).entries(),
         get: () => null,
+        referrersOf(id, slot) {
+          if (String(id) === "42" && slot === "mapper") return ["42-actor"];
+          if (String(id) === "42-actor" && slot === "viewProps") return ["1"];
+          return [];
+        },
+        refRevision: () => 1,
         applyOps() {},
         clear() {},
         gcBlobCache() {},
@@ -1116,6 +1129,7 @@ test("setArmedCloudPick governs the clicks the scene emits", async () => {
           blockHandlers.set(key, handler);
           return () => {};
         },
+        instanceRevision: () => 0,
         teardown() {},
       }),
       createSceneEngine: () => ({

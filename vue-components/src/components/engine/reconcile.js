@@ -6,11 +6,10 @@
 // bindings, feature blocks -> registered handlers. `patchArray` mutates the
 // bound typed array in place; `remove` tears the instance down.
 //
-// Two passes per message: (1) build instances for upserted ids missing from
-// the synchronizer context, so same-message refs always resolve; (2) apply
-// ops in order (upserts, patches, removes — the store orders them). A type
-// change on an existing id rebuilds the instance and force-rewires every
-// referrer slot afterwards.
+// Runtime records make desired/applied identity explicit. Two passes per
+// message first build every required instance, then apply ops in store order.
+// Successful creates and replacements force-reattach referrer slots after the
+// mirror reaches its final state.
 
 import { deepEqual } from "./values";
 import {
@@ -21,6 +20,7 @@ import {
 } from "./arrayBinding";
 import { viewAsTypedArray } from "../sync/base64";
 import { isLiveInstance } from "../predicates";
+import { createAppliedRegistry } from "./appliedRegistry";
 
 // Ref-slot -> vtk.js call map (pinned by the wire protocol).
 const SINGLE_REF_SETTERS = {
@@ -83,16 +83,18 @@ export function createReconciler({
   // server rebinds so every optimistic write is cache-safe and allocation-free.
   const privateSlots = new Map();
   const deferredProps = new Map(); // id -> latest server props
+  const appliedRegistry = createAppliedRegistry({ synchronizerContext });
   let rootAttached = false;
 
   // The root render window is widget-owned, never built. Register it so
   // getInstance/getInstanceId treat it like every other node.
   if (rootInstance && synchronizerContext?.registerInstance) {
-    synchronizerContext.registerInstance(String(rootId), rootInstance);
+    appliedRegistry.register(String(rootId), rootInstance, null);
+    appliedRegistry.markLive(String(rootId), null);
   }
 
   function getInstance(id) {
-    return synchronizerContext?.getInstance?.(String(id)) ?? null;
+    return appliedRegistry.getInstance(id);
   }
 
   function liveInstanceFor(id) {
@@ -217,10 +219,9 @@ export function createReconciler({
     }
   }
 
-  // Re-apply a slot from scratch against live state — used after an instance
-  // rebuild, when the referrer's collections may hold a stale (replaced)
-  // instance that id lookups can no longer name. Draining those collections
-  // first turns the diff below into a full re-apply against an empty previous.
+  // Re-apply a slot from scratch against live state after a target is created
+  // or replaced. The referrer's collections may still hold an instance that
+  // ID lookups can no longer name, so drain lists before applying from empty.
   function forceApplySlot(instance, slot, value) {
     const listSpec = LIST_REF_SLOTS[slot];
     if (listSpec) {
@@ -229,17 +230,24 @@ export function createReconciler({
     applySlotDiff(instance, slot, undefined, value);
   }
 
-  function rewireRebuilt(rebuiltIds, mirror) {
-    for (const [referrerId, node] of mirror.entries()) {
-      const refs = node.refs || {};
-      for (const [slot, value] of Object.entries(refs)) {
-        if (!slotIds(value).some((refId) => rebuiltIds.has(refId))) {
-          continue;
+  function reattachTargets(targetIds, mirror) {
+    const slotsByReferrer = new Map();
+    for (const targetId of targetIds) {
+      for (const { referrerId, slot } of mirror.referrerSlotsOf(targetId)) {
+        let slots = slotsByReferrer.get(referrerId);
+        if (!slots) {
+          slots = new Set();
+          slotsByReferrer.set(referrerId, slots);
         }
-        const instance = liveInstanceFor(referrerId);
-        if (instance) {
-          forceApplySlot(instance, slot, value);
-        }
+        slots.add(slot);
+      }
+    }
+    for (const [referrerId, slots] of slotsByReferrer) {
+      const instance = liveInstanceFor(referrerId);
+      const refs = mirror.get(referrerId)?.refs || {};
+      if (!instance) continue;
+      for (const slot of slots) {
+        forceApplySlot(instance, slot, refs[slot]);
       }
     }
   }
@@ -411,8 +419,9 @@ export function createReconciler({
   }
 
   function applyNodeDiff(id, node, prev, cache) {
+    const appliedRecord = appliedRegistry.getRecord(id);
     const instance = liveInstanceFor(id);
-    if (!instance) {
+    if (!instance || appliedRecord?.appliedType !== node.type) {
       // Unbuildable type (already warned in the build pass); skip its state.
       return;
     }
@@ -432,6 +441,7 @@ export function createReconciler({
     applyRefsDiff(instance, node.refs || {}, prev?.refs || {});
     applyArraysDiff(instance, id, node.arrays || {}, prev?.arrays || {}, cache);
     applyBlocksDiff(instance, id, node.blocks || {}, prev?.blocks || {}, isNew);
+    appliedRegistry.markLive(id, node.type);
   }
 
   function applyArrayPatch(op, mirror, cache) {
@@ -470,7 +480,9 @@ export function createReconciler({
     if (binding.privateLocal) {
       const canonicalOld = cachedTypedArray(cache, oldRef, op.dataType);
       if (!canonicalOld) {
-        throw new Error(`patchArray ${id}.${op.key}: cache ref ${oldRef} missing`);
+        throw new Error(
+          `patchArray ${id}.${op.key}: cache ref ${oldRef} missing`,
+        );
       }
       if (oldRefShared) {
         // The old server version remains live elsewhere, so the new canonical
@@ -520,10 +532,12 @@ export function createReconciler({
     dropBindings(id, { forgetPrivate: true });
     deferredProps.delete(id);
     if (instance) {
-      synchronizerContext.unregisterInstance?.(id);
+      appliedRegistry.remove(id);
       if (isLiveInstance(instance)) {
         instance.delete?.();
       }
+    } else {
+      appliedRegistry.remove(id);
     }
   }
 
@@ -531,73 +545,159 @@ export function createReconciler({
     const built = objectManager.build(type, { managedInstanceId: id });
     if (!built) {
       console.warn(`[reconcile] cannot build type ${type} (node ${id})`);
+      appliedRegistry.markPending(id, type, `cannot build type ${type}`);
       return null;
     }
-    synchronizerContext.registerInstance(id, built);
+    appliedRegistry.register(id, built, type);
     return built;
   }
 
-  function buildInstances(ops, mirror) {
-    const rebuilt = new Map(); // id -> replaced (old) instance
+  function buildInstances(ops, mirror, lifecycle) {
+    const { hydrated, reattach, retired } = lifecycle;
     for (const op of ops) {
       if (op.op !== "upsert") {
         continue;
       }
       const id = String(op.id);
+      const previousAppliedRecord = appliedRegistry.getRecord(id);
+      const previousMirrorNode = mirror.get(id);
+      const desiredType = op.node.type;
+      appliedRegistry.beginDesired(id, desiredType);
       if (id === rootId) {
+        appliedRegistry.markLive(id, desiredType);
         continue;
+      }
+      const registered = synchronizerContext?.getInstance?.(id) ?? null;
+      const runtimeChanged =
+        previousAppliedRecord && previousAppliedRecord.instance !== registered;
+      if (!previousAppliedRecord || runtimeChanged) {
+        const previousInstance = previousAppliedRecord?.instance;
+        appliedRegistry.adoptRegistered(
+          id,
+          previousMirrorNode?.type ?? desiredType,
+        );
+        if (runtimeChanged) {
+          if (isLiveInstance(previousInstance)) {
+            retired.set(id, previousInstance);
+          }
+          dropBindings(id);
+        }
       }
       let instance = getInstance(id);
       if (instance && !isLiveInstance(instance)) {
-        synchronizerContext.unregisterInstance?.(id);
+        appliedRegistry.detach(id);
         dropBindings(id);
         instance = null;
       }
       if (!instance) {
-        buildFor(id, op.node.type);
+        if (buildFor(id, desiredType)) {
+          hydrated.add(id);
+          reattach.add(id);
+        }
         continue;
       }
-      const prevType = mirror.get(id)?.type;
-      if (prevType && prevType !== op.node.type) {
+      const appliedType = appliedRegistry.getRecord(id)?.appliedType;
+      if (appliedType && appliedType !== desiredType) {
         // Same id, new type: rebuild, then rewire referrers after the ops
         // apply. When the new type cannot be built, keep the old instance
         // registered so live wiring stays render-safe.
-        if (buildFor(id, op.node.type)) {
-          rebuilt.set(id, instance);
+        if (buildFor(id, desiredType)) {
+          retired.set(id, instance);
           dropBindings(id);
+          hydrated.add(id);
+          reattach.add(id);
         }
+        continue;
+      }
+      if (!previousMirrorNode || runtimeChanged) {
+        hydrated.add(id);
+        reattach.add(id);
       }
     }
-    return rebuilt;
+  }
+
+  function retireInstances(retired) {
+    const disposed = new Set();
+    for (const oldInstance of retired.values()) {
+      if (!disposed.has(oldInstance) && isLiveInstance(oldInstance)) {
+        disposed.add(oldInstance);
+        oldInstance.delete?.();
+      }
+    }
+  }
+
+  function validateOps(ops) {
+    const upsertIds = new Set();
+    for (const op of ops) {
+      if (!op || !["upsert", "patchArray", "remove"].includes(op.op)) {
+        throw new Error(`unknown op ${op?.op}`);
+      }
+      if (op.id === undefined || op.id === null) {
+        throw new Error(`${op.op} is missing a node id`);
+      }
+      if (op.op === "patchArray") {
+        if (
+          typeof op.key !== "string" ||
+          typeof op.ref !== "string" ||
+          typeof op.dataType !== "string" ||
+          !Number.isInteger(op.offset) ||
+          op.data === undefined ||
+          op.data === null
+        ) {
+          throw new Error(`patchArray ${op.id} is missing required fields`);
+        }
+        continue;
+      }
+      if (op.op !== "upsert") continue;
+      const id = String(op.id);
+      if (upsertIds.has(id)) {
+        // One message has one desired state per ID. Reject before builds or
+        // mirror/runtime mutation; the engine will recover from a snapshot.
+        throw new Error(`duplicate upsert for node ${id}`);
+      }
+      if (!op.node || typeof op.node.type !== "string") {
+        throw new Error(`upsert ${id} is missing a node type`);
+      }
+      upsertIds.add(id);
+    }
   }
 
   // Apply one broadcast message's ops to instances and the mirror together.
   // Throws on contract violations; the engine translates throws into resyncs.
   function applyMessage(ops, mirror, cache) {
-    const rebuilt = buildInstances(ops, mirror);
-    for (const op of ops) {
-      if (op.op === "upsert") {
-        const id = String(op.id);
-        const prev = rebuilt.has(id) ? undefined : mirror.get(id);
-        applyNodeDiff(id, op.node, prev, cache);
-        mirror.applyOp(op);
-      } else if (op.op === "patchArray") {
-        applyArrayPatch(op, mirror, cache);
-        mirror.applyOp(op);
-      } else if (op.op === "remove") {
-        teardownNode(String(op.id), mirror.get(String(op.id)));
-        mirror.applyOp(op);
-      } else {
-        throw new Error(`unknown op ${op.op}`);
-      }
-    }
-    if (rebuilt.size) {
-      rewireRebuilt(new Set(rebuilt.keys()), mirror);
-      for (const oldInstance of rebuilt.values()) {
-        if (isLiveInstance(oldInstance)) {
-          oldInstance.delete?.();
+    validateOps(ops);
+    const lifecycle = {
+      hydrated: new Set(),
+      reattach: new Set(),
+      retired: new Map(), // id -> replaced (old) instance
+    };
+    try {
+      buildInstances(ops, mirror, lifecycle);
+      for (const op of ops) {
+        if (op.op === "upsert") {
+          const id = String(op.id);
+          const prev = lifecycle.hydrated.has(id) ? undefined : mirror.get(id);
+          applyNodeDiff(id, op.node, prev, cache);
+          mirror.applyOp(op);
+        } else if (op.op === "patchArray") {
+          applyArrayPatch(op, mirror, cache);
+          mirror.applyOp(op);
+        } else if (op.op === "remove") {
+          teardownNode(String(op.id), mirror.get(String(op.id)));
+          mirror.applyOp(op);
+        } else {
+          throw new Error(`unknown op ${op.op}`);
         }
       }
+      if (lifecycle.reattach.size) {
+        reattachTargets(lifecycle.reattach, mirror);
+      }
+    } finally {
+      // A published replacement remains the current instance if hydration
+      // fails; reset/resync will tear it down. Its superseded predecessor is
+      // no longer reachable through the context, so retire it here on both
+      // success and failure.
+      retireInstances(lifecycle.retired);
     }
   }
 
@@ -624,7 +724,8 @@ export function createReconciler({
     if (rootInstanceLive) {
       drainRootCollections(rootInstanceLive);
     }
-    for (const id of mirror.ids()) {
+    const ids = new Set([...mirror.ids(), ...appliedRegistry.ids()]);
+    for (const id of ids) {
       teardownNode(id, mirror.get(id));
     }
     mirror.clear();
@@ -678,6 +779,7 @@ export function createReconciler({
     privateSlots.clear();
     deferredProps.clear();
     blockHandlers.clear();
+    appliedRegistry.clear();
   }
 
   return {
@@ -688,6 +790,9 @@ export function createReconciler({
     getBoundArray,
     protectLocalWrites,
     flushDeferredProps,
+    getAppliedRecord: appliedRegistry.getRecord,
+    describeAppliedRegistry: appliedRegistry.describe,
+    instanceRevision: appliedRegistry.instanceRevision,
     teardown,
   };
 }

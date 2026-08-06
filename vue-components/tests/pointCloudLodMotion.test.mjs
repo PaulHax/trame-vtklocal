@@ -415,6 +415,12 @@ async function makeSyncedView() {
             ["5", { refs: { viewProps: ["42-actor"] } }],
           ]).entries(),
         get: () => null,
+        referrersOf: (id, slot) => {
+          if (String(id) === "42" && slot === "mapper") return ["42-actor"];
+          if (String(id) === "42-actor" && slot === "viewProps") return ["5"];
+          return [];
+        },
+        refRevision: () => 1,
         applyOps() {},
         clear() {},
         gcBlobCache() {},
@@ -422,6 +428,7 @@ async function makeSyncedView() {
       }),
       createReconciler: () => ({
         registerBlockHandler: (key, handler) => blockHandlers.set(key, handler),
+        instanceRevision: () => 0,
         teardown() {},
         flushDeferredProps() {},
       }),

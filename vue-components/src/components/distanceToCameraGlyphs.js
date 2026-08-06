@@ -346,11 +346,11 @@ export function updateDistanceToCameraGlyphs(
     const contextInput = hasContextLookup
       ? synchronizerContext.getInstance(entry.inputDataObjectId)
       : input;
-    if (
-      entry.pending &&
-      isLiveInstance(contextMapper) &&
-      isLiveInstance(contextInput)
-    ) {
+    const dependenciesLive =
+      isLiveInstance(contextMapper) && isLiveInstance(contextInput);
+    const dependenciesChanged =
+      contextMapper !== entry.mapper || contextInput !== entry.input;
+    if (dependenciesLive && (entry.pending || dependenciesChanged)) {
       entry.mapper = contextMapper;
       entry.input = contextInput;
       entry.pending = false;
@@ -360,14 +360,14 @@ export function updateDistanceToCameraGlyphs(
       }
       contextMapper.setScaleArray?.(entry.arrayName);
     }
-    if (
-      !isLiveInstance(entry.mapper) ||
-      !isLiveInstance(entry.input) ||
-      (hasContextLookup &&
-        !entry.pending &&
-        (contextMapper !== entry.mapper || contextInput !== entry.input))
-    ) {
-      registry.delete(id);
+    if (!dependenciesLive) {
+      // The serialized configuration remains authoritative while either
+      // runtime dependency is absent. A later render pass adopts replacements
+      // without requiring the block owner to be upserted again.
+      entry.mapper = isLiveInstance(contextMapper) ? contextMapper : null;
+      entry.input = isLiveInstance(contextInput) ? contextInput : null;
+      entry.pending = true;
+      entry.lastSignature = null;
       continue;
     }
 
@@ -377,13 +377,23 @@ export function updateDistanceToCameraGlyphs(
       continue;
     }
 
-    const signature = entrySignature(entry, camera, entry.input, points, metrics);
+    const signature = entrySignature(
+      entry,
+      camera,
+      entry.input,
+      points,
+      metrics,
+    );
     if (entry.lastSignature === signature) {
       continue;
     }
 
     const tupleCount = Math.floor(pointValues.length / 3);
-    const target = ensureDistanceArray(entry.input, entry.arrayName, tupleCount);
+    const target = ensureDistanceArray(
+      entry.input,
+      entry.arrayName,
+      tupleCount,
+    );
     if (!target) {
       continue;
     }

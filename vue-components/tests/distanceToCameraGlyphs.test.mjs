@@ -61,24 +61,7 @@ function transposeMatrix(matrix) {
 
 function lockViewportProjection(projection, { zoom, pan }) {
   return multiplyMatrix(
-    [
-      zoom,
-      0,
-      0,
-      0,
-      0,
-      zoom,
-      0,
-      0,
-      0,
-      0,
-      1,
-      0,
-      pan[0],
-      pan[1],
-      0,
-      1,
-    ],
+    [zoom, 0, 0, 0, 0, zoom, 0, 0, 0, 0, 1, 0, pan[0], pan[1], 0, 1],
     projection,
   );
 }
@@ -497,6 +480,97 @@ test("distance-to-camera registry resolves pending mapper state during render", 
   const array = filterInput.getPointData().getArray("DistanceToCamera");
   assert.ok(array);
   assert.equal(filterInput.getPointData().getScalars(), array);
+});
+
+test("distance-to-camera registry adopts a replacement input instance", async () => {
+  const [
+    distanceToCameraGlyphs,
+    vtkGlyph3DMapperMod,
+    vtkPolyDataMod,
+    vtkPointsMod,
+  ] = await Promise.all([
+    loadModule("/src/components/distanceToCameraGlyphs.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Rendering/Core/Glyph3DMapper.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/DataModel/PolyData.js"),
+    loadModule("/node_modules/@kitware/vtk.js/Common/Core/Points.js"),
+  ]);
+
+  function makeInput(x) {
+    const input = vtkPolyDataMod.default.newInstance();
+    const points = vtkPointsMod.default.newInstance();
+    points.setData(new Float32Array([x, 0, 0]), 3);
+    input.setPoints(points);
+    return input;
+  }
+
+  const mapper = vtkGlyph3DMapperMod.default.newInstance();
+  const firstInput = makeInput(0);
+  const replacementInput = makeInput(2);
+  const instances = new Map([
+    ["mapper", mapper],
+    ["filter-input", firstInput],
+  ]);
+  const synchronizerContext = {
+    getInstance: (id) => instances.get(String(id)),
+  };
+  const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
+  distanceToCameraGlyphs.applyDistanceToCameraBlock(
+    registry,
+    "mapper",
+    {
+      arrayName: "DistanceToCamera",
+      screenSize: 20,
+      inputDataObjectId: "filter-input",
+    },
+    mapper,
+    synchronizerContext,
+  );
+
+  const camera = {
+    getMTime: () => 1,
+    getPhysicalScale: () => 1,
+    getCompositeProjectionMatrix: () => {
+      const matrix = new Array(16).fill(0);
+      matrix[0] = 1;
+      matrix[5] = 1;
+      matrix[10] = 1;
+      matrix[15] = 1;
+      return matrix;
+    },
+  };
+  const renderer = {
+    getActiveCamera: () => camera,
+    getViewport: () => [0, 0, 1, 1],
+  };
+  const renderWindow = {
+    getViews: () => [{ getSize: () => [1000, 500] }],
+  };
+
+  assert.equal(
+    distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
+      renderer,
+      renderWindow,
+      synchronizerContext,
+    }),
+    true,
+  );
+  instances.set("filter-input", replacementInput);
+
+  assert.equal(
+    distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
+      renderer,
+      renderWindow,
+      synchronizerContext,
+    }),
+    true,
+  );
+  assert.equal(registry.get("mapper")?.input, replacementInput);
+  assert.equal(registry.get("mapper")?.pending, false);
+  assert.equal(mapper.getInputData(0), replacementInput);
+  assert.ok(
+    replacementInput.getPointData().getArray("DistanceToCamera"),
+    "the replacement input is recomputed during the adopting render prepass",
+  );
 });
 
 test("distance-to-camera render hooks run during callback render paths", async () => {

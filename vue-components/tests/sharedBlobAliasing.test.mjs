@@ -20,6 +20,14 @@ const POINTS_ENTRY = {
   vtkClass: "vtkPoints",
 };
 
+function pointsNode(ref) {
+  return {
+    type: "vtkPolyData",
+    props: {},
+    arrays: { points: { ...POINTS_ENTRY, ref } },
+  };
+}
+
 function makePolyData() {
   let points = null;
   return {
@@ -55,15 +63,8 @@ async function makeScene(sharedRef, values, ids = ["a", "b"]) {
   const cache = new Map([
     [sharedRef, new Uint8Array(new Float32Array(values).buffer)],
   ]);
-  const node = (ref) => ({
-    type: "vtkPolyData",
-    props: {},
-    arrays: { points: { ...POINTS_ENTRY, ref } },
-  });
   reconciler.applyMessage(
-    [
-      ...ids.map((id) => ({ op: "upsert", id, node: node(sharedRef) })),
-    ],
+    [...ids.map((id) => ({ op: "upsert", id, node: pointsNode(sharedRef) }))],
     mirror,
     cache,
   );
@@ -226,10 +227,7 @@ test("a protected preview binding patches runtime and canonical cache separately
   );
 
   assert.deepEqual(Array.from(runtime), [7, 8, 9, 1, 1, 1]);
-  assert.deepEqual(
-    Array.from(cache.get("v:a:points:1")),
-    [7, 8, 9, 1, 1, 1],
-  );
+  assert.deepEqual(Array.from(cache.get("v:a:points:1")), [7, 8, 9, 1, 1, 1]);
   assert.notEqual(runtime, cache.get("v:a:points:1"));
 });
 
@@ -283,5 +281,55 @@ test("a drag preview writes only the node it grabbed", async () => {
   assert.deepEqual(
     Array.from(instances.get("a").getPoints().getData()),
     [0, 0, 0, 1, 1, 1],
+  );
+});
+
+test("a drag restores a full mid-drag points republish", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const { reconciler, mirror, cache, instances } = await makeScene(
+    "c:before",
+    [0, 0, 0, 1, 1, 1],
+    ["a"],
+  );
+  reconciler.protectLocalWrites("a", "points");
+
+  const preview = createDragPreview({
+    getCamera: () => ({
+      getCompositeProjectionMatrix: () => [
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+      ],
+      getDirectionOfProjection: () => [0, 0, -1],
+    }),
+    getViewportMetrics: () => ({ width: 100, height: 100, aspect: 1 }),
+    getBoundArray: reconciler.getBoundArray,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {},
+  });
+  preview.start({
+    pick: {
+      nodeId: "a",
+      pointsNodeId: "a",
+      pointIndex: 0,
+      world: [0, 0, 0],
+      preview: "screen",
+    },
+  });
+  preview.move({ pointer: { x: 75, y: 50 } });
+
+  const republished = new Float32Array([2, 3, 4, 1, 1, 1]);
+  cache.set("c:after", new Uint8Array(republished.buffer));
+  const message = {
+    ops: [{ op: "upsert", id: "a", node: pointsNode("c:after") }],
+  };
+  reconciler.applyMessage(message.ops, mirror, cache);
+  preview.reapply(message);
+  preview.end();
+
+  assert.deepEqual(
+    Array.from(instances.get("a").getPoints().getData()),
+    [2, 3, 4, 1, 1, 1],
+    "ending the drag must restore the server's republished points",
   );
 });

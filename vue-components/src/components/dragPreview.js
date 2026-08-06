@@ -105,6 +105,13 @@ export function createDragPreview({
         optimistic: null,
       };
       active.undo.push(journal);
+    } else if (journal.values !== values) {
+      // A full node republish reuses the vtk array but replaces its typed
+      // array. The replacement contains clean server state, so it becomes the
+      // new undo baseline instead of restoring into the detached old buffer.
+      journal.values = values;
+      journal.confirmed = values.slice(offset, offset + 3);
+      journal.optimistic = null;
     }
     return journal;
   }
@@ -113,20 +120,20 @@ export function createDragPreview({
     if (!active) return false;
     let restored = false;
     for (const entry of active.undo) {
+      if (!entry.optimistic) continue;
       if (entry.offset + 2 >= entry.values.length) continue;
       for (let component = 0; component < 3; component += 1) {
         // A structural replacement may reuse the same typed array and overwrite
         // this slot without a patch op. Restore only bytes still carrying our
         // last overlay; anything else is newer external/server state.
         if (
-          entry.optimistic &&
           Object.is(
             entry.values[entry.offset + component],
             entry.optimistic[component],
           )
         ) {
           entry.values[entry.offset + component] = entry.confirmed[component];
-        } else if (entry.optimistic) {
+        } else {
           entry.confirmed[component] = entry.values[entry.offset + component];
         }
       }

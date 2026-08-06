@@ -237,6 +237,38 @@ test("cloud drag uses solved world hits instead of a screen plane", async () => 
   assert.deepEqual(Array.from(values), [2, 3, 4]);
 });
 
+test("ending after a lost cloud solve does not request another render", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const values = new Float32Array([0, 0, 0]);
+  const array = { getData: () => values, modified() {} };
+  let renders = 0;
+  const preview = createDragPreview({
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {
+      renders += 1;
+    },
+  });
+
+  preview.start({
+    pick: {
+      nodeId: "mapper",
+      pointsNodeId: "points",
+      pointIndex: 0,
+      world: [0, 0, 0],
+      preview: "cloud",
+    },
+  });
+  preview.move({ cloud_solve: { status: "hit", world: [2, 3, 4] } });
+  preview.move({ cloud_solve: { status: "miss" } });
+  assert.equal(renders, 2);
+
+  preview.end();
+  assert.equal(renders, 2);
+});
+
 test("preview ends when the bound points array is structurally replaced", async () => {
   const { createDragPreview } = await loadModule(
     "/src/components/dragPreview.js",

@@ -131,7 +131,7 @@ function projectWorldToCss(out, worldToClip, x, y, z, width, height) {
   return Number.isFinite(out[0]) && Number.isFinite(out[1]);
 }
 
-function resolvePickableMapper(entry, synchronizerContext) {
+export function resolvePickableMapper(entry, synchronizerContext) {
   if (isLiveInstance(entry.mapper)) {
     return entry.mapper;
   }
@@ -363,6 +363,7 @@ export function describePickableRegistry(registry) {
 export default {
   createPickableRegistry,
   applyPickableBlock,
+  resolvePickableMapper,
   pickAt,
   describePickableRegistry,
 };

@@ -23,6 +23,7 @@ import {
   createPickableRegistry,
   describePickableRegistry,
   pickAt as pickAtRegistry,
+  resolvePickableMapper,
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
@@ -566,7 +567,8 @@ export function useSceneSync(
     const synchronizerContext = managedSyncContext?.synchronizerContext;
     for (const entry of pickables.values()) {
       if (!entry.preview) continue;
-      const points = entry.mapper?.getInputData?.(0);
+      const mapper = resolvePickableMapper(entry, synchronizerContext);
+      const points = mapper?.getInputData?.(0);
       const pointsNodeId = synchronizerContext?.getInstanceId?.(points);
       if (pointsNodeId !== undefined && pointsNodeId !== null) {
         reconciler?.protectLocalWrites?.(String(pointsNodeId), "points");

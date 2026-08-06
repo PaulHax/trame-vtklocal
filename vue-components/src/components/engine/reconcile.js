@@ -31,8 +31,16 @@ const SINGLE_REF_SETTERS = {
 };
 
 const LIST_REF_SLOTS = {
-  renderers: { add: "addRenderer", remove: "removeRenderer", read: "getRenderers" },
-  viewProps: { add: "addViewProp", remove: "removeViewProp", read: "getViewProps" },
+  renderers: {
+    add: "addRenderer",
+    remove: "removeRenderer",
+    read: "getRenderers",
+  },
+  viewProps: {
+    add: "addViewProp",
+    remove: "removeViewProp",
+    read: "getViewProps",
+  },
   lights: { add: "addLight", remove: "removeLight", read: "getLights" },
   textures: { add: "addTexture", remove: "removeTexture", read: "getTextures" },
 };
@@ -65,6 +73,15 @@ export function createReconciler({
   // nodeId -> Map(arrayKey -> { array: vtk data array, ref }) — the client's
   // record of which blob each bound array holds, for rebinds and patches.
   const bindings = new Map();
+  const bindingsByRef = new Map(); // ref -> Set(binding)
+  // ref -> the binding whose rendered typed array is also the cache's canonical
+  // typed array. Later binders copy eagerly, moving unavoidable alias work away
+  // from patches and pointer interaction. An explicitly local-writable binding
+  // is always private and never appears here.
+  const bufferOwners = new Map();
+  // nodeId -> Set(arrayKey). Previewable arrays stay private across ordinary
+  // server rebinds so every optimistic write is cache-safe and allocation-free.
+  const privateSlots = new Map();
   const deferredProps = new Map(); // id -> latest server props
   let rootAttached = false;
 
@@ -247,11 +264,80 @@ export function createReconciler({
     }
   }
 
+  function isPrivateSlot(id, key) {
+    return privateSlots.get(id)?.has(key) || false;
+  }
+
+  function rememberPrivateSlot(id, key) {
+    let keys = privateSlots.get(id);
+    if (!keys) {
+      keys = new Set();
+      privateSlots.set(id, keys);
+    }
+    keys.add(key);
+  }
+
+  function addRefBinding(binding) {
+    let refBindings = bindingsByRef.get(binding.ref);
+    if (!refBindings) {
+      refBindings = new Set();
+      bindingsByRef.set(binding.ref, refBindings);
+    }
+    refBindings.add(binding);
+  }
+
+  function removeRefBinding(binding) {
+    const refBindings = bindingsByRef.get(binding.ref);
+    refBindings?.delete(binding);
+    if (refBindings?.size === 0) {
+      bindingsByRef.delete(binding.ref);
+    }
+  }
+
+  function unlinkBinding(binding) {
+    if (!binding) return;
+    if (bufferOwners.get(binding.ref) === binding) {
+      bufferOwners.delete(binding.ref);
+    }
+    removeRefBinding(binding);
+  }
+
+  function moveBindingRef(binding, ref) {
+    removeRefBinding(binding);
+    binding.ref = ref;
+    addRefBinding(binding);
+  }
+
+  function dropBindings(id, { forgetPrivate = false } = {}) {
+    for (const bound of bindings.get(id)?.values() || []) {
+      unlinkBinding(bound);
+    }
+    bindings.delete(id);
+    if (forgetPrivate) privateSlots.delete(id);
+  }
+
+  // Move canonical ownership of a still-live ref off the binding that is about
+  // to mutate. Alias binders already own private copies, so the normal path is
+  // Map bookkeeping only. A copy is the safe fallback for an unbound or
+  // explicitly local-writable sibling.
+  function preserveSharedCanonical(ref, mutatingBinding, cache) {
+    for (const candidate of bindingsByRef.get(ref) || []) {
+      if (candidate !== mutatingBinding && !candidate.privateLocal) {
+        cache.set(ref, candidate.array.getData());
+        bufferOwners.set(ref, candidate);
+        return;
+      }
+    }
+    cache.set(ref, mutatingBinding.array.getData().slice());
+    bufferOwners.delete(ref);
+  }
+
   function applyArraysDiff(instance, id, nextArrays, prevArrays, cache) {
     let nodeBindings = bindings.get(id);
     for (const [key, entry] of Object.entries(prevArrays)) {
       if (!(key in nextArrays)) {
         removeArrayEntry(instance, entry);
+        unlinkBinding(nodeBindings?.get(key));
         nodeBindings?.delete(key);
       }
     }
@@ -264,23 +350,40 @@ export function createReconciler({
       ) {
         continue;
       }
-      const values = cachedTypedArray(cache, entry.ref, entry.dataType);
-      if (!values) {
+      const cached = cachedTypedArray(cache, entry.ref, entry.dataType);
+      if (!cached) {
         throw new Error(
           `blob ${entry.ref} missing from cache (node ${id}, array ${key})`,
         );
       }
+      unlinkBinding(bound);
+      const privateLocal = isPrivateSlot(id, key);
+      const ownsCache = !privateLocal && !bufferOwners.has(entry.ref);
+      const values = ownsCache ? cached : cached.slice();
       const array = bindArrayEntry(instance, entry, values);
       if (!nodeBindings) {
         nodeBindings = new Map();
         bindings.set(id, nodeBindings);
       }
-      nodeBindings.set(key, { array, ref: entry.ref });
+      const binding = {
+        id,
+        key,
+        array,
+        ref: entry.ref,
+        numberOfComponents: entry.numberOfComponents || 1,
+        privateLocal,
+      };
+      nodeBindings.set(key, binding);
+      addRefBinding(binding);
+      if (ownsCache) bufferOwners.set(entry.ref, binding);
     }
   }
 
   function applyBlocksDiff(instance, id, nextBlocks, prevBlocks, isNew) {
-    const keys = new Set([...Object.keys(prevBlocks), ...Object.keys(nextBlocks)]);
+    const keys = new Set([
+      ...Object.keys(prevBlocks),
+      ...Object.keys(nextBlocks),
+    ]);
     for (const key of keys) {
       const nextBlock = key in nextBlocks ? nextBlocks[key] : null;
       const prevBlock = key in prevBlocks ? prevBlocks[key] : null;
@@ -359,15 +462,51 @@ export function createReconciler({
           `(offset=${op.offset}, length=${data.length}, size=${values.length})`,
       );
     }
+    const oldRef = binding.ref;
+    const oldRefShared = (mirror.refCount?.(oldRef) || 1) > 1;
+    const ownsOldCache = bufferOwners.get(oldRef) === binding;
+
+    let canonicalNew = null;
+    if (binding.privateLocal) {
+      const canonicalOld = cachedTypedArray(cache, oldRef, op.dataType);
+      if (!canonicalOld) {
+        throw new Error(`patchArray ${id}.${op.key}: cache ref ${oldRef} missing`);
+      }
+      if (oldRefShared) {
+        // The old server version remains live elsewhere, so the new canonical
+        // version needs independent storage. This is the one inherently
+        // expensive edge: two server versions plus a private preview buffer.
+        canonicalNew = canonicalOld.slice();
+      } else {
+        cache.delete(oldRef);
+        canonicalNew = canonicalOld;
+      }
+    } else if (ownsOldCache) {
+      if (oldRefShared) {
+        preserveSharedCanonical(oldRef, binding, cache);
+      } else {
+        cache.delete(oldRef);
+        bufferOwners.delete(oldRef);
+      }
+    } else if (!oldRefShared) {
+      cache.delete(oldRef);
+      bufferOwners.delete(oldRef);
+    }
+
     if (data.length) {
       values.set(data, op.offset);
+      canonicalNew?.set(data, op.offset);
     }
     binding.array.modified?.();
     getInstance(id)?.modified?.();
-    // Rebind the cache slot: the same typed array now answers to the new ref.
-    cache.delete(binding.ref);
-    cache.set(op.ref, values);
-    binding.ref = op.ref;
+    moveBindingRef(binding, op.ref);
+    if (binding.privateLocal) {
+      cache.set(op.ref, canonicalNew);
+      bufferOwners.delete(op.ref);
+    } else {
+      cache.set(op.ref, values);
+      bufferOwners.set(op.ref, binding);
+    }
   }
 
   function teardownNode(id, prevNode) {
@@ -378,7 +517,7 @@ export function createReconciler({
     for (const key of Object.keys(prevNode?.blocks || {})) {
       blockHandlers.get(key)?.(id, null, instance);
     }
-    bindings.delete(id);
+    dropBindings(id, { forgetPrivate: true });
     deferredProps.delete(id);
     if (instance) {
       synchronizerContext.unregisterInstance?.(id);
@@ -411,7 +550,7 @@ export function createReconciler({
       let instance = getInstance(id);
       if (instance && !isLiveInstance(instance)) {
         synchronizerContext.unregisterInstance?.(id);
-        bindings.delete(id);
+        dropBindings(id);
         instance = null;
       }
       if (!instance) {
@@ -425,7 +564,7 @@ export function createReconciler({
         // registered so live wiring stays render-safe.
         if (buildFor(id, op.node.type)) {
           rebuilt.set(id, instance);
-          bindings.delete(id);
+          dropBindings(id);
         }
       }
     }
@@ -490,11 +629,36 @@ export function createReconciler({
     }
     mirror.clear();
     bindings.clear();
+    bindingsByRef.clear();
+    bufferOwners.clear();
+    privateSlots.clear();
     rootAttached = false;
   }
 
   function getBoundArray(id, key) {
     return bindings.get(String(id))?.get(key)?.array ?? null;
+  }
+
+  // Reserve a binding for client-local in-place writes (drag preview). The
+  // one-time copy happens when scene state is applied, never on pointer-down;
+  // subsequent server patches update this runtime array and its separate
+  // canonical cache buffer by patch range.
+  function protectLocalWrites(id, key) {
+    id = String(id);
+    rememberPrivateSlot(id, key);
+    const binding = bindings.get(id)?.get(key);
+    if (!binding || binding.privateLocal) return !!binding;
+    binding.privateLocal = true;
+    if (bufferOwners.get(binding.ref) === binding) {
+      bufferOwners.delete(binding.ref);
+      binding.array.setData(
+        binding.array.getData().slice(),
+        binding.numberOfComponents,
+      );
+      binding.array.modified?.();
+      getInstance(id)?.modified?.();
+    }
+    return true;
   }
 
   function flushDeferredProps() {
@@ -509,6 +673,9 @@ export function createReconciler({
 
   function teardown() {
     bindings.clear();
+    bindingsByRef.clear();
+    bufferOwners.clear();
+    privateSlots.clear();
     deferredProps.clear();
     blockHandlers.clear();
   }
@@ -519,6 +686,7 @@ export function createReconciler({
     applySnapshot,
     reset,
     getBoundArray,
+    protectLocalWrites,
     flushDeferredProps,
     teardown,
   };

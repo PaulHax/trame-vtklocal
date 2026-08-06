@@ -132,6 +132,46 @@ test("ending a preview restores the last server-confirmed point", async () => {
   assert.deepEqual(Array.from(values.slice(3, 6)), [7, 8, 9]);
 });
 
+test("partial server patches confirm only the covered point components", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const values = new Float32Array([0, 0, 0]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({
+    getBoundArray: () => array,
+    getInstance: () => ({ modified() {} }),
+    requestRender: () => {},
+  });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    world: [0, 0, 0],
+    preview: "cloud",
+  };
+
+  preview.start({ pick });
+  preview.move({ cloud_solve: { status: "hit", world: [5, 6, 7] } });
+  values[0] = 2;
+  preview.reapply({
+    ops: [
+      {
+        op: "patchArray",
+        id: "points",
+        key: "points",
+        offset: 0,
+        data: new Float32Array([2]),
+        dataType: "Float32Array",
+      },
+    ],
+  });
+  assert.deepEqual(Array.from(values), [5, 6, 7]);
+
+  preview.end();
+  assert.deepEqual(Array.from(values), [2, 0, 0]);
+});
+
 test("cloud drag uses solved world hits instead of a screen plane", async () => {
   const { createDragPreview } = await loadModule(
     "/src/components/dragPreview.js",
@@ -192,7 +232,9 @@ test("cloud drag uses solved world hits instead of a screen plane", async () => 
   preview.end({
     cloud_solve: { status: "hit", world: [8, 9, 10] },
   });
-  assert.deepEqual(Array.from(values), [8, 9, 10]);
+  // The terminal solve is still sent to the server, but it is not server
+  // truth yet. Ending the overlay restores the last confirmed point.
+  assert.deepEqual(Array.from(values), [2, 3, 4]);
 });
 
 test("preview ends when the bound points array is structurally replaced", async () => {

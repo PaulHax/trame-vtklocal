@@ -11,6 +11,22 @@ import { deepClone } from "./values";
 
 export function createMirrorStore() {
   const nodes = new Map();
+  const arrayRefCounts = new Map();
+
+  function adjustRef(ref, delta) {
+    const count = (arrayRefCounts.get(ref) || 0) + delta;
+    if (count > 0) {
+      arrayRefCounts.set(ref, count);
+    } else {
+      arrayRefCounts.delete(ref);
+    }
+  }
+
+  function adjustNodeRefs(node, delta) {
+    for (const entry of Object.values(node?.arrays || {})) {
+      adjustRef(entry.ref, delta);
+    }
+  }
 
   function get(id) {
     return nodes.get(String(id));
@@ -18,13 +34,21 @@ export function createMirrorStore() {
 
   function applyOp(op) {
     if (op.op === "upsert") {
-      nodes.set(String(op.id), deepClone(op.node));
+      const id = String(op.id);
+      const node = deepClone(op.node);
+      adjustNodeRefs(nodes.get(id), -1);
+      nodes.set(id, node);
+      adjustNodeRefs(node, 1);
       return;
     }
     if (op.op === "remove") {
-      if (!nodes.delete(String(op.id))) {
+      const id = String(op.id);
+      const node = nodes.get(id);
+      if (!node) {
         throw new Error(`remove of unknown node ${op.id}`);
       }
+      adjustNodeRefs(node, -1);
+      nodes.delete(id);
       return;
     }
     if (op.op === "patchArray") {
@@ -33,6 +57,8 @@ export function createMirrorStore() {
       if (!entry) {
         throw new Error(`patchArray target ${op.id}.${op.key} missing`);
       }
+      adjustRef(entry.ref, -1);
+      adjustRef(op.ref, 1);
       nodes.set(String(op.id), {
         ...node,
         arrays: { ...node.arrays, [op.key]: { ...entry, ref: op.ref } },
@@ -50,6 +76,7 @@ export function createMirrorStore() {
 
   function clear() {
     nodes.clear();
+    arrayRefCounts.clear();
   }
 
   function ids() {
@@ -66,13 +93,11 @@ export function createMirrorStore() {
 
   // Every array ref any mirror node references (the live blob set).
   function liveRefs() {
-    const refs = new Set();
-    for (const node of nodes.values()) {
-      for (const entry of Object.values(node.arrays || {})) {
-        refs.add(entry.ref);
-      }
-    }
-    return refs;
+    return new Set(arrayRefCounts.keys());
+  }
+
+  function refCount(ref) {
+    return arrayRefCounts.get(ref) || 0;
   }
 
   // Per-message blob-cache GC: drop cache entries no mirror node references.
@@ -105,6 +130,7 @@ export function createMirrorStore() {
     entries,
     size,
     liveRefs,
+    refCount,
     gcBlobCache,
     toObject,
   };

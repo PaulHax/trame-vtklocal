@@ -75,6 +75,7 @@ test("first commit's upserts reproduce the full node graph", async () => {
     [...mirror.liveRefs()].sort(),
     ["c2:conn-1:off-1", "c:pts-hash-1"],
   );
+  assert.equal(mirror.refCount("c:pts-hash-1"), 1);
 });
 
 test("upserts deep-copy nodes so later message mutation cannot leak in", async () => {
@@ -153,6 +154,37 @@ test("patchArray re-refs the entry and preserves its other metadata", async () =
   });
   assert.ok(mirror.liveRefs().has("v:5:points:1"));
   assert.ok(!mirror.liveRefs().has("c:pts-hash-1"));
+  assert.equal(mirror.refCount("c:pts-hash-1"), 0);
+  assert.equal(mirror.refCount("v:5:points:1"), 1);
+});
+
+test("ref counts track content aliases across patches and removal", async () => {
+  const createMirrorStore = await loadMirrorStore();
+  const mirror = createMirrorStore();
+  const node = (ref) => ({
+    type: "vtkPolyData",
+    arrays: { points: { ref, dataType: "Float32Array" } },
+  });
+  mirror.applyOps([
+    { op: "upsert", id: "a", node: node("c:shared") },
+    { op: "upsert", id: "b", node: node("c:shared") },
+  ]);
+  assert.equal(mirror.refCount("c:shared"), 2);
+
+  mirror.applyOp({
+    op: "patchArray",
+    id: "a",
+    key: "points",
+    offset: 0,
+    data: new Float32Array([1]),
+    dataType: "Float32Array",
+    ref: "v:a:points:1",
+  });
+  assert.equal(mirror.refCount("c:shared"), 1);
+  assert.equal(mirror.refCount("v:a:points:1"), 1);
+
+  mirror.applyOp({ op: "remove", id: "b" });
+  assert.equal(mirror.refCount("c:shared"), 0);
 });
 
 test("contract violations throw for the engine to resync on", async () => {

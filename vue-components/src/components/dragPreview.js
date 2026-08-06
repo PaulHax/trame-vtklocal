@@ -92,6 +92,64 @@ export function createDragPreview({
     return origin && normal ? intersectPlane(near, far, origin, normal) : null;
   }
 
+  function journalSlot(array, values, offset) {
+    let journal = active.undo.find(
+      (entry) => entry.array === array && entry.offset === offset,
+    );
+    if (!journal) {
+      journal = {
+        array,
+        values,
+        offset,
+        confirmed: values.slice(offset, offset + 3),
+        optimistic: null,
+      };
+      active.undo.push(journal);
+    }
+    return journal;
+  }
+
+  function restoreUndo({ clear = false } = {}) {
+    if (!active) return false;
+    let restored = false;
+    for (const entry of active.undo) {
+      if (entry.offset + 2 >= entry.values.length) continue;
+      for (let component = 0; component < 3; component += 1) {
+        // A structural replacement may reuse the same typed array and overwrite
+        // this slot without a patch op. Restore only bytes still carrying our
+        // last overlay; anything else is newer external/server state.
+        if (
+          entry.optimistic &&
+          Object.is(
+            entry.values[entry.offset + component],
+            entry.optimistic[component],
+          )
+        ) {
+          entry.values[entry.offset + component] = entry.confirmed[component];
+        } else if (entry.optimistic) {
+          entry.confirmed[component] = entry.values[entry.offset + component];
+        }
+      }
+      entry.optimistic = null;
+      entry.array.modified?.();
+      restored = true;
+    }
+    if (clear) active.undo.length = 0;
+    if (restored) {
+      getInstance?.(active.pointsNodeId)?.modified?.();
+      getInstance?.(active.pick.nodeId)?.modified?.();
+      requestRender?.();
+    }
+    return restored;
+  }
+
+  function cancelPreview() {
+    if (!active) return false;
+    const restored = restoreUndo({ clear: true });
+    active = null;
+    return restored;
+  }
+
   function write(world) {
     if (!active || !world) return false;
     const array = getBoundArray?.(active.pointsNodeId, "points");
@@ -103,20 +161,20 @@ export function createDragPreview({
       // array shrank past it: writing through a stale index would move a
       // DIFFERENT point. Stop previewing; server confirmations own the rest
       // of the drag.
-      active = null;
+      cancelPreview();
       return false;
     }
     if (values.length !== active.expectedLength) {
       if (active.expectedLength !== null && !active.trackById) {
         // Structural change with no point identity to re-target by.
-        active = null;
+        cancelPreview();
         return false;
       }
       active.expectedLength = values.length;
     }
-    values[offset] = world[0];
-    values[offset + 1] = world[1];
-    values[offset + 2] = world[2];
+    const journal = journalSlot(array, values, offset);
+    values.set(world, offset);
+    journal.optimistic = values.slice(offset, offset + 3);
     array.modified?.();
     getInstance?.(active.pointsNodeId)?.modified?.();
     getInstance?.(active.pick.nodeId)?.modified?.();
@@ -125,44 +183,47 @@ export function createDragPreview({
     return true;
   }
 
-  function readBoundWorld() {
-    if (!active) return null;
-    const values = getBoundArray?.(active.pointsNodeId, "points")?.getData?.();
-    const pointIndex = currentPointIndex();
-    const offset = pointIndex * 3;
-    if (pointIndex < 0 || !values || offset + 2 >= values.length) return null;
-    return [values[offset], values[offset + 1], values[offset + 2]];
-  }
-
-  function patchTouchesPoint(op) {
+  function matchingPatchData(op) {
     if (
       !active ||
       op?.op !== "patchArray" ||
       String(op.id) !== active.pointsNodeId ||
       op.key !== "points"
     ) {
-      return false;
+      return null;
     }
-    const pointIndex = currentPointIndex();
-    if (pointIndex < 0) return false;
-    let length = 0;
     try {
-      length = viewAsTypedArray(op.data, op.dataType).length;
+      return viewAsTypedArray(op.data, op.dataType);
     } catch {
-      return false;
+      return null;
     }
-    const pointStart = pointIndex * 3;
-    const patchStart = Number(op.offset);
-    const patchEnd = patchStart + length;
-    return patchStart < pointStart + 3 && patchEnd > pointStart;
   }
 
-  function messageConfirmsPoint(message) {
-    if (!active || !Array.isArray(message?.ops)) return false;
-    return message.ops.some(patchTouchesPoint);
+  // Reconciler patches have already landed when reapply() runs. Fold exactly
+  // the covered typed-array elements into the undo journal before putting the
+  // optimistic overlay back; untouched components retain their prior server
+  // values instead of accidentally adopting optimistic neighbors.
+  function absorbConfirmations(message) {
+    if (!active || !Array.isArray(message?.ops)) return;
+    const currentArray = getBoundArray?.(active.pointsNodeId, "points");
+    for (const op of message.ops) {
+      const data = matchingPatchData(op);
+      if (!data) continue;
+      const patchStart = Number(op.offset);
+      const patchEnd = patchStart + data.length;
+      for (const entry of active.undo) {
+        if (entry.array !== currentArray) continue;
+        const overlapStart = Math.max(entry.offset, patchStart);
+        const overlapEnd = Math.min(entry.offset + 3, patchEnd);
+        for (let index = overlapStart; index < overlapEnd; index += 1) {
+          entry.confirmed[index - entry.offset] = data[index - patchStart];
+        }
+      }
+    }
   }
 
   function start(payload) {
+    cancelPreview();
     const pick = payload?.pick;
     if (!pick?.preview || pick.pointsNodeId == null) {
       active = null;
@@ -177,10 +238,9 @@ export function createDragPreview({
       // index fallback and ids can never resolve it.
       trackById: Array.isArray(ids) && ids[pick.pointIndex] != null,
       world: null,
-      confirmedWorld: null,
       expectedLength: null,
+      undo: [],
     };
-    active.confirmedWorld = readBoundWorld();
     return true;
   }
 
@@ -188,32 +248,20 @@ export function createDragPreview({
     if (!active) return false;
     const world = previewWorld(payload);
     if (active.pick.preview === "cloud" && !world) {
-      const confirmedWorld = active.confirmedWorld;
-      if (active.world && confirmedWorld) write(confirmedWorld);
-      if (active) active.world = null;
+      if (active.world) restoreUndo();
+      active.world = null;
       return false;
     }
     return write(world);
   }
 
   function reapply(message = null) {
-    if (messageConfirmsPoint(message)) {
-      active.confirmedWorld = readBoundWorld();
-    }
+    absorbConfirmations(message);
     return active?.world ? write(active.world) : false;
   }
 
-  function end(payload = null) {
-    const solvedWorld =
-      active?.pick.preview === "cloud" ? previewWorld(payload) : null;
-    if (solvedWorld && !payload?.cancelled) {
-      write(solvedWorld);
-      active = null;
-      return;
-    }
-    const confirmedWorld = active?.confirmedWorld;
-    if (active?.world && confirmedWorld) write(confirmedWorld);
-    active = null;
+  function end() {
+    cancelPreview();
   }
 
   function targets(nodeId) {

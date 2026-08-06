@@ -559,6 +559,21 @@ export function useSceneSync(
     });
   }
 
+  // Move previewable point arrays onto private runtime buffers while applying
+  // scene state, before a pointer can grab them. This keeps pointer moves free
+  // of whole-array copies and keeps the blob cache canonical.
+  function protectPreviewBindings() {
+    const synchronizerContext = managedSyncContext?.synchronizerContext;
+    for (const entry of pickables.values()) {
+      if (!entry.preview) continue;
+      const points = entry.mapper?.getInputData?.(0);
+      const pointsNodeId = synchronizerContext?.getInstanceId?.(points);
+      if (pointsNodeId !== undefined && pointsNodeId !== null) {
+        reconciler?.protectLocalWrites?.(String(pointsNodeId), "points");
+      }
+    }
+  }
+
   // Everything the scene owes a frame before it is painted. Views ask for this
   // one pass, so a new pre-paint pass is added here and nowhere else — no view
   // has to carry its own copy of the list.
@@ -571,6 +586,7 @@ export function useSceneSync(
   function afterApply(message) {
     sceneTopologyVersion += 1;
     bindPrimaryCameraToRenderers();
+    protectPreviewBindings();
     beforeRender();
     dragPreview.reapply(message);
   }

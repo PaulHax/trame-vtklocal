@@ -283,7 +283,13 @@ test("switching a fixed cloud to adaptive hands the budget over without dropping
 
     const governor = view.governor();
     assert.equal(governor.activeMembers, 1);
-    assert.equal(governor.aggregateBudget, 300000);
+    assert.equal(
+      governor.aggregateBudget,
+      governor.members[0].demandPoints,
+      "the configured ceiling is capped at what the cloud can spend",
+    );
+    assert.ok(governor.aggregateBudget > 0);
+    assert.ok(governor.aggregateBudget <= 300000);
     assert.equal(
       view.row("42").stats.pointBudget,
       governor.members[0].effectiveBudget,
@@ -416,16 +422,27 @@ test("changing adaptive options reconfigures the governor for every cloud", asyn
     view.renderers[0].addActor(first.anchor);
     view.renderers[0].addActor(second.anchor);
     await streamed(view);
-    assert.equal(view.governor().aggregateBudget, 300000);
-    assert.equal(view.governor().targetFrameTimeMs, 33);
+    let governor = view.governor();
+    assert.equal(
+      governor.aggregateBudget,
+      governor.members.reduce((sum, member) => sum + member.demandPoints, 0),
+      "the initial budget is capped at the clouds' spendable demand",
+    );
+    assert.ok(governor.aggregateBudget <= 300000);
+    assert.equal(governor.targetFrameTimeMs, 33);
 
-    // A new wire block: a bigger ceiling and a slacker settled target,
-    // absorbed by the governor in place — memberships included.
+    // A new wire block: a bigger configured ceiling and a slacker settled
+    // target, absorbed by the governor in place — memberships included. The
+    // effective aggregate remains capped at what these tiny fixtures can draw.
     view.apply("42", pinnedAdaptive(500000, { stationaryTargetMs: 50 }));
     view.update();
 
-    const governor = view.governor();
-    assert.equal(governor.aggregateBudget, 500000);
+    governor = view.governor();
+    assert.equal(
+      governor.aggregateBudget,
+      governor.members.reduce((sum, member) => sum + member.demandPoints, 0),
+    );
+    assert.ok(governor.aggregateBudget <= 500000);
     assert.equal(governor.targetFrameTimeMs, 50);
     assert.equal(governor.activeMembers, 2, "both clouds re-registered");
     assert.deepEqual(

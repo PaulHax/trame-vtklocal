@@ -28,12 +28,7 @@ _PRESENTATION_CONFIGS = weakref.WeakKeyDictionary()
 
 
 def _is_positive_finite(value):
-    """The client's ``isPositiveFinite``, mirrored.
-
-    A presentation value the client rejects costs the whole ``pointCloudLod``
-    block — normalizeConfig returns null and the cloud never renders — so the
-    same rule has to hold here, where the caller still sees the error.
-    """
+    """Apply the client's numeric validation before emitting a wire block."""
     return math.isfinite(value) and value > 0
 
 
@@ -126,11 +121,8 @@ def mark_point_cloud_lod(
 ):
     """Mark a mapper to translate as a streamed LOD point-cloud anchor.
 
-    ``source_asset_id`` is the durable session/source asset identity —
-    the id client-side picking scopes its queries by and echoes back as
-    provenance. It is deliberately separate from the URL-safe tile-service id,
-    which lives only inside ``endpoint``: the two must never be conflated,
-    because gesture identity has to survive tile-service re-registration.
+    ``source_asset_id`` is the durable identity used to scope client picks and
+    report provenance. It is distinct from the tile-service id in ``endpoint``.
 
     ``endpoint`` is the revision-scoped base URL of the tile service (no
     trailing slash), e.g. ``/pointcloud/<asset>/<revision>``. Node bounds and

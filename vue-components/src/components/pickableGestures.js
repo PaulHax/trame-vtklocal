@@ -41,11 +41,8 @@ export function createPickableGestures({
 } = {}) {
   let context = null;
   let backgroundClickEnabled = !!emitBackgroundClick;
-  // Policy hook: given the pick under the pointer and the raw pointer event,
-  // decide whether this press should begin a drag (vs. fall through so the app
-  // pans). Default: any hit grabs. The fork owns the hit test and the drag
-  // lifecycle; the app owns this policy (modifier keys, per-pin rules, a
-  // "locked" mode) and installs it via setShouldGrab.
+  // Policy hook for deciding whether a hit begins a drag or falls through to
+  // the host. The default grabs every hit.
   let shouldGrab = () => true;
 
   // Active drag lifecycle state. The pick is frozen at drag start: the target

@@ -11,12 +11,9 @@ function newRecord(id) {
   };
 }
 
-// Applied runtime identity, kept separate from the serialized mirror. One
-// record per mirrored ID answers "which vtk instance is applied for this ID,
-// and is it current" — the mirror answers everything about desired state,
-// including type and ref topology. Records stay stable while an ID remains
-// mirrored so a held record never retains a retired instance; removal deletes
-// the record (the retained object reports "removed" to any holder).
+// Applied vtk instance identity, separate from serialized desired state.
+// Records remain stable until removal so holders cannot retain retired
+// instances after a replacement.
 export function createAppliedRegistry({ synchronizerContext } = {}) {
   const records = new Map();
   let instanceRevision = 0;
@@ -51,9 +48,7 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
     return record;
   }
 
-  // Reconciliation can inherit a widget-owned root or a test/application
-  // instance registered before this registry existed. This is an observation
-  // at the reconciliation boundary, not a supported out-of-band mutation path.
+  // Adopt a root or external instance registered before reconciliation starts.
   function adoptRegistered(id, appliedType = null) {
     const record = ensureRecord(id);
     const instance = synchronizerContext?.getInstance?.(record.id) ?? null;
@@ -129,7 +124,7 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
   }
 
   function clear() {
-    for (const record of [...records.values()]) {
+    for (const record of records.values()) {
       remove(record.id);
     }
   }

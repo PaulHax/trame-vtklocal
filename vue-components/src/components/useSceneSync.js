@@ -579,9 +579,7 @@ export function useSceneSync(
     }
   }
 
-  // Everything the scene owes a frame before it is painted. Views ask for this
-  // one pass, so a new pre-paint pass is added here and nowhere else — no view
-  // has to carry its own copy of the list.
+  // Apply all scene-derived render state before painting.
   function beforeRender() {
     updateDistanceToCameraGlyphsForRender();
     updatePointCloudLodsForRender();
@@ -766,8 +764,7 @@ export function useSceneSync(
     if (cameraInteractionStack.includes(true)) reportCamera();
   }
 
-  // The gesture's own `report` flag comes off the stack, so callers need pass
-  // nothing here — whatever `begin` declared is what `end` retracts.
+  // End the most recently opened camera gesture.
   function endCameraInteraction() {
     if (cameraInteractionStack.length === 0) return;
     const reported = cameraInteractionStack.pop();

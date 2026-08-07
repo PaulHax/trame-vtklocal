@@ -1,36 +1,10 @@
-// Point-cloud LOD anchors: the `pointCloudLod` feature block handler and the
-// per-render update pass.
+// Point-cloud LOD feature-block lifecycle and per-render updates.
 //
-// A block arrival creates a registry entry keyed by the anchor mapper's node
-// id; the entry lazily builds a pointcloud-lod HttpTileSource + LOD
-// controller + renderer adapter once the anchor actor resolves. Resolution
-// happens at update time from the mirrored scene graph — the actor node whose
-// `mapper` slot names this entry, and the renderer whose `viewProps` carry
-// that actor — re-run once per applied sync message, since only a message can
-// change the topology. The anchor may live in ANY of the view's synced
-// renderers — views layer world geometry, video underlay, and annotations as
-// separate VTK renderers — and the streamed tile actors are hosted in the
-// same renderer as the anchor so they depth-composite in the anchor's layer.
-// Camera state feeds the controller on every applied
-// message and interactor render; anchor actor state (UserMatrix correction,
-// visibility, point size) fans out to the streamed tile actors on the same
-// cadence. Streaming, budgets, cancellation, and caching all live in the
-// library — this module is only the wiring.
-//
-// The entry outlives its streaming stack, never the other way round: an anchor
-// that was live and then disappears takes actors, controller and view-budget
-// membership with it, leaving the normalized block to rebuild from if it comes
-// back. Budget mode and adaptive options are reconciled the same way, as a
-// whole, so nothing keeps drawing to a number an older block asked for.
-//
-// Renders are requested exclusively through the view's coalescing render
-// callback; nothing here calls renderWindow.render().
-//
-// The per-render update also forwards every rendered camera to the governor's
-// motion classifier: every camera that reaches LOD passes through here, so
-// pointer gestures, locked-video playback, timeline scrubbing, programmatic
-// animation and server-applied camera commands are all covered without any of
-// them having to announce itself.
+// Each mapper entry resolves its anchor actor and renderer from the mirrored
+// ref graph. Its streamed actors share that renderer so transforms, visibility,
+// depth composition, and camera updates remain consistent with the anchor.
+// Streaming resources exist only while the anchor is live. Render requests go
+// through the view's coalescing callback.
 
 import {
   DEFAULTS as LOD_DEFAULTS,
@@ -257,9 +231,8 @@ export function readCameraView(renderer, renderWindow) {
   return { ...common, projection: "orthographic", parallelScale };
 }
 
-// Scoped point pick against ONE streamed cloud, addressed by its durable
-// sourceAssetId (never the tile-service id inside the endpoint, never "the
-// frontmost cloud"). Returns the wire-shaped solve:
+// Scoped point pick against one streamed cloud, addressed by sourceAssetId.
+// Returns the wire-shaped solve:
 //
 //   { status: "hit", asset_id, revision, nodes, world, distance_px }
 //   { status: "miss", asset_id, revision, nodes }
@@ -267,17 +240,9 @@ export function readCameraView(renderer, renderWindow) {
 //   hidden cloud, non-drawing host renderer, unreadable camera, or a
 //   non-similarity anchor transform.
 //
-// Only the explicit miss authorizes a caller's fallback, so every doubtful
-// state must land on null rather than an empty sweep. The provenance fields
-// are read from the matched entry, never echoed from the request: a caller
-// comparing them against what it asked for is verifying the query really ran
-// against the cloud it named.
-//
-// The anchor's live UserMatrix is read per query and handed to the
-// controller as its model matrix before solving, so the sweep runs under the
-// transform the user is looking at and the hit comes back in world
-// coordinates — display scene-local ENU even while a correction preview is
-// mid-flight.
+// Only an explicit miss authorizes fallback; unavailable or ambiguous state
+// returns null. Provenance comes from the matched entry. The live anchor
+// transform is applied for every query and hits are returned in world space.
 export function pickPointCloudPoint(
   registry,
   sourceAssetId,
@@ -731,9 +696,7 @@ function retakeMotionReferences(registry, governor) {
 // governor that no longer exists.
 function reconcileViewGovernor(registry, motionDebounceMs) {
   const adaptive = desiredGovernorOptions(registry);
-  // `context.motionDebounceMs` exists so a test can shorten the inferred
-  // burst debounce; nothing in the component chain supplies one, so every
-  // view runs on the library's own default.
+  // Omit the override to use the library's motion debounce.
   const options =
     adaptive !== null &&
     Number.isFinite(motionDebounceMs) &&
@@ -905,13 +868,9 @@ export function disposePointCloudLods(registry) {
     resetStreaming(entry);
   }
   registry.clear();
-  // Hand the references back before dropping the slots holding them. The
-  // governor is disposed on the next line, which makes the counts moot — but
-  // "we release everything we took" has to be true of this teardown on its own
-  // terms, not because of what the line after it happens to do.
+  // Release references independently of governor disposal.
   for (const slot of explicitMotionSlots.get(registry) ?? []) {
     slot.reference?.release();
-    slot.reference = null;
   }
   explicitMotionSlots.delete(registry);
   viewGovernorOf(registry)?.dispose();

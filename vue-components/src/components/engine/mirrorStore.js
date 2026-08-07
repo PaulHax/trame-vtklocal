@@ -7,11 +7,9 @@
 // contract (removing an unknown id, patching a missing array) throw so the
 // engine can fall back to a resync.
 //
-// Beside the nodes the store maintains derived indexes — array ref counts and
-// forward/reverse ref edges — updated in `applyOp` so they can never diverge
-// from the authoritative node refs. A removed target keeps its incoming
-// edges (they belong to the referrers); that is what makes create-after-remove
-// reattachment resolvable without rescanning the scene.
+// Derived array counts and ref-edge indexes are updated with each operation.
+// Removing a target preserves its incoming edges because those edges belong to
+// the referrers and are needed if the target is recreated.
 
 import { deepClone } from "./values";
 

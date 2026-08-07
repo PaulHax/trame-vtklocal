@@ -215,8 +215,8 @@ class VtkJsBaseView(HtmlElement):
         While armed, click gestures solve their ``cloud_solve`` against this
         streamed-cloud asset id — background clicks included, and overriding
         any glyph's ``depth_asset_id`` tag under the cursor. ``None`` restores
-        the tag-based enrichment. A setting push: the solve itself still
-        arrives synchronously inside each gesture payload.
+        tag-based enrichment. The solve arrives synchronously in the gesture
+        payload.
         """
         self.server.js_call(self._ref, "setArmedCloudPick", asset_id)
 

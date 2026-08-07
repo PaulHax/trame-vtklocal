@@ -34,6 +34,7 @@ from trame_vtklocal.module.node_translator import (
     translate_object,
     translate_scene,
 )
+from trame_vtklocal.module.node_arrays import restore_dataset_blobs
 from trame_vtklocal.module.state_cache import ParsedStateCache
 from trame_vtklocal.store import SceneStore
 from trame_vtklocal.widgets.blob_payloads import (
@@ -494,9 +495,16 @@ class ScenePublisher:
         # re-serialize is the only call that re-registers it; the
         # content-addressed refs are unchanged, so the built nodes stay
         # valid — only the payloads they cite are repopulated.
-        new_nodes = [node for node_id, node in nodes.items() if node_id not in known]
-        if new_nodes and nodes_reference_missing_blob(object_manager, new_nodes):
+        new_nodes = {
+            node_id: node for node_id, node in nodes.items() if node_id not in known
+        }
+        if new_nodes and nodes_reference_missing_blob(
+            object_manager, new_nodes.values()
+        ):
             object_manager.UpdateStatesFromObjects([self._rw_id])
+            if nodes_reference_missing_blob(object_manager, new_nodes.values()):
+                for node_id, node in new_nodes.items():
+                    restore_dataset_blobs(object_manager, node_id, node)
         return nodes
 
     def _refresh_translation_cache_index(self):

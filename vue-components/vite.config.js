@@ -11,44 +11,22 @@ const tiles3dWorkerSource = fileURLToPath(
   ),
 );
 
-const tiles3dCodecSources = new Map([
+const tiles3dCodecSources = new Map(
   [
     "draco_wasm_wrapper.js",
-    fileURLToPath(
-      new URL(
-        "./node_modules/pointcloud-lod/dist/tiles3d-codecs/draco_wasm_wrapper.js",
-        import.meta.url,
-      ),
-    ),
-  ],
-  [
     "draco_decoder.wasm",
-    fileURLToPath(
-      new URL(
-        "./node_modules/pointcloud-lod/dist/tiles3d-codecs/draco_decoder.wasm",
-        import.meta.url,
-      ),
-    ),
-  ],
-  [
     "basis_encoder.js",
-    fileURLToPath(
-      new URL(
-        "./node_modules/pointcloud-lod/dist/tiles3d-codecs/basis_encoder.js",
-        import.meta.url,
-      ),
-    ),
-  ],
-  [
     "basis_encoder.wasm",
+  ].map((name) => [
+    name,
     fileURLToPath(
       new URL(
-        "./node_modules/pointcloud-lod/dist/tiles3d-codecs/basis_encoder.wasm",
+        `./node_modules/pointcloud-lod/dist/tiles3d-codecs/${name}`,
         import.meta.url,
       ),
     ),
-  ],
-]);
+  ]),
+);
 
 const stageTiles3dRuntime = {
   name: "stage-tiles3d-runtime",

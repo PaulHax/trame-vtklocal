@@ -356,7 +356,7 @@ def test_vtk_reconstituted_subclass_recovers_source_after_wrapper_dies():
 
 
 def test_registered_source_stays_authoritative_for_stale_and_reconstituted_wrappers():
-    registry = streamed_scene._StreamedSceneRegistry()
+    registry = streamed_scene_registry._StreamedSceneRegistry()
     renderer = vtkRenderer()
     original_source = _source()
     current_source = _source(revision="current")
@@ -383,8 +383,8 @@ def test_registered_source_stays_authoritative_for_stale_and_reconstituted_wrapp
 
 def test_unrecoverable_streamed_subclass_source_loss_raises_loudly():
     actor = StreamedSceneActor(_source())
-    address = streamed_scene._actor_address(actor)
-    streamed_scene._forget_registration(address)
+    address = streamed_scene_registry._actor_address(actor)
+    streamed_scene_registry._forget_registration(address)
     del actor._source
     api, _window, _renderer, root_id = _scene(actor)
 
@@ -417,13 +417,13 @@ def test_publisher_full_init_and_structural_pass_retain_then_release_registry():
 
 def test_dead_unscoped_actor_leaves_no_address_tombstone():
     actor = StreamedSceneActor(_source())
-    address = streamed_scene._actor_address(actor)
+    address = streamed_scene_registry._actor_address(actor)
     original = weakref.ref(actor)
     del actor
     gc.collect()
 
     assert original() is None
-    assert not streamed_scene._has_registration(address)
+    assert not streamed_scene_registry._has_registration(address)
 
 
 def test_same_address_and_id_reuse_is_rejected_by_vtk_identity(monkeypatch):
@@ -433,7 +433,7 @@ def test_same_address_and_id_reuse_is_rejected_by_vtk_identity(monkeypatch):
         "_actor_address",
         lambda _actor: forced_address,
     )
-    registry = streamed_scene._StreamedSceneRegistry()
+    registry = streamed_scene_registry._StreamedSceneRegistry()
     old_actor = StreamedSceneActor(_source())
     registry.resolve(old_actor, "17")
     plain_replacement = vtkActor()
@@ -467,7 +467,7 @@ def test_publisher_cleanup_releases_its_registry_scope():
 
 def test_two_publishers_release_shared_actor_independently():
     actor = StreamedSceneActor(_source())
-    address = streamed_scene._actor_address(actor)
+    address = streamed_scene_registry._actor_address(actor)
     api1, window1, renderer1, root1 = _scene(actor)
     api2, window2, renderer2, root2 = _scene(actor)
     publisher1 = ScenePublisher(_Server(), api1, window1, root1)
@@ -484,7 +484,7 @@ def test_two_publishers_release_shared_actor_independently():
 
         assert actor_id1 not in publisher1._streamed_scene_registry.object_ids()
         assert actor_id2 in publisher2._streamed_scene_registry.object_ids()
-        assert streamed_scene._has_registration(address)
+        assert streamed_scene_registry._has_registration(address)
 
         actor.source = _source(revision="shared-current")
         publisher2.sync()
@@ -493,7 +493,7 @@ def test_two_publishers_release_shared_actor_independently():
 
         renderer2.RemoveActor(actor)
         publisher2.sync()
-        assert not streamed_scene._has_registration(address)
+        assert not streamed_scene_registry._has_registration(address)
     finally:
         publisher1.cleanup()
         publisher2.cleanup()

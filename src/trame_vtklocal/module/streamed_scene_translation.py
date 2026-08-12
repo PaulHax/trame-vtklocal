@@ -1,11 +1,11 @@
 """Actor-specific translation for the synthetic streamed scene anchor."""
 
+from trame_vtklocal.module.streamed_scene_registry import streamed_scene_source
 from trame_vtklocal.module.vtkjs_translator import actor_user_matrix_property
 from trame_vtklocal.streamed_scene import (
     STREAMED_SCENE_BLOCK,
     STREAMED_SCENE_TYPE,
     source_block,
-    streamed_scene_source,
 )
 
 
@@ -27,10 +27,3 @@ def translate_actor(reader, state, props, refs):
         {},
         {STREAMED_SCENE_BLOCK: source_block(source)},
     )
-
-
-def ensure_streamed_refs(node, node_type):
-    """The synthetic wire contract includes an explicit empty ref mapping."""
-    if node_type == STREAMED_SCENE_TYPE:
-        node["refs"] = {}
-    return node

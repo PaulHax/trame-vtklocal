@@ -44,8 +44,10 @@ export const TILES3D_ASSET_URLS = Object.freeze({
   }),
 });
 
-const absoluteAssetUrl = (value) =>
-  new URL(value, globalThis.location?.href ?? "http://localhost/").href;
+// Test and worker contexts have no `location`; every URL read shares one base.
+const pageUrl = () => globalThis.location?.href ?? "http://localhost/";
+
+const absoluteAssetUrl = (value) => new URL(value, pageUrl()).href;
 
 const tiles3dWasmUrls = () => ({
   draco: {
@@ -61,9 +63,6 @@ const tiles3dWasmUrls = () => ({
 let pageWorkerPool = null;
 let pageWorkerReferences = 0;
 const pageWorkers = {
-  get size() {
-    return pageWorkerPool?.size ?? 0;
-  },
   decode(request) {
     if (!pageWorkerPool) {
       pageWorkerPool = new DecodeWorkerPool({
@@ -316,9 +315,12 @@ function rowNorm(matrix, row) {
 
 const PERSPECTIVE_W_RATIO_FLOOR = 1e-6;
 
-export function readCameraView(renderer, renderWindow) {
+export function readCameraView(
+  renderer,
+  renderWindow,
+  metrics = getViewportMetrics(renderer, renderWindow),
+) {
   const camera = renderer?.getActiveCamera?.();
-  const metrics = getViewportMetrics(renderer, renderWindow);
   if (!camera || !metrics) return null;
   const viewProj = getWorldToClipMatrix(camera, metrics.aspect);
   const position = camera.getPosition?.();
@@ -414,26 +416,18 @@ export function isHeadlessBrowserUserAgent(userAgent) {
   return /(?:HeadlessChrome|HeadlessChromium)/i.test(String(userAgent ?? ""));
 }
 
-function requestedTexturePolicy() {
+function queryParam(name) {
   try {
-    return new URL(
-      globalThis.location?.href ?? "http://localhost/",
-    ).searchParams.get("tiles3dTexturePolicy");
+    return new URL(pageUrl()).searchParams.get(name);
   } catch {
     return null;
   }
 }
 
-function requestedTiles3dQualityPolicy() {
-  try {
-    const requested = new URL(
-      globalThis.location?.href ?? "http://localhost/",
-    ).searchParams.get("tiles3dQualityPolicy");
-    return requested === "fixed" ? "fixed" : "adaptive";
-  } catch {
-    return "adaptive";
-  }
-}
+const requestedTexturePolicy = () => queryParam("tiles3dTexturePolicy");
+
+const requestedTiles3dQualityPolicy = () =>
+  queryParam("tiles3dQualityPolicy") === "fixed" ? "fixed" : "adaptive";
 
 export function texturePolicyRgbaReason(renderer, userAgent, requestedPolicy) {
   if (isSoftwareWebGLRenderer(renderer)) return "software-renderer";
@@ -457,10 +451,13 @@ function readWebGLRenderer(gl) {
   };
 }
 
-function probeTextureEnvironment(context) {
+function contextGl(context) {
   const openGLRenderWindow =
     context?.openGLRenderWindow ?? context?.renderWindow?.getViews?.()?.[0];
-  const gl = openGLRenderWindow?.getContext?.();
+  return openGLRenderWindow?.getContext?.() ?? null;
+}
+
+function probeTextureEnvironment(gl) {
   if (!gl) {
     return {
       capabilities: {
@@ -494,8 +491,6 @@ function releaseEntry(entry) {
   entry.active = false;
 }
 
-const finitePositiveDepth = (value) => Number.isFinite(value) && value > 0;
-
 const nearlyEqual = (left, right) =>
   Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
 
@@ -521,27 +516,17 @@ function describeMember(entry) {
     };
   }
   const submissions = raw.submissions ?? {};
+  // The member's renderer counters are the diagnostic surface verbatim, so a
+  // counter added upstream shows up without an edit here. Only the submission
+  // fields are renamed, because their bare names would not say "submission".
   return {
     ...raw,
-    residentGeometryBytes: renderer.residentGeometryBytes ?? 0,
-    logicalGeometryUploadBytes: renderer.logicalGeometryUploadBytes ?? 0,
-    logicalTextureUploadBytes: renderer.logicalTextureUploadBytes ?? 0,
-    logicalUploadBytes: renderer.logicalUploadBytes ?? 0,
-    submittedTextureBytes: renderer.submittedTextureBytes ?? 0,
-    pooledTextureBytes: renderer.pooledTextureBytes ?? 0,
-    residentTextureBytes: renderer.residentTextureBytes ?? 0,
-    residentBytes: renderer.residentBytes ?? 0,
-    textureRepresentation: renderer.textureRepresentation ?? "none",
+    ...renderer,
     textureFormats: [...(renderer.textureFormats ?? [])],
     queuedSubmissionJobs: submissions.queuedJobs ?? 0,
     queuedSubmissionBytes: submissions.queuedBytes ?? 0,
     lastFrameAdmittedJobs: submissions.lastFrameAdmittedJobs ?? 0,
     lastFrameAdmittedBytes: submissions.lastFrameAdmittedBytes ?? 0,
-    drawnTiles: renderer.drawnTiles ?? 0,
-    drawnActors: renderer.drawnActors ?? 0,
-    drawnPrimitives: renderer.drawnPrimitives ?? 0,
-    drawnTextureBytes: renderer.drawnTextureBytes ?? 0,
-    drawnTriangles: renderer.drawnTriangles ?? 0,
   };
 }
 
@@ -581,20 +566,22 @@ export function createStreamedSceneHost(options = {}) {
     options.tiles3dQualityPolicy === "fixed"
       ? "fixed"
       : requestedTiles3dQualityPolicy();
-  const pageWorkers = options.workers ? null : acquirePageWorkers();
+  const workerLease = options.workers ? null : acquirePageWorkers();
+  const workers = options.workers ?? workerLease.workers;
   const textureCapabilities = {
     capabilityKey: "compressed-texture-v1:rgba",
     compressedFormats: [],
   };
   let webglRenderer = { vendor: null, renderer: null, version: null };
   let rgbaReason = null;
+  let probedGl = null;
   const memory = options.memory ?? getPageMemoryPool();
   const coordinator = (
     options.createCoordinator ?? createStreamedSceneCoordinator
   )({
     scheduleRender,
     memory,
-    workers: options.workers ?? pageWorkers.workers,
+    workers,
     textureCapabilities,
     ...(options.coordinatorOptions ?? {}),
   });
@@ -603,13 +590,22 @@ export function createStreamedSceneHost(options = {}) {
   let lastContext = null;
 
   function reconcileTextureCapabilities(context) {
-    const environment = options.textureCapabilities
-      ? {
-          capabilities: options.textureCapabilities,
-          renderer: options.webglRenderer ?? webglRenderer,
-          rgbaReason: options.rgbaReason ?? rgbaReason,
-        }
-      : probeTextureEnvironment(context);
+    let environment;
+    if (options.textureCapabilities) {
+      environment = {
+        capabilities: options.textureCapabilities,
+        renderer: options.webglRenderer ?? webglRenderer,
+        rgbaReason: options.rgbaReason ?? rgbaReason,
+      };
+    } else {
+      // GPU capabilities can only change with the GL context itself, and the
+      // probe costs ~9 GL entry-point calls plus a URL parse. beforeRender()
+      // runs it per paint and per applied message, so key it on the context.
+      const gl = contextGl(context);
+      if (gl && gl === probedGl) return;
+      probedGl = gl;
+      environment = probeTextureEnvironment(gl);
+    }
     const next = environment.capabilities;
     webglRenderer = { ...environment.renderer };
     rgbaReason = environment.rgbaReason ?? null;
@@ -804,9 +800,11 @@ export function createStreamedSceneHost(options = {}) {
     coordinator.prepareFrame();
   }
 
-  function queryState(entry, cssX, cssY) {
+  // `resolved` lets a caller that has already resolved this entry's renderer
+  // skip a second referrer scan over the whole mirror.
+  function queryState(entry, cssX, cssY, resolved = null) {
     if (!lastContext || !entry.member || !entry.registration) return null;
-    const renderer = resolveRenderer(entry, lastContext, true);
+    const renderer = resolved ?? resolveRenderer(entry, lastContext, true);
     if (
       !renderer ||
       !entry.member ||
@@ -816,8 +814,8 @@ export function createStreamedSceneHost(options = {}) {
     ) {
       return null;
     }
-    const view = readCameraView(renderer, lastContext.renderWindow);
     const metrics = getViewportMetrics(renderer, lastContext.renderWindow);
+    const view = readCameraView(renderer, lastContext.renderWindow, metrics);
     if (!view || !metrics) return null;
     const x = cssX - metrics.leftCssPx;
     const y = cssY - metrics.topCssPx;
@@ -864,7 +862,7 @@ export function createStreamedSceneHost(options = {}) {
       targetResult.status === "miss" ? Infinity : targetResult.rayDepth;
     if (
       targetResult.status !== "miss" &&
-      (targetResult.status !== "hit" || !finitePositiveDepth(targetDepth))
+      (targetResult.status !== "hit" || !isPositiveFinite(targetDepth))
     ) {
       return null;
     }
@@ -877,7 +875,7 @@ export function createStreamedSceneHost(options = {}) {
       const blockerRenderer = resolveRenderer(blocker, lastContext, true);
       if (!blockerRenderer) return null;
       if (!rendererDraws(blockerRenderer)) continue;
-      const blockerQuery = queryState(blocker, cssX, cssY);
+      const blockerQuery = queryState(blocker, cssX, cssY, blockerRenderer);
       if (!blockerQuery) return null;
       if (blockerQuery.status === "outside") continue;
       if (!sameCursorRay(targetQuery.ray, blockerQuery.ray)) return null;
@@ -888,7 +886,7 @@ export function createStreamedSceneHost(options = {}) {
       );
       if (!result) return null;
       if (result.status === "clear") continue;
-      if (result.status !== "hit" || !finitePositiveDepth(result.rayDepth)) {
+      if (result.status !== "hit" || !isPositiveFinite(result.rayDepth)) {
         return null;
       }
       if (result.rayDepth < targetDepth && result.rayDepth < closestDepth) {
@@ -985,7 +983,7 @@ export function createStreamedSceneHost(options = {}) {
           stats: describeMember(entry),
         })),
         coordinator: coordinatorStats,
-        decodePool: (options.workers ?? pageWorkers.workers).stats?.() ?? null,
+        decodePool: workers.stats?.() ?? null,
         textureCapabilities: {
           capabilityKey: textureCapabilities.capabilityKey,
           compressedFormats: [...textureCapabilities.compressedFormats],
@@ -1019,7 +1017,7 @@ export function createStreamedSceneHost(options = {}) {
       for (const entry of entries.values()) releaseEntry(entry);
       entries.clear();
       coordinator.dispose();
-      pageWorkers?.release();
+      workerLease?.release();
     },
   };
 }

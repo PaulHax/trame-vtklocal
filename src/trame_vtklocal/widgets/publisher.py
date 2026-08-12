@@ -36,7 +36,7 @@ from trame_vtklocal.module.node_translator import (
 )
 from trame_vtklocal.module.state_cache import ParsedStateCache
 from trame_vtklocal.store import SceneStore
-from trame_vtklocal.streamed_scene import _StreamedSceneRegistry
+from trame_vtklocal.module.streamed_scene_registry import _StreamedSceneRegistry
 from trame_vtklocal.widgets.blob_payloads import (
     attach_binary,
     nodes_reference_missing_blob,
@@ -380,11 +380,10 @@ class ScenePublisher:
         if result is not None:
             leaving |= result["refs_leaving"]
         self._notify_blob_registry(leaving)
-        if batch and batch.structural:
-            self._tracker.sync_observers()
-            self._refresh_translation_cache_index()
-            self._retain_streamed_scene_actors()
-        elif batch:
+        # A structural batch already rebuilt the observer graph and both index
+        # caches in _commit_batch, before translation; nothing between there
+        # and here touches VTK, so repeating that O(scene) pass is pure waste.
+        if batch and not batch.structural:
             self._tracker.refresh_dataset_children(batch.candidates)
 
     # ------------------------------------------------------------------

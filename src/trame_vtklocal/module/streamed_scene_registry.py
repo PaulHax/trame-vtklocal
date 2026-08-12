@@ -125,11 +125,8 @@ def _register_actor(actor, source):
 
 
 def _update_registered_source(actor, source):
-    registration = _registration_for_actor(actor)
-    if registration is None:
-        registration = _new_registration(actor, source)
-    else:
-        registration.source = source
+    registration = _register_actor(actor, source)
+    registration.source = source
     return registration
 
 
@@ -179,9 +176,7 @@ class _StreamedSceneRegistry:
     def _associate(self, actor, object_id, source):
         object_id = str(object_id)
         address = _actor_address(actor)
-        registration = _registration_for_actor(actor)
-        if registration is None:
-            registration = _new_registration(actor, source)
+        registration = _register_actor(actor, source)
         # Once registered, this source is authoritative. A stale wrapper or
         # scoped entry may associate with it but can never write it back.
         source = registration.source

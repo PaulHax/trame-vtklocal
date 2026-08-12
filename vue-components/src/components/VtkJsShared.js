@@ -25,18 +25,17 @@ export default {
     let repaintCallback = null;
 
     // Measure only the paint's wall-time (not the pre-render camera/LOD update
-    // pass) and report it to the adaptive-quality budget loop.
-    function paintAndRecord(paint, completesPaint = false) {
+    // pass) and report it to the adaptive-quality budget loop. Callers that
+    // actually land pixels pass recordPaintDuration, which also closes a frame.
+    function paintAndRecord(
+      paint,
+      record = (ms) => scene.recordFrameDuration(ms),
+    ) {
       const start = performance.now();
       try {
         return paint();
       } finally {
-        const duration = performance.now() - start;
-        if (completesPaint) {
-          scene.recordPaintDuration(duration);
-        } else {
-          scene.recordFrameDuration(duration);
-        }
+        record(performance.now() - start);
       }
     }
 
@@ -115,7 +114,7 @@ export default {
           : undefined;
       paintAndRecord(
         () => externalRenderWindow?.renderExternal?.(hostState),
-        true,
+        (ms) => scene.recordPaintDuration(ms),
       );
     }
 

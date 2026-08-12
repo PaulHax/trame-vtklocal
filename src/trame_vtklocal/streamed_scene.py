@@ -12,6 +12,13 @@ from dataclasses import dataclass
 
 from vtkmodules.vtkRenderingCore import vtkActor
 
+from trame_vtklocal.module.streamed_scene_registry import (
+    _register_actor,
+    _registered_source,
+    _registration_for_actor,
+    _update_registered_source,
+)
+
 STREAMED_SCENE_TYPE = "vtkStreamedSceneActor"
 STREAMED_SCENE_BLOCK = "streamedScene"
 
@@ -264,19 +271,6 @@ def _validate_source(source):
     if not isinstance(source, _SOURCE_TYPES):
         raise TypeError("source must be a PointCloudSource or Tiles3DSource")
     return source
-
-
-from trame_vtklocal.module.streamed_scene_registry import (  # noqa: E402
-    _StreamedSceneRegistry as _StreamedSceneRegistry,
-    _actor_address as _actor_address,
-    _forget_registration as _forget_registration,
-    _has_registration as _has_registration,
-    _register_actor as _register_actor,
-    _registration_for_actor as _registration_for_actor,
-    _registered_source as _registered_source,
-    _update_registered_source as _update_registered_source,
-    streamed_scene_source as streamed_scene_source,
-)
 
 
 def _is_vtk_reconstitution(value):

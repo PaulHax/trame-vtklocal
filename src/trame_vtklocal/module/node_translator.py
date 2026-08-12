@@ -16,10 +16,7 @@ from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_arrays import polydata_array_entries
 from trame_vtklocal.module.state_cache import SceneReader
-from trame_vtklocal.module.streamed_scene_translation import (
-    ensure_streamed_refs,
-    translate_actor,
-)
+from trame_vtklocal.module.streamed_scene_translation import translate_actor
 from trame_vtklocal.module.vtkjs_translator import (
     CAMERA_PROPERTIES,
     COLLECTION_TYPES,
@@ -35,6 +32,7 @@ from trame_vtklocal.module.vtkjs_translator import (
     map_class_name,
     to_camel_case,
 )
+from trame_vtklocal.streamed_scene import STREAMED_SCENE_TYPE
 
 # The only ref slots a node may carry (state key -> slot name), keyed by
 # vtk.js type. Everything else that looks like a reference stays out of the
@@ -304,7 +302,9 @@ def _translate_mapper(reader, state, vtkjs_type):
     if projected_texture:
         node_type = ptx.PROJECTED_TEXTURE_TYPE
         blocks["projectedTexture"] = projected_texture
-    point_presentation.apply_point_cloud_presentation_block(vtk_mapper, blocks)
+    presentation = point_presentation.point_cloud_presentation_config(vtk_mapper)
+    if presentation:
+        blocks[point_presentation.POINT_CLOUD_PRESENTATION_BLOCK] = presentation
 
     return _make_node(node_type, props, refs, {}, blocks)
 
@@ -322,9 +322,11 @@ def _translate_generic(reader, state, vtkjs_type):
     if vtkjs_type == "vtkActor":
         vtkjs_type, props, refs, blocks = translate_actor(reader, state, props, refs)
 
-    return ensure_streamed_refs(
-        _make_node(vtkjs_type, props, refs, {}, blocks), vtkjs_type
-    )
+    node = _make_node(vtkjs_type, props, refs, {}, blocks)
+    if vtkjs_type == STREAMED_SCENE_TYPE:
+        # Explicit empty map, not an omitted slot: it must clear a mapper ref.
+        node["refs"] = {}
+    return node
 
 
 def _translate_node(reader, obj_id):
@@ -359,12 +361,7 @@ def scene_reader(
     )
 
 
-def translate_object(
-    object_manager,
-    obj_id,
-    camera_authority="server",
-    reader=None,
-):
+def translate_object(object_manager, obj_id, camera_authority="server", reader=None):
     """Translate one object into its flat node.
 
     Returns ``None`` for objects that never become nodes (SKIP_TYPES,

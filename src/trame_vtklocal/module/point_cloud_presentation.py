@@ -31,9 +31,3 @@ def clear_point_cloud_presentation(mapper):
 def point_cloud_presentation_config(mapper):
     config = _PRESENTATION_CONFIGS.get(mapper)
     return dict(config) if config else None
-
-
-def apply_point_cloud_presentation_block(mapper, blocks):
-    """Add the direct-mapper presentation block when configured."""
-    if presentation := point_cloud_presentation_config(mapper):
-        blocks[POINT_CLOUD_PRESENTATION_BLOCK] = presentation

@@ -417,10 +417,9 @@ export function useSceneSync(
     reconciler.registerBlockHandler(
       STREAMED_SCENE_BLOCK_KEY,
       (nodeId, block, instance) => {
+        // No host and nothing to apply means there is also nothing to remove.
         if (!block && !streamedSceneHost) return;
-        streamedSceneHost
-          ? streamedSceneHost.applyBlock(nodeId, block, instance)
-          : ensureStreamedSceneHost().applyBlock(nodeId, block, instance);
+        ensureStreamedSceneHost().applyBlock(nodeId, block, instance);
       },
     );
     reconciler.registerBlockHandler(

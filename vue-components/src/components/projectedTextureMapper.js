@@ -8,15 +8,14 @@
 // Modeled on vtk.js's in-tree vtkCutterMapper: a renderable subclass carrying
 // declarative props plus a vtkOpenGLPolyDataMapper subclass overriding
 // replaceShaderValues/setMapperShaderParameters, registered with
-// registerOverride (scene graph) and vtkObjectManager.setTypeMapping (state
-// sync). Because the mapper's type and props live in serialized state, a full
-// scene re-serialization rebuilds it correctly with no reapply hook.
+// registerOverride (scene graph). syntheticTypes.js owns its state-sync type
+// mapping. Because the mapper's type and props live in serialized state, a
+// full scene re-serialization rebuilds it correctly with no reapply hook.
 import macro from "@kitware/vtk.js/macros";
 import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
 import vtkOpenGLPolyDataMapper from "@kitware/vtk.js/Rendering/OpenGL/PolyDataMapper";
 import vtkShaderProgram from "@kitware/vtk.js/Rendering/OpenGL/ShaderProgram";
 import { registerOverride } from "@kitware/vtk.js/Rendering/OpenGL/ViewNodeFactory";
-import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
 
 import { getExternalTextures } from "./externalTextures";
 
@@ -331,17 +330,11 @@ export const newOpenGLInstance = macro.newInstance(
 );
 
 // ----------------------------------------------------------------------------
-// Registration: scene-graph instantiation (renderable -> OpenGL node) and
-// state-sync instantiation (serialized type -> renderable). Both registries
-// take effect on import, like vtk.js's own CutterMapper.
+// Registration: renderable -> OpenGL scene-graph node. Serialized type
+// construction is centralized in syntheticTypes.js.
 // ----------------------------------------------------------------------------
 
 registerOverride("vtkProjectedTextureMapper", newOpenGLInstance);
-vtkObjectManager.setTypeMapping(
-  "vtkProjectedTextureMapper",
-  newInstance,
-  vtkObjectManager.genericUpdater,
-);
 
 export default {
   newInstance,

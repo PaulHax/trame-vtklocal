@@ -28,19 +28,10 @@ import {
 } from "./pickables";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 import {
-  applyPointCloudLodBlock,
-  describePointCloudLodGovernor,
-  describePointCloudLodRegistry,
-  disposePointCloudLods,
-  beginPointCloudLodInteraction,
-  endPointCloudLodInteraction,
+  createStreamedSceneHost,
   enrichGestureWithCloudSolve,
-  pickPointCloudPoint,
-  pointCloudLodNeedsFrame,
-  recordPointCloudLodHostFrame,
-  updatePointCloudLods,
-  POINT_CLOUD_LOD_BLOCK_KEY,
-} from "./pointCloudLod";
+  STREAMED_SCENE_BLOCK_KEY,
+} from "./streamedSceneHost";
 import {
   applyPointCloudPresentationBlock,
   updatePointCloudPresentations,
@@ -53,7 +44,14 @@ import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
 
 export function useSceneSync(
-  { client, emit, getRenderWindow, renderScene, cameraAuthority = "server" },
+  {
+    client,
+    emit,
+    getRenderWindow,
+    getOpenGLRenderWindow,
+    renderScene,
+    cameraAuthority = "server",
+  },
   dependencies = {},
 ) {
   const {
@@ -63,6 +61,8 @@ export function useSceneSync(
     createReconciler: createReconcilerImpl = createReconciler,
     createSceneEngine: createSceneEngineImpl = createSceneEngine,
     vtkObjectManager: vtkObjectManagerImpl = vtkObjectManager,
+    createStreamedSceneHost:
+      createStreamedSceneHostImpl = createStreamedSceneHost,
   } = dependencies;
 
   let managedSyncContext = null;
@@ -85,7 +85,7 @@ export function useSceneSync(
   let cameraReportFrame = 0;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
-  const pointCloudLods = new Map();
+  let streamedSceneHost = null;
   const pointCloudPresentations = new Map();
   // Server-pushed armed pick spec: while set, click gestures solve cloud
   // depth against this asset id instead of the picked glyph's tag. View
@@ -95,6 +95,25 @@ export function useSceneSync(
   // Once the host reports whole-frame metrics, the raw paint durations stop
   // being fed to the budget loop so the same frame is never counted twice.
   let hostFrameFeedbackSeen = false;
+  // Streamed members publish their selected/drawn state from beforeRender().
+  // Keep an explicit public paint boundary so support clients can distinguish
+  // that prepared state from pixels which have actually reached the canvas.
+  let preparedFrameSerial = 0;
+  let completedFrameSerial = 0;
+  let completedPreparedFrameSerial = 0;
+  let sceneSeqAtLastPaint = -1;
+
+  function ensureStreamedSceneHost() {
+    if (!streamedSceneHost) {
+      streamedSceneHost = createStreamedSceneHostImpl({
+        scheduleRender: () => renderRequestCallback?.(),
+      });
+      if (cameraInteractionStack.length > 0) {
+        streamedSceneHost.beginInteraction();
+      }
+    }
+    return streamedSceneHost;
+  }
 
   function getRenderer() {
     return getPrimaryRenderer(getRenderWindow?.() || null);
@@ -325,7 +344,8 @@ export function useSceneSync(
     cancelCameraReport();
     distanceToCameraGlyphs.clear();
     pickables.clear();
-    disposePointCloudLods(pointCloudLods);
+    streamedSceneHost?.dispose();
+    streamedSceneHost = null;
     pointCloudPresentations.clear();
     hostFrameFeedbackSeen = false;
     managedSyncContext?.cleanup?.();
@@ -395,11 +415,13 @@ export function useSceneSync(
       },
     );
     reconciler.registerBlockHandler(
-      POINT_CLOUD_LOD_BLOCK_KEY,
-      (nodeId, block, instance) =>
-        applyPointCloudLodBlock(pointCloudLods, nodeId, block, instance, () =>
-          renderRequestCallback?.(),
-        ),
+      STREAMED_SCENE_BLOCK_KEY,
+      (nodeId, block, instance) => {
+        if (!block && !streamedSceneHost) return;
+        streamedSceneHost
+          ? streamedSceneHost.applyBlock(nodeId, block, instance)
+          : ensureStreamedSceneHost().applyBlock(nodeId, block, instance);
+      },
     );
     reconciler.registerBlockHandler(
       POINT_CLOUD_PRESENTATION_BLOCK_KEY,
@@ -503,15 +525,19 @@ export function useSceneSync(
       lastAppliedOp,
       queueLength: bufferLength,
       syncedRootId,
+      rendering: {
+        preparedFrameSerial,
+        completedFrameSerial,
+        completedPreparedFrameSerial,
+        sceneSeqAtLastPaint,
+      },
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
         distanceToCameraGlyphs,
       ),
       pickables: describePickableRegistry(pickables),
-      // Streamed clouds plus the one adaptive budget they share, so an
-      // effective point count can be explained without reading internals.
-      pointCloudLod: {
-        clouds: describePointCloudLodRegistry(pointCloudLods),
-        governor: describePointCloudLodGovernor(pointCloudLods),
+      streamedScene: streamedSceneHost?.describe() ?? {
+        members: [],
+        coordinator: null,
       },
       externalTextures: peekExternalTextures(
         getRenderWindow?.() || null,
@@ -543,17 +569,12 @@ export function useSceneSync(
     });
   }
 
-  function updatePointCloudLodsForRender() {
-    // Camera + anchor-actor fan-out for streamed LOD point clouds; the
-    // controller debounces selection internally, so per-message and
-    // per-interactor-render calls stay cheap.
+  function updateStreamedSceneForRender() {
     updatePointCloudPresentations(pointCloudPresentations);
-    // No `motionDebounceMs` here: the classifier's own constant is the
-    // debounce every view runs on.
-    return updatePointCloudLods(pointCloudLods, {
+    streamedSceneHost?.beforeRender({
       renderers: getRenderers(),
       renderWindow: getRenderWindow?.(),
-      scheduleRender: () => renderRequestCallback?.(),
+      openGLRenderWindow: getOpenGLRenderWindow?.(),
       referrersOf,
       getInstance,
       topologyVersion: sceneTopologyVersion,
@@ -580,8 +601,15 @@ export function useSceneSync(
   // one pass, so a new pre-paint pass is added here and nowhere else — no view
   // has to carry its own copy of the list.
   function beforeRender() {
+    preparedFrameSerial += 1;
     updateDistanceToCameraGlyphsForRender();
-    updatePointCloudLodsForRender();
+    updateStreamedSceneForRender();
+  }
+
+  function notePaintCompleted() {
+    completedFrameSerial += 1;
+    completedPreparedFrameSerial = preparedFrameSerial;
+    sceneSeqAtLastPaint = engine?.getDiagnostics?.()?.mySeq ?? -1;
   }
 
   // The post-apply pass every applied message runs, snapshot or ops.
@@ -598,7 +626,7 @@ export function useSceneSync(
   // one. Without this the settled regime would stop measuring the moment the
   // host went idle, and quality would freeze wherever motion left it.
   function requestFrameWhileBudgetWorks() {
-    if (pointCloudLodNeedsFrame(pointCloudLods)) renderRequestCallback?.();
+    if (streamedSceneHost?.needsFrame()) renderRequestCallback?.();
   }
 
   // The view measures each paint's wall-time and reports it here; it feeds the
@@ -606,7 +634,7 @@ export function useSceneSync(
   // cloud has adaptive enabled).
   function recordFrameDuration(durationMs) {
     if (!hostFrameFeedbackSeen) {
-      recordPointCloudLodHostFrame(pointCloudLods, {
+      streamedSceneHost?.recordHostFrame({
         hostFrameMs: durationMs,
         vtkFrameMs: durationMs,
       });
@@ -614,9 +642,14 @@ export function useSceneSync(
     }
   }
 
+  function recordPaintDuration(durationMs) {
+    notePaintCompleted();
+    recordFrameDuration(durationMs);
+  }
+
   function recordHostFrame(metrics) {
     hostFrameFeedbackSeen = true;
-    recordPointCloudLodHostFrame(pointCloudLods, metrics);
+    streamedSceneHost?.recordHostFrame(metrics);
     requestFrameWhileBudgetWorks();
   }
 
@@ -635,10 +668,7 @@ export function useSceneSync(
   // frontmost cloud". Null means unavailable; only an explicit
   // {status: "miss"} authorizes a caller's fallback.
   function pickCloudPoint(sourceAssetId, cssX, cssY) {
-    return pickPointCloudPoint(pointCloudLods, sourceAssetId, cssX, cssY, {
-      renderWindow: getRenderWindow?.(),
-      synchronizerContext: managedSyncContext?.synchronizerContext,
-    });
+    return streamedSceneHost?.pickAsset(sourceAssetId, cssX, cssY) ?? null;
   }
 
   // Arm (or disarm with null) the click-time cloud-solve override. While
@@ -756,7 +786,7 @@ export function useSceneSync(
   function beginCameraInteraction({ report = true } = {}) {
     cameraInteractionStack.push(!!report);
     if (cameraInteractionStack.length === 1) {
-      beginPointCloudLodInteraction(pointCloudLods);
+      streamedSceneHost?.beginInteraction();
     }
   }
 
@@ -773,7 +803,7 @@ export function useSceneSync(
       reportCamera({ terminal: true });
     }
     if (cameraInteractionStack.length > 0) return;
-    endPointCloudLodInteraction(pointCloudLods);
+    streamedSceneHost?.endInteraction();
     reconciler?.flushDeferredProps?.();
     renderRequestCallback?.();
   }
@@ -845,6 +875,7 @@ export function useSceneSync(
     setHoverEnabled: gestures.setHoverEnabled,
     beforeRender,
     recordFrameDuration,
+    recordPaintDuration,
     recordHostFrame,
     getSyncDiagnostics,
     getAppliedSceneState,

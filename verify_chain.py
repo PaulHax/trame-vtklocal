@@ -18,8 +18,8 @@ an installed wheel can be asked which vtk.js it carries.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
-import importlib.util
 import json
 import re
 import subprocess
@@ -29,7 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PIN_FILE = ROOT / "vtkjs-fork.env"
 VUE = ROOT / "vue-components"
-POINT_CLOUD_LOD_PY = ROOT / "src" / "trame_vtklocal" / "module" / "point_cloud_lod.py"
+STREAMED_SCENE_PY = ROOT / "src" / "trame_vtklocal" / "streamed_scene.py"
 
 # The bundle is minified, so class names are mangled but the strings vtk.js
 # registers itself with survive verbatim. Quote style differs per bundler
@@ -156,11 +156,11 @@ def node_json(source: str, what: str):
 
 
 def check_adaptive_floor() -> dict:
-    """The Python marker's adaptive floor must be the library's own floor.
+    """The Python source validator's adaptive floor matches the library.
 
-    ``point_cloud_lod.py`` rejects a ``max_budget`` below the floor while
-    marking a mapper, but Python cannot import the number the JS validator
-    enforces, so it holds a copy. The library's index.ts publishes
+    ``PointCloudSource`` rejects a ``max_budget`` below the floor, but Python
+    cannot import the number the JS validator enforces, so it holds a copy.
+    The library's index.ts publishes
     ``DEFAULTS`` precisely so hosts read the floor instead of restating it —
     read it here, or a policy change leaves the two validators disagreeing
     about which configurations are legal.
@@ -173,19 +173,30 @@ def check_adaptive_floor() -> dict:
     if not isinstance(library, (int, float)):
         die(
             "pointcloud-lod no longer exports DEFAULTS.minBudget; the Python "
-            f"marker's floor in {POINT_CLOUD_LOD_PY.name} has nothing to track"
+            f"source floor in {STREAMED_SCENE_PY.name} has nothing to track"
         )
 
-    spec = importlib.util.spec_from_file_location(
-        "trame_vtklocal_point_cloud_lod", POINT_CLOUD_LOD_PY
+    tree = ast.parse(STREAMED_SCENE_PY.read_text())
+    assignment = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "DEFAULT_ADAPTIVE_MIN_BUDGET"
+                for target in node.targets
+            )
+        ),
+        None,
     )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    python = module.DEFAULT_ADAPTIVE_MIN_BUDGET
+    if assignment is None:
+        die(f"{STREAMED_SCENE_PY.name} has no DEFAULT_ADAPTIVE_MIN_BUDGET")
+    python = ast.literal_eval(assignment.value)
 
     if python != library:
         die(
-            f"{POINT_CLOUD_LOD_PY.name} DEFAULT_ADAPTIVE_MIN_BUDGET is {python:_} but "
+            f"{STREAMED_SCENE_PY.name} DEFAULT_ADAPTIVE_MIN_BUDGET is {python:_} but "
             f"pointcloud-lod DEFAULTS.minBudget is {library:_}. The two validators "
             "would accept different max_budget values; set the Python copy to the "
             "library's floor."

@@ -36,6 +36,7 @@ from trame_vtklocal.module.node_translator import (
 )
 from trame_vtklocal.module.state_cache import ParsedStateCache
 from trame_vtklocal.store import SceneStore
+from trame_vtklocal.streamed_scene import _StreamedSceneRegistry
 from trame_vtklocal.widgets.blob_payloads import (
     attach_binary,
     nodes_reference_missing_blob,
@@ -109,6 +110,7 @@ class ScenePublisher:
         self._store = SceneStore(self._rw_str)
         self._state_cache = ParsedStateCache()
         self._class_names = {}
+        self._streamed_scene_registry = _StreamedSceneRegistry()
 
         self._hot_arrays = HotArrayDiffer(
             self._live_hot_array,
@@ -144,9 +146,10 @@ class ScenePublisher:
         # from pre-publisher serialization don't hide from targeted GC.
         self._prune_object_manager(include_blobs=True)
         self._refresh_window_states()
-        self._store.transact().upsert_nodes(self._translate_full_scene()).commit()
         self._tracker.sync_observers()
         self._refresh_translation_cache_index()
+        self._store.transact().upsert_nodes(self._translate_full_scene()).commit()
+        self._retain_streamed_scene_actors()
         self._notify_blob_registry(frozenset())
 
     def sync(self):
@@ -279,6 +282,7 @@ class ScenePublisher:
         self._resync_callbacks.clear()
         self._state_cache.clear()
         self._class_names.clear()
+        self._streamed_scene_registry.cleanup()
 
     def _schedule_publish(self):
         if self._disposed or self._publish_scheduled:
@@ -322,6 +326,13 @@ class ScenePublisher:
             with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
                 self._update_pipeline_producers(batch.producers)
                 self._refresh_object_states(batch.refresh_ids)
+                if batch.structural:
+                    # Refresh the live dependency ids before translation so a
+                    # removed streamed registration cannot match a new actor
+                    # that reuses its C++ address in this same structural pass.
+                    self._tracker.sync_observers()
+                    self._refresh_translation_cache_index()
+                    self._retain_streamed_scene_actors()
                 nodes = self._translate_candidates(batch.candidates)
         tx = self._store.transact()
         for node_id, node in nodes.items():
@@ -372,6 +383,7 @@ class ScenePublisher:
         if batch and batch.structural:
             self._tracker.sync_observers()
             self._refresh_translation_cache_index()
+            self._retain_streamed_scene_actors()
         elif batch:
             self._tracker.refresh_dataset_children(batch.candidates)
 
@@ -449,6 +461,7 @@ class ScenePublisher:
                     camera_authority=self._camera_authority,
                     state_cache=self._state_cache,
                     class_names=self._class_names,
+                    streamed_scene_registry=self._streamed_scene_registry,
                 )
 
     def _translate_candidates(self, candidate_ids):
@@ -463,6 +476,7 @@ class ScenePublisher:
             self._camera_authority,
             state_cache=self._state_cache,
             class_names=self._class_names,
+            streamed_scene_registry=self._streamed_scene_registry,
         )
         while pending:
             node_id = pending.pop()
@@ -503,6 +517,9 @@ class ScenePublisher:
         self._class_names.clear()
         self._class_names.update(self._tracker.classes())
         self._state_cache.retain(self._class_names)
+
+    def _retain_streamed_scene_actors(self):
+        self._streamed_scene_registry.retain(self._class_names, self._object_manager)
 
     def _live_hot_array(self, node_id, key):
         return live_dataset_array(self._object_manager, node_id, key)

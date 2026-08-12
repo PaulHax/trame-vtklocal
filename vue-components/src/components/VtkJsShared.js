@@ -26,12 +26,17 @@ export default {
 
     // Measure only the paint's wall-time (not the pre-render camera/LOD update
     // pass) and report it to the adaptive-quality budget loop.
-    function paintAndRecord(paint) {
+    function paintAndRecord(paint, completesPaint = false) {
       const start = performance.now();
       try {
         return paint();
       } finally {
-        scene.recordFrameDuration(performance.now() - start);
+        const duration = performance.now() - start;
+        if (completesPaint) {
+          scene.recordPaintDuration(duration);
+        } else {
+          scene.recordFrameDuration(duration);
+        }
       }
     }
 
@@ -47,6 +52,7 @@ export default {
       client,
       emit,
       getRenderWindow: () => renderWindow,
+      getOpenGLRenderWindow: () => externalRenderWindow,
       renderScene,
       cameraAuthority: props.cameraAuthority,
     });
@@ -107,7 +113,10 @@ export default {
               drawBuffers: options.drawBuffers,
             }
           : undefined;
-      paintAndRecord(() => externalRenderWindow?.renderExternal?.(hostState));
+      paintAndRecord(
+        () => externalRenderWindow?.renderExternal?.(hostState),
+        true,
+      );
     }
 
     function onRenderRequested(callback) {

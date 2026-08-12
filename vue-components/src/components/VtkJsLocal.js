@@ -38,7 +38,7 @@ export default {
         renderWindow?.render?.();
       } finally {
         const duration = performance.now() - start;
-        scene.recordHostFrame({ hostFrameMs: duration, vtkFrameMs: duration });
+        scene.recordPaintDuration(duration);
       }
     }
 
@@ -46,6 +46,7 @@ export default {
       client,
       emit,
       getRenderWindow: () => renderWindow,
+      getOpenGLRenderWindow: () => openGLRenderWindow,
       renderScene,
       cameraAuthority: props.cameraAuthority,
     });
@@ -128,7 +129,9 @@ export default {
 
       interactorRenderSubscription?.unsubscribe?.();
       interactorRenderSubscription = null;
-      cameraSubscriptions.forEach((subscription) => subscription.unsubscribe?.());
+      cameraSubscriptions.forEach((subscription) =>
+        subscription.unsubscribe?.(),
+      );
       cameraSubscriptions = [];
 
       resizeObserver?.disconnect?.();

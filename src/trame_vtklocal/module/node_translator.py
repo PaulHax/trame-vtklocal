@@ -1,30 +1,25 @@
 """Flat-node translator for the scene store (push sync v2).
 
-Translates a ``vtkObjectManager`` scene into flat :mod:`trame_vtklocal.store`
-nodes: ``{"type", "props", "refs", "arrays", "blocks"}`` keyed by the string
-object-manager id. Structure is data (``refs``), array payloads are refs into
-the blob namespaces (``c:`` content hash, ``c2:`` packed cell arrays), and
-feature seams (pickable, distanceToCamera, projectedTexture) ride as opaque
-``blocks``.
-
-The translation knowledge (class maps, skip lists, property fixups,
-field-array bridging, cell packing shape, userMatrix) lives in the shared
-``vtkjs_translator`` tables. Callers own the render-window ``Render()`` /
+Translates a ``vtkObjectManager`` scene into flat store nodes. Shared tables
+own class maps/fixups. Callers own render-window ``Render()`` /
 ``UpdateStatesFromObjects()`` / dtc-bypass choreography (as the publisher
 does); the translator only reads object-manager state plus live objects.
 
-Under ``camera_authority="client"`` (see :mod:`.camera_authority`), cameras
-never become nodes and no ref slot points at one — no dangling refs either way.
+Client-authority cameras never become nodes or refs.
 """
 
 from __future__ import annotations
 
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
-from trame_vtklocal.module import point_cloud_lod as pcl
+from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_arrays import polydata_array_entries
 from trame_vtklocal.module.state_cache import SceneReader
+from trame_vtklocal.module.streamed_scene_translation import (
+    ensure_streamed_refs,
+    translate_actor,
+)
 from trame_vtklocal.module.vtkjs_translator import (
     CAMERA_PROPERTIES,
     COLLECTION_TYPES,
@@ -36,7 +31,6 @@ from trame_vtklocal.module.vtkjs_translator import (
     SKIP_PROPERTIES,
     SKIP_TYPES,
     VTK_LIGHT_TYPE_MAP,
-    actor_user_matrix_property,
     get_ref_id,
     map_class_name,
     to_camel_case,
@@ -310,7 +304,7 @@ def _translate_mapper(reader, state, vtkjs_type):
     if projected_texture:
         node_type = ptx.PROJECTED_TEXTURE_TYPE
         blocks["projectedTexture"] = projected_texture
-    node_type = pcl.apply_point_cloud_blocks(vtk_mapper, node_type, blocks)
+    point_presentation.apply_point_cloud_presentation_block(vtk_mapper, blocks)
 
     return _make_node(node_type, props, refs, {}, blocks)
 
@@ -323,15 +317,14 @@ def _translate_mapper(reader, state, vtkjs_type):
 def _translate_generic(reader, state, vtkjs_type):
     props = _scalar_props(state, vtkjs_type)
     refs = _slot_refs(reader, state, vtkjs_type)
+    blocks = {}
 
     if vtkjs_type == "vtkActor":
-        # vtkObjectManager doesn't serialize the actor's UserMatrix; read it
-        # off the live object. Unset stays absent (matches vtk.js null).
-        user_matrix = actor_user_matrix_property(reader.vtk_object(state["Id"]))
-        if user_matrix is not None:
-            props["userMatrix"] = user_matrix
+        vtkjs_type, props, refs, blocks = translate_actor(reader, state, props, refs)
 
-    return _make_node(vtkjs_type, props, refs, {}, {})
+    return ensure_streamed_refs(
+        _make_node(vtkjs_type, props, refs, {}, blocks), vtkjs_type
+    )
 
 
 def _translate_node(reader, obj_id):
@@ -353,6 +346,7 @@ def scene_reader(
     camera_authority="server",
     state_cache=None,
     class_names=None,
+    streamed_scene_registry=None,
 ):
     """A cached state reader, shareable across several ``translate_object``
     calls in one pass so referenced states are JSON-parsed once."""
@@ -361,10 +355,16 @@ def scene_reader(
         camera_authority,
         state_cache=state_cache,
         class_names=class_names,
+        streamed_scene_registry=streamed_scene_registry,
     )
 
 
-def translate_object(object_manager, obj_id, camera_authority="server", reader=None):
+def translate_object(
+    object_manager,
+    obj_id,
+    camera_authority="server",
+    reader=None,
+):
     """Translate one object into its flat node.
 
     Returns ``None`` for objects that never become nodes (SKIP_TYPES,
@@ -383,6 +383,7 @@ def translate_scene(
     camera_authority="server",
     state_cache=None,
     class_names=None,
+    streamed_scene_registry=None,
 ):
     """Translate every node reachable from ``root_id`` into ``{id: node}``.
 
@@ -395,6 +396,7 @@ def translate_scene(
         camera_authority,
         state_cache=state_cache,
         class_names=class_names,
+        streamed_scene_registry=streamed_scene_registry,
     )
     nodes = {}
     pending = [int(root_id)]

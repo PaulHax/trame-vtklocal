@@ -52,18 +52,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
   "/src/trame_vtklocal/**/*.py",
-  # Ship only the vtk.js WebGL shared-context assets (UMD bundle + css).
+  # Ship the vtk.js bundle plus the offline 3D Tiles decode runtime.
   "/src/trame_vtklocal/module/serve/js/**",
+  "/src/trame_vtklocal/module/serve/wasm/tiles3d/**",
   "/src/trame/**/*.py",
 ]
 # The wheel target's `packages` (below) recursively grabs the whole
-# src/trame_vtklocal tree, which would otherwise sweep in serve/wasm/ whenever
-# that runtime/dev artifact is populated locally. serve/wasm/ belongs solely to
-# the WASM LocalView path, which this fork's consumers never mount, so exclude
-# it explicitly to keep the wheel WASM-free (~800 KB) regardless of the working
-# tree's serve/wasm/ contents.
+# Exclude vtk-wasm LocalView runtimes while retaining the decoder assets above.
 exclude = [
-  "/src/trame_vtklocal/module/serve/wasm/**",
+  "/src/trame_vtklocal/module/serve/wasm/9.*",
 ]
 
 [tool.hatch.build.targets.wheel]

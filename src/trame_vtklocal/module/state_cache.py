@@ -56,9 +56,11 @@ class SceneReader:
         camera_authority="server",
         state_cache=None,
         class_names=None,
+        streamed_scene_registry=None,
     ):
         self.object_manager = object_manager
         self.camera_authority = validate_camera_authority(camera_authority)
+        self.streamed_scene_registry = streamed_scene_registry
         self._states = {}
         self._state_cache = state_cache
         self._class_names = class_names or {}

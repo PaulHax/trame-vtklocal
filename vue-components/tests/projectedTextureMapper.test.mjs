@@ -185,8 +185,8 @@ test("homography shift/scale fold matches the unrebased projection", async () =>
   }
 });
 
-test("importing the module registers both instantiation paths", async () => {
-  await loadMapperModule();
+test("synthetic registry owns state-sync mappings and projected OpenGL override", async () => {
+  await loadModule("/src/components/syntheticTypes.js");
   const { default: vtkObjectManager } = await loadModule(
     "/node_modules/@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager.js",
   );
@@ -199,6 +199,15 @@ test("importing the module registers both instantiation paths", async () => {
   assert.ok(
     vtkObjectManager.getSupportedTypes().includes("vtkProjectedTextureMapper"),
   );
+  assert.ok(
+    vtkObjectManager.getSupportedTypes().includes("vtkStreamedSceneActor"),
+  );
+  assert.equal(
+    vtkObjectManager.getSupportedTypes().includes("vtkPointCloudLodMapper"),
+    false,
+  );
+  const streamedActor = vtkObjectManager.build("vtkStreamedSceneActor", {});
+  assert.ok(streamedActor.isA("vtkActor"));
   const built = vtkObjectManager.build("vtkProjectedTextureMapper", {});
   assert.ok(built.isA("vtkProjectedTextureMapper"));
 

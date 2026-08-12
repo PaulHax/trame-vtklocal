@@ -1,11 +1,6 @@
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
-// Registers vtkProjectedTextureMapper with the scene graph and the state-sync
-// type mapping on import so serialized scenes can carry the type.
-import "./projectedTextureMapper";
-// Registers the dense-point vtkPointGaussianMapper state-sync type mapping.
-import "./pointGaussianMapper";
-// Registers the streamed point-cloud LOD anchor state-sync type mapping.
-import "./pointCloudLodMapper";
+// Registers every synthetic/state-sync type in one deterministic registry.
+import "./syntheticTypes";
 
 import { isLiveInstance } from "./predicates";
 
@@ -76,13 +71,43 @@ export function cleanupSyncContext(contextName) {
 }
 
 const CAMERA_FIELDS = [
-  { name: "position", getter: "getPosition", setter: "setPosition", spread: true },
-  { name: "focalPoint", getter: "getFocalPoint", setter: "setFocalPoint", spread: true },
+  {
+    name: "position",
+    getter: "getPosition",
+    setter: "setPosition",
+    spread: true,
+  },
+  {
+    name: "focalPoint",
+    getter: "getFocalPoint",
+    setter: "setFocalPoint",
+    spread: true,
+  },
   { name: "viewUp", getter: "getViewUp", setter: "setViewUp", spread: true },
-  { name: "viewAngle", getter: "getViewAngle", setter: "setViewAngle", spread: false },
-  { name: "parallelProjection", getter: "getParallelProjection", setter: "setParallelProjection", spread: false },
-  { name: "parallelScale", getter: "getParallelScale", setter: "setParallelScale", spread: false },
-  { name: "clippingRange", getter: "getClippingRange", setter: "setClippingRange", spread: true },
+  {
+    name: "viewAngle",
+    getter: "getViewAngle",
+    setter: "setViewAngle",
+    spread: false,
+  },
+  {
+    name: "parallelProjection",
+    getter: "getParallelProjection",
+    setter: "setParallelProjection",
+    spread: false,
+  },
+  {
+    name: "parallelScale",
+    getter: "getParallelScale",
+    setter: "setParallelScale",
+    spread: false,
+  },
+  {
+    name: "clippingRange",
+    getter: "getClippingRange",
+    setter: "setClippingRange",
+    spread: true,
+  },
 ];
 
 export function extractCameraParams(camera) {

@@ -118,6 +118,23 @@ defaultMemberFactories.register("tiles3d", (context, config) =>
 const nonEmptyString = (value) =>
   typeof value === "string" && value.length > 0 ? value : null;
 
+// The producer owns the affine contract: trame_vtklocal/streamed_scene.py
+// validates every published matrix against these same numbers. This boundary
+// re-checks payloads it did not build, so the rule has to be identical rather
+// than merely similar -- a second dialect here means a matrix one side calls
+// affine and the other rejects.
+export const AFFINE_ENTRY_ABS_TOL = 1e-12;
+const AFFINE_FIXED_ENTRIES = [
+  [3, 0],
+  [7, 0],
+  [11, 0],
+  [15, 1],
+];
+const AFFINE_DETERMINANT_FLOOR = 1e-15;
+
+const isAffineEntry = (value, expected) =>
+  Math.abs(value - expected) <= AFFINE_ENTRY_ABS_TOL;
+
 function normalizePresentation(value) {
   if (value?.mode === "fixed" && isPositiveFinite(value.diameterCssPx)) {
     return { mode: "fixed", diameterCssPx: Number(value.diameterCssPx) };
@@ -214,17 +231,16 @@ function normalizeTiles3d(value) {
     m[0] * (m[5] * m[10] - m[9] * m[6]) -
     m[4] * (m[1] * m[10] - m[9] * m[2]) +
     m[8] * (m[1] * m[6] - m[5] * m[2]);
-  if (!Number.isFinite(determinant) || Math.abs(determinant) <= 1e-15) {
+  if (
+    !Number.isFinite(determinant) ||
+    Math.abs(determinant) <= AFFINE_DETERMINANT_FLOOR
+  ) {
     return null;
   }
-  const affineEntry = (index, expected) =>
-    Math.abs(value.ecefToScene[index] - expected) <=
-    1e-12 + 1e-9 * Math.abs(expected);
   if (
-    !affineEntry(3, 0) ||
-    !affineEntry(7, 0) ||
-    !affineEntry(11, 0) ||
-    !affineEntry(15, 1)
+    !AFFINE_FIXED_ENTRIES.every(([index, expected]) =>
+      isAffineEntry(m[index], expected),
+    )
   ) {
     return null;
   }

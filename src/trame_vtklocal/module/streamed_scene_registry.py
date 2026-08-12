@@ -45,6 +45,7 @@ def _vtk_weak(actor):
 class _Registration:
     source: object
     vtk_object: vtkWeakReference
+    observer_tag: int | None = None
     scopes: set[int] = field(default_factory=set)
     ever_scoped: bool = False
 
@@ -59,25 +60,42 @@ _REGISTRATION_LOCK = threading.RLock()
 _REGISTRATIONS: dict[str, _Registration] = {}
 
 
+def _detach_observer(registration):
+    """Take the DeleteEvent hook back off the actor a registration watched.
+
+    The actor owns the observer, and the observer owns the closure that owns
+    the registration and its source, so a registration that leaves the table
+    without this stays alive — and re-registering the same actor stacks a
+    second hook — for as long as the actor lives.
+    """
+    if registration is None:
+        return
+    tag, registration.observer_tag = registration.observer_tag, None
+    if tag is None:
+        return
+    actor = registration.vtk_object.Get()
+    if actor is not None:
+        actor.RemoveObserver(tag)
+
+
 def _drop_registration(address, registration=None):
     with _REGISTRATION_LOCK:
         current = _REGISTRATIONS.get(address)
-        if registration is None or current is registration:
-            _REGISTRATIONS.pop(address, None)
+        if registration is not None and current is not registration:
+            return
+        dropped = _REGISTRATIONS.pop(address, None)
+    _detach_observer(dropped)
 
 
 def _on_vtk_delete(_vtk_object, _event, *, address, registration):
+    # The observer dies with the actor invoking it; nothing to detach.
+    registration.observer_tag = None
     _drop_registration(address, registration)
 
 
 def _new_registration(actor, source):
     address = _actor_address(actor)
     registration = _Registration(source=source, vtk_object=_vtk_weak(actor))
-    with _REGISTRATION_LOCK:
-        previous = _REGISTRATIONS.get(address)
-        if previous is not None and previous.resolves(actor):
-            return previous
-        _REGISTRATIONS[address] = registration
 
     def on_delete(vtk_object, event):
         _on_vtk_delete(
@@ -87,10 +105,13 @@ def _new_registration(actor, source):
             registration=registration,
         )
 
-    actor.AddObserver(
-        "DeleteEvent",
-        on_delete,
-    )
+    with _REGISTRATION_LOCK:
+        previous = _REGISTRATIONS.get(address)
+        if previous is not None and previous.resolves(actor):
+            return previous
+        registration.observer_tag = actor.AddObserver("DeleteEvent", on_delete)
+        _REGISTRATIONS[address] = registration
+    _detach_observer(previous)
     return registration
 
 

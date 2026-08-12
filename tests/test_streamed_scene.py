@@ -64,8 +64,24 @@ class _Server:
     protocol = _Protocol()
 
 
+# Tolerance agreement with the JS boundary. The same constants and the same
+# matrices are pinned in vue-components/tests/streamedSceneHost.test.mjs
+# ("fixed affine entries share one absolute tolerance with the producer").
+AFFINE_INSIDE_TOLERANCE = 9e-13
+AFFINE_OUTSIDE_TOLERANCE = 2e-12
+
+
 def _source(**overrides):
     return PointCloudSource(**{**POINT_SOURCE_ARGS, **overrides})
+
+
+def _matrix_with(index, value):
+    return (*IDENTITY[:index], value, *IDENTITY[index + 1 :])
+
+
+def _delete_observer_count(actor, limit=256):
+    """Count live observers. VTK exposes tags, not a count, so scan the tags."""
+    return sum(1 for tag in range(1, limit) if actor.GetCommand(tag) is not None)
 
 
 def _scene(actor):
@@ -452,6 +468,56 @@ source = PointCloudSource('asset', 'rev', '/endpoint', 1,
 assert StreamedSceneActor(source).source == source
 """
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_scene_membership_cycles_do_not_pile_up_delete_observers():
+    actor = StreamedSceneActor(_source())
+    api, render_window, renderer, root_id = _scene(actor)
+    publisher = ScenePublisher(_Server(), api, render_window, root_id)
+    try:
+        baseline = _delete_observer_count(actor)
+
+        for _ in range(5):
+            renderer.RemoveActor(actor)
+            publisher.sync()
+            renderer.AddActor(actor)
+            publisher.sync()
+
+        assert _delete_observer_count(actor) == baseline
+    finally:
+        publisher.cleanup()
+
+
+def test_dropped_registration_stops_retaining_its_source():
+    actor = StreamedSceneActor(_source())
+    address = streamed_scene_registry._actor_address(actor)
+    retired = _source(revision="retired")
+    actor.source = retired
+    reference = weakref.ref(retired)
+    del retired
+
+    streamed_scene_registry._forget_registration(address)
+    actor.source = _source(revision="current")
+    gc.collect()
+
+    assert reference() is None
+
+
+@pytest.mark.parametrize(
+    ("index", "expected"), [(3, 0.0), (7, 0.0), (11, 0.0), (15, 1.0)]
+)
+def test_fixed_affine_entries_share_one_absolute_tolerance(index, expected):
+    values = {
+        "source_asset_id": "mesh",
+        "revision": "rev",
+        "endpoint": "/tiles/mesh/rev",
+    }
+    inside = _matrix_with(index, expected + AFFINE_INSIDE_TOLERANCE)
+    outside = _matrix_with(index, expected + AFFINE_OUTSIDE_TOLERANCE)
+
+    assert Tiles3DSource(**values, ecef_to_scene=inside).ecef_to_scene == inside
+    with pytest.raises(ValueError, match="affine"):
+        Tiles3DSource(**values, ecef_to_scene=outside)
 
 
 def test_publisher_cleanup_releases_its_registry_scope():

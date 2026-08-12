@@ -26,6 +26,17 @@ STREAMED_SCENE_BLOCK = "streamedScene"
 # copy against the linked library source.
 DEFAULT_ADAPTIVE_MIN_BUDGET = 200_000
 
+# The one tolerance rule for a column-major affine matrix on the wire, owned
+# here because this is where a matrix becomes a published payload.  The fixed
+# entries are exact constants, so the band is absolute, not relative: an entry
+# is accepted when ``abs(value - expected) <= AFFINE_ENTRY_ABS_TOL``.  The
+# client boundary re-checks arriving payloads with the same numbers -- see
+# AFFINE_ENTRY_ABS_TOL in vue-components/src/components/streamedSceneHost.js.
+AFFINE_ENTRY_ABS_TOL = 1e-12
+AFFINE_FIXED_ENTRIES = ((3, 0.0), (7, 0.0), (11, 0.0), (15, 1.0))
+# A linear block this close to singular has no usable inverse for picking.
+AFFINE_DETERMINANT_FLOOR = 1e-15
+
 
 class _FrozenDict(dict):
     """A JSON-compatible mapping whose normalized values cannot be changed."""
@@ -48,6 +59,10 @@ class _FrozenDict(dict):
 
 def _is_positive_finite(value):
     return math.isfinite(value) and value > 0
+
+
+def _is_affine_entry(value, expected):
+    return abs(value - expected) <= AFFINE_ENTRY_ABS_TOL
 
 
 def _as_presentation(value):
@@ -212,8 +227,8 @@ class Tiles3DSource:
         if len(matrix) != 16 or not all(math.isfinite(value) for value in matrix):
             raise ValueError("ecef_to_scene must contain 16 finite numbers")
         if not all(
-            math.isclose(matrix[index], expected, abs_tol=1e-12)
-            for index, expected in ((3, 0.0), (7, 0.0), (11, 0.0), (15, 1.0))
+            _is_affine_entry(matrix[index], expected)
+            for index, expected in AFFINE_FIXED_ENTRIES
         ):
             raise ValueError("ecef_to_scene must be a column-major affine transform")
         determinant = (
@@ -221,7 +236,10 @@ class Tiles3DSource:
             - matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2])
             + matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2])
         )
-        if not math.isfinite(determinant) or abs(determinant) <= 1e-15:
+        if (
+            not math.isfinite(determinant)
+            or abs(determinant) <= AFFINE_DETERMINANT_FLOOR
+        ):
             raise ValueError("ecef_to_scene must have an invertible linear transform")
         object.__setattr__(self, "ecef_to_scene", matrix)
 

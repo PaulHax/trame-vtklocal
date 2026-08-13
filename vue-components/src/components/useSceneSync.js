@@ -568,7 +568,7 @@ export function useSceneSync(
     });
   }
 
-  function updateStreamedSceneForRender() {
+  function updateStreamedSceneForRender(frameSerial) {
     updatePointCloudPresentations(pointCloudPresentations);
     streamedSceneHost?.beforeRender({
       renderers: getRenderers(),
@@ -577,6 +577,7 @@ export function useSceneSync(
       referrersOf,
       getInstance,
       topologyVersion: sceneTopologyVersion,
+      frameSerial,
     });
   }
 
@@ -600,9 +601,15 @@ export function useSceneSync(
   // one pass, so a new pre-paint pass is added here and nowhere else — no view
   // has to carry its own copy of the list.
   function beforeRender() {
-    preparedFrameSerial += 1;
+    // vtk.js can notify RenderEvent from inside a view's explicit pre-paint
+    // hook. Both calls prepare the same paint, so retain one serial until that
+    // paint is reported complete. The coordinator uses this serial to make its
+    // admission drain idempotent.
+    if (preparedFrameSerial === completedPreparedFrameSerial) {
+      preparedFrameSerial += 1;
+    }
     updateDistanceToCameraGlyphsForRender();
-    updateStreamedSceneForRender();
+    updateStreamedSceneForRender(preparedFrameSerial);
   }
 
   function notePaintCompleted() {
@@ -611,12 +618,13 @@ export function useSceneSync(
     sceneSeqAtLastPaint = engine?.getDiagnostics?.()?.mySeq ?? -1;
   }
 
-  // The post-apply pass every applied message runs, snapshot or ops.
+  // The post-apply pass every applied message runs, snapshot or ops. Applying
+  // scene state schedules a paint through the engine callbacks; streaming work
+  // belongs to that paint's pre-render pass, never to websocket message count.
   function afterApply(message) {
     sceneTopologyVersion += 1;
     bindPrimaryCameraToRenderers();
     protectPreviewBindings();
-    beforeRender();
     dragPreview.reapply(message);
   }
 

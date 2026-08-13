@@ -604,6 +604,7 @@ export function createStreamedSceneHost(options = {}) {
   const entries = new Map();
   let disposed = false;
   let lastContext = null;
+  let fallbackFrameSerial = 0;
 
   function reconcileTextureCapabilities(context) {
     let environment;
@@ -634,7 +635,8 @@ export function createStreamedSceneHost(options = {}) {
       entry.configDirty = true;
       entry.error = null;
       entry.failedConfigGeneration = null;
-      entry.failedTopologyVersion = null;
+      entry.failedActor = null;
+      entry.failedRenderer = null;
     }
     scheduleRender();
   }
@@ -673,7 +675,8 @@ export function createStreamedSceneHost(options = {}) {
         configGeneration: 1,
         error: null,
         failedConfigGeneration: null,
-        failedTopologyVersion: null,
+        failedActor: null,
+        failedRenderer: null,
         active: false,
       });
     } else {
@@ -686,7 +689,8 @@ export function createStreamedSceneHost(options = {}) {
       current.configGeneration += 1;
       current.error = null;
       current.failedConfigGeneration = null;
-      current.failedTopologyVersion = null;
+      current.failedActor = null;
+      current.failedRenderer = null;
     }
     scheduleRender();
   }
@@ -711,7 +715,8 @@ export function createStreamedSceneHost(options = {}) {
       entry.configDirty = true;
       entry.error = null;
       entry.failedConfigGeneration = null;
-      entry.failedTopologyVersion = null;
+      entry.failedActor = null;
+      entry.failedRenderer = null;
     } else if (!force && version !== null && entry.anchorVersion === version) {
       return entry.hostRenderer;
     }
@@ -748,13 +753,11 @@ export function createStreamedSceneHost(options = {}) {
       return;
     }
     if (!entry.member) {
-      const topologyVersion = Number.isFinite(context?.topologyVersion)
-        ? context.topologyVersion
-        : null;
       if (
         entry.error &&
         entry.failedConfigGeneration === entry.configGeneration &&
-        entry.failedTopologyVersion === topologyVersion
+        entry.failedActor === entry.actor &&
+        entry.failedRenderer === renderer
       ) {
         entry.active = false;
         return;
@@ -774,12 +777,14 @@ export function createStreamedSceneHost(options = {}) {
         entry.active = false;
         entry.error = errorMessage(error);
         entry.failedConfigGeneration = entry.configGeneration;
-        entry.failedTopologyVersion = topologyVersion;
+        entry.failedActor = entry.actor;
+        entry.failedRenderer = renderer;
         return;
       }
       entry.error = null;
       entry.failedConfigGeneration = null;
-      entry.failedTopologyVersion = null;
+      entry.failedActor = null;
+      entry.failedRenderer = null;
       const policy = qualityPolicy(entry.config, tiles3dQualityPolicy);
       entry.registration = coordinator.register(entry.member, {
         id: entry.id,
@@ -813,7 +818,12 @@ export function createStreamedSceneHost(options = {}) {
     const views = new Map();
     for (const entry of entries.values()) updateEntry(entry, context, views);
     coordinator.noteRenderedCameras(views);
-    coordinator.prepareFrame();
+    const suppliedFrameSerial = context.frameSerial;
+    const frameSerial = Number.isSafeInteger(suppliedFrameSerial)
+      ? suppliedFrameSerial
+      : fallbackFrameSerial + 1;
+    fallbackFrameSerial = Math.max(fallbackFrameSerial, frameSerial);
+    coordinator.prepareFrame(frameSerial);
   }
 
   // `resolved` lets a caller that has already resolved this entry's renderer
@@ -929,10 +939,11 @@ export function createStreamedSceneHost(options = {}) {
       };
     }
     if (targetResult.status === "miss")
-      return { status: "miss", ...provenance };
+      return { status: "miss", ...provenance, frame: "scene_enu" };
     return {
       status: "hit",
       ...provenance,
+      frame: "scene_enu",
       world: targetResult.scenePoint,
       distance_px: targetResult.distancePx,
     };

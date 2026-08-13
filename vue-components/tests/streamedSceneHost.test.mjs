@@ -98,7 +98,7 @@ function fakeMember() {
     governorInputs: () => ({
       projectedImportance: 1,
       qualityDemand: 1,
-      workPending: false,
+      work: { operations: 0, progressSerial: 0 },
       physicalTileOperations: 0,
       physicalHierarchyOperations: 0,
       residentBytes: 0,
@@ -162,8 +162,9 @@ function fakeCoordinatorFactory(log) {
         log.end += 1;
         for (const { member } of registrations) member.endInteraction();
       },
-      prepareFrame() {
+      prepareFrame(frameSerial) {
         log.prepares += 1;
+        log.frameSerials.push(frameSerial);
         for (const { member } of registrations) member.prepareFrame();
       },
       recordHostFrame(metrics) {
@@ -187,6 +188,7 @@ function coordinatorLog() {
     quality: [],
     views: [],
     frames: [],
+    frameSerials: [],
     begin: 0,
     end: 0,
     prepares: 0,
@@ -1288,7 +1290,19 @@ test("a throwing factory is quarantined per entry without starving peers", async
   assert.equal(healthy.calls.filter(([name]) => name === "prepare").length, 2);
   context.topologyVersion += 1;
   host.beforeRender(context);
-  assert.equal(attempts, 2, "topology change permits one retry");
+  assert.equal(
+    attempts,
+    1,
+    "an unrelated scene topology message does not retry a permanent failure",
+  );
+  const replacementRenderer = renderer();
+  context.bind("bad", badActor, replacementRenderer);
+  host.beforeRender(context);
+  assert.equal(
+    attempts,
+    2,
+    "moving the anchor to a new renderer permits one retry",
+  );
   host.applyBlock(
     "bad",
     pointBlock({
@@ -1481,6 +1495,7 @@ test("scoped picking returns hit, miss, occluded, or unavailable conservatively"
     asset_id: "asset-1",
     revision: "rev-1",
     node_id: "target-node",
+    frame: "scene_enu",
     world: [1, 2, 3],
     distance_px: 2,
   });
@@ -1492,6 +1507,7 @@ test("scoped picking returns hit, miss, occluded, or unavailable conservatively"
     asset_id: "asset-1",
     revision: "rev-1",
     node_id: "target-node",
+    frame: "scene_enu",
   });
   blocker.occlusionResult = { status: "hit", rayDepth: 100 };
   assert.equal(
@@ -1727,6 +1743,7 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
   const calls = [];
   let createCount = 0;
   let renders = 0;
+  let engineCallbacks = null;
   const fakeHost = {
     applyBlock: (...args) => calls.push(["block", ...args]),
     beforeRender: (value) => calls.push(["before", value]),
@@ -1762,12 +1779,15 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
         },
         teardown() {},
       }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        onCommand: () => () => {},
-        getDiagnostics: () => ({}),
-      }),
+      createSceneEngine: (options) => {
+        engineCallbacks = options.callbacks;
+        return {
+          start() {},
+          stop() {},
+          onCommand: () => () => {},
+          getDiagnostics: () => ({}),
+        };
+      },
       createStreamedSceneHost: () => {
         createCount += 1;
         return fakeHost;
@@ -1795,7 +1815,24 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     ["begin"],
     ["block", "42", pointBlock(), anchor],
   ]);
+  const beforeApplyCount = calls.filter(([name]) => name === "before").length;
+  const rendersBeforeApply = renders;
+  engineCallbacks.onApplied({ kind: "ops", seq: 1, ops: [{}] });
+  assert.equal(
+    calls.filter(([name]) => name === "before").length,
+    beforeApplyCount,
+    "an applied websocket message waits for the requested paint to prepare streaming",
+  );
+  assert.equal(renders, rendersBeforeApply + 1);
   scene.beforeRender();
+  scene.beforeRender();
+  const prepared = calls.filter(([name]) => name === "before");
+  assert.equal(prepared.at(-2)[1].frameSerial, 1);
+  assert.equal(
+    prepared.at(-1)[1].frameSerial,
+    1,
+    "nested render hooks share the pending paint serial",
+  );
   assert.deepEqual(scene.getSyncDiagnostics().rendering, {
     preparedFrameSerial: 1,
     completedFrameSerial: 0,
@@ -1815,6 +1852,11 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     completedPreparedFrameSerial: 1,
     sceneSeqAtLastPaint: -1,
   });
+  scene.beforeRender();
+  assert.equal(
+    calls.filter(([name]) => name === "before").at(-1)[1].frameSerial,
+    2,
+  );
   scene.endCameraInteraction();
   assert.ok(calls.some(([name]) => name === "before"));
   assert.ok(calls.some(([name]) => name === "end"));

@@ -160,20 +160,24 @@ def check_adaptive_floor() -> dict:
 
     ``PointCloudSource`` rejects a ``max_budget`` below the floor, but Python
     cannot import the number the JS validator enforces, so it holds a copy.
-    The library's index.ts publishes
-    ``DEFAULTS`` precisely so hosts read the floor instead of restating it —
+    The library publishes ``ADAPTIVE_QUALITY_DEFAULTS.minBudget`` from its
+    vtk-free entry precisely so hosts read the floor instead of restating it —
     read it here, or a policy change leaves the two validators disagreeing
     about which configurations are legal.
+
+    It must come from the package root: the renderer entry (``pointcloud-lod
+    /vtk``) cannot be imported from node at all, so a floor reachable only
+    through it is a floor this gate cannot check.
     """
     library = node_json(
         'const m = await import("pointcloud-lod");'
-        "console.log(JSON.stringify(m.DEFAULTS?.minBudget ?? null));",
-        "DEFAULTS.minBudget",
+        "console.log(JSON.stringify(m.ADAPTIVE_QUALITY_DEFAULTS?.minBudget ?? null));",
+        "ADAPTIVE_QUALITY_DEFAULTS.minBudget",
     )
     if not isinstance(library, (int, float)):
         die(
-            "pointcloud-lod no longer exports DEFAULTS.minBudget; the Python "
-            f"source floor in {STREAMED_SCENE_PY.name} has nothing to track"
+            "pointcloud-lod no longer exports ADAPTIVE_QUALITY_DEFAULTS.minBudget; "
+            f"the Python source floor in {STREAMED_SCENE_PY.name} has nothing to track"
         )
 
     tree = ast.parse(STREAMED_SCENE_PY.read_text())

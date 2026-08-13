@@ -1458,7 +1458,7 @@ test("scoped picking returns hit, miss, occluded, or unavailable conservatively"
   target.pickResult = {
     status: "hit",
     rayDepth: 10,
-    pointOnRay: [1, 2, 3],
+    scenePoint: [1, 2, 3],
     distancePx: 2,
   };
   blocker.occlusionResult = { status: "hit", rayDepth: 5 };
@@ -1531,7 +1531,7 @@ test("scoped picking returns hit, miss, occluded, or unavailable conservatively"
   target.pickResult = {
     status: "hit",
     rayDepth: 0,
-    pointOnRay: [1, 2, 3],
+    scenePoint: [1, 2, 3],
     distancePx: 0,
   };
   assert.equal(host.pickAsset("asset-1", 50, 25), null);
@@ -1561,7 +1561,7 @@ test("cross-renderer blockers require overlapping viewports and the same world c
   target.pickResult = {
     status: "hit",
     rayDepth: 10,
-    pointOnRay: [0, 0, 0],
+    scenePoint: [0, 0, 0],
     distancePx: 0,
   };
   const blocker = fakeMember();

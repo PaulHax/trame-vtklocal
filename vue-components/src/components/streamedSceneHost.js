@@ -933,7 +933,7 @@ export function createStreamedSceneHost(options = {}) {
     return {
       status: "hit",
       ...provenance,
-      world: targetResult.pointOnRay,
+      world: targetResult.scenePoint,
       distance_px: targetResult.distancePx,
     };
   }

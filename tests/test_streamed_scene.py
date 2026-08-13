@@ -178,12 +178,10 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         source_asset_id="mesh-7",
         revision="rev-2",
         endpoint="/tiles/mesh-7/rev-2",
-        ecef_to_scene=IDENTITY,
+        tileset_to_scene=IDENTITY,
         maximum_screen_space_error_px=12,
         vertical_exaggeration=2.5,
         vertical_pivot_z=105.25,
-        role="terrain",
-        texture_asset_id="  ortho-4  ",
     )
     api, _window, _renderer, root_id = _scene(StreamedSceneActor(source))
 
@@ -195,12 +193,10 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         "revision": "rev-2",
         "endpoint": "/tiles/mesh-7/rev-2",
         "tiles3d": {
-            "ecefToScene": list(IDENTITY),
+            "tilesetToScene": list(IDENTITY),
             "maximumScreenSpaceErrorPx": 12.0,
             "verticalExaggeration": 2.5,
             "verticalPivotZ": 105.25,
-            "role": "terrain",
-            "textureAssetId": "ortho-4",
         },
     }
 
@@ -208,10 +204,9 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         Tiles3DSource("model-1", "rev-1", "/tiles/model-1/rev-1", IDENTITY)
     )
     assert defaults["tiles3d"] == {
-        "ecefToScene": list(IDENTITY),
+        "tilesetToScene": list(IDENTITY),
         "verticalExaggeration": 1.0,
         "verticalPivotZ": 0.0,
-        "role": "model",
     }
 
 
@@ -280,17 +275,17 @@ def test_point_source_rejects_invalid_wire_values(overrides, match):
         ({"source_asset_id": ""}, "source_asset_id is required"),
         ({"revision": ""}, "revision is required"),
         ({"endpoint": "/tiles/a/rev/"}, "must not end with '/'"),
-        ({"ecef_to_scene": IDENTITY[:-1]}, "16 finite"),
+        ({"tileset_to_scene": IDENTITY[:-1]}, "16 finite"),
         (
-            {"ecef_to_scene": (*IDENTITY[:-1], float("inf"))},
+            {"tileset_to_scene": (*IDENTITY[:-1], float("inf"))},
             "16 finite",
         ),
         (
-            {"ecef_to_scene": (*IDENTITY[:3], 1.0, *IDENTITY[4:])},
+            {"tileset_to_scene": (*IDENTITY[:3], 1.0, *IDENTITY[4:])},
             "affine",
         ),
         (
-            {"ecef_to_scene": (0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)},
+            {"tileset_to_scene": (0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)},
             "invertible",
         ),
         ({"maximum_screen_space_error_px": 0}, "positive and finite"),
@@ -311,22 +306,6 @@ def test_point_source_rejects_invalid_wire_values(overrides, match):
         ({"vertical_pivot_z": "0"}, "vertical_pivot_z.*finite"),
         ({"vertical_pivot_z": False}, "vertical_pivot_z.*finite"),
         ({"vertical_pivot_z": None}, "vertical_pivot_z.*finite"),
-        ({"role": "ground"}, "role must be 'model' or 'terrain'"),
-        ({"role": None}, "role must be 'model' or 'terrain'"),
-        ({"role": True}, "role must be 'model' or 'terrain'"),
-        ({"texture_asset_id": "ortho"}, "only for terrain role"),
-        (
-            {"role": "terrain", "texture_asset_id": ""},
-            "texture_asset_id must be a non-empty string",
-        ),
-        (
-            {"role": "terrain", "texture_asset_id": "   "},
-            "texture_asset_id must be a non-empty string",
-        ),
-        (
-            {"role": "terrain", "texture_asset_id": 7},
-            "texture_asset_id must be a non-empty string",
-        ),
     ],
 )
 def test_tiles_source_rejects_invalid_wire_values(kwargs, match):
@@ -334,7 +313,7 @@ def test_tiles_source_rejects_invalid_wire_values(kwargs, match):
         "source_asset_id": "mesh",
         "revision": "rev",
         "endpoint": "/tiles/mesh/rev",
-        "ecef_to_scene": IDENTITY,
+        "tileset_to_scene": IDENTITY,
         **kwargs,
     }
     with pytest.raises(ValueError, match=match):
@@ -515,9 +494,9 @@ def test_fixed_affine_entries_share_one_absolute_tolerance(index, expected):
     inside = _matrix_with(index, expected + AFFINE_INSIDE_TOLERANCE)
     outside = _matrix_with(index, expected + AFFINE_OUTSIDE_TOLERANCE)
 
-    assert Tiles3DSource(**values, ecef_to_scene=inside).ecef_to_scene == inside
+    assert Tiles3DSource(**values, tileset_to_scene=inside).tileset_to_scene == inside
     with pytest.raises(ValueError, match="affine"):
-        Tiles3DSource(**values, ecef_to_scene=outside)
+        Tiles3DSource(**values, tileset_to_scene=outside)
 
 
 def test_publisher_cleanup_releases_its_registry_scope():

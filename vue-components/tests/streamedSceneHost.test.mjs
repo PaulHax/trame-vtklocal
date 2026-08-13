@@ -61,7 +61,7 @@ function tilesBlock(overrides = {}) {
     sourceAssetId: "mesh-1",
     revision: "mesh-rev-1",
     endpoint: "/tileset/mesh-1/mesh-rev-1",
-    tiles3d: { ecefToScene: IDENTITY.slice() },
+    tiles3d: { tilesetToScene: IDENTITY.slice() },
     ...overrides,
   };
 }
@@ -303,51 +303,40 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
   assert.deepEqual(
     normalizeStreamedSceneBlock(tilesBlock(), factories).kindConfig,
     {
-      ecefToScene: IDENTITY,
+      tilesetToScene: IDENTITY,
       verticalExaggeration: 1,
       verticalPivotZ: 0,
-      role: "model",
     },
   );
   assert.deepEqual(
     normalizeStreamedSceneBlock(
       tilesBlock({
         tiles3d: {
-          ecefToScene: IDENTITY,
+          tilesetToScene: IDENTITY,
           verticalExaggeration: 3.5,
           verticalPivotZ: -12,
-          role: "terrain",
-          textureAssetId: "  ortho-7  ",
         },
       }),
       factories,
     ).kindConfig,
     {
-      ecefToScene: IDENTITY,
+      tilesetToScene: IDENTITY,
       verticalExaggeration: 3.5,
       verticalPivotZ: -12,
-      role: "terrain",
-      textureAssetId: "ortho-7",
     },
   );
   for (const tiles3d of [
-    { ecefToScene: IDENTITY, verticalExaggeration: 0 },
-    { ecefToScene: IDENTITY, verticalExaggeration: -1 },
-    { ecefToScene: IDENTITY, verticalExaggeration: Infinity },
-    { ecefToScene: IDENTITY, verticalExaggeration: "2" },
-    { ecefToScene: IDENTITY, verticalExaggeration: true },
-    { ecefToScene: IDENTITY, verticalExaggeration: null },
-    { ecefToScene: IDENTITY, verticalPivotZ: NaN },
-    { ecefToScene: IDENTITY, verticalPivotZ: -Infinity },
-    { ecefToScene: IDENTITY, verticalPivotZ: "0" },
-    { ecefToScene: IDENTITY, verticalPivotZ: false },
-    { ecefToScene: IDENTITY, verticalPivotZ: null },
-    { ecefToScene: IDENTITY, role: "ground" },
-    { ecefToScene: IDENTITY, role: null },
-    { ecefToScene: IDENTITY, textureAssetId: "ortho" },
-    { ecefToScene: IDENTITY, role: "terrain", textureAssetId: "" },
-    { ecefToScene: IDENTITY, role: "terrain", textureAssetId: "   " },
-    { ecefToScene: IDENTITY, role: "terrain", textureAssetId: 7 },
+    { tilesetToScene: IDENTITY, verticalExaggeration: 0 },
+    { tilesetToScene: IDENTITY, verticalExaggeration: -1 },
+    { tilesetToScene: IDENTITY, verticalExaggeration: Infinity },
+    { tilesetToScene: IDENTITY, verticalExaggeration: "2" },
+    { tilesetToScene: IDENTITY, verticalExaggeration: true },
+    { tilesetToScene: IDENTITY, verticalExaggeration: null },
+    { tilesetToScene: IDENTITY, verticalPivotZ: NaN },
+    { tilesetToScene: IDENTITY, verticalPivotZ: -Infinity },
+    { tilesetToScene: IDENTITY, verticalPivotZ: "0" },
+    { tilesetToScene: IDENTITY, verticalPivotZ: false },
+    { tilesetToScene: IDENTITY, verticalPivotZ: null },
   ]) {
     assert.equal(
       normalizeStreamedSceneBlock(tilesBlock({ tiles3d }), factories),
@@ -358,7 +347,7 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
     normalizeStreamedSceneBlock(
       tilesBlock({
         tiles3d: {
-          ecefToScene: IDENTITY.map((value, index) =>
+          tilesetToScene: IDENTITY.map((value, index) =>
             index === 3 ? 1 : value,
           ),
         },
@@ -371,7 +360,7 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
     normalizeStreamedSceneBlock(
       tilesBlock({
         tiles3d: {
-          ecefToScene: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          tilesetToScene: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
         },
       }),
       factories,
@@ -380,7 +369,7 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
   );
   assert.equal(
     normalizeStreamedSceneBlock(
-      { ...pointBlock(), tiles3d: { ecefToScene: IDENTITY } },
+      { ...pointBlock(), tiles3d: { tilesetToScene: IDENTITY } },
       factories,
     ),
     null,
@@ -418,9 +407,9 @@ test("fixed affine entries share one absolute tolerance with the producer", asyn
   const OUTSIDE = 2e-12;
   const matrixWith = (index, entry) =>
     IDENTITY.map((value, at) => (at === index ? entry : value));
-  const normalize = (ecefToScene) =>
+  const normalize = (tilesetToScene) =>
     normalizeStreamedSceneBlock(
-      tilesBlock({ tiles3d: { ecefToScene } }),
+      tilesBlock({ tiles3d: { tilesetToScene } }),
       factories,
     );
 
@@ -431,7 +420,7 @@ test("fixed affine entries share one absolute tolerance with the producer", asyn
     [15, 1],
   ]) {
     assert.deepEqual(
-      normalize(matrixWith(index, expected + INSIDE)).kindConfig.ecefToScene,
+      normalize(matrixWith(index, expected + INSIDE)).kindConfig.tilesetToScene,
       matrixWith(index, expected + INSIDE),
     );
     assert.equal(normalize(matrixWith(index, expected + OUTSIDE)), null);
@@ -565,11 +554,9 @@ test("tiles transport keeps vertical currency separate from the live anchor", as
     "mesh",
     tilesBlock({
       tiles3d: {
-        ecefToScene: IDENTITY,
+        tilesetToScene: IDENTITY,
         verticalExaggeration: 2.5,
         verticalPivotZ: 105,
-        role: "terrain",
-        textureAssetId: "ortho-1",
       },
     }),
     anchor,
@@ -582,8 +569,6 @@ test("tiles transport keeps vertical currency separate from the live anchor", as
   assert.equal(log.registrations[0].qualityManaged, false);
   assert.equal(member.factoryConfig.verticalExaggeration, 2.5);
   assert.equal(member.factoryConfig.verticalPivotZ, 105);
-  assert.equal(member.factoryConfig.role, "terrain");
-  assert.equal(member.factoryConfig.textureAssetId, "ortho-1");
   assert.deepEqual(
     member.calls.find(([name]) => name === "model")[1],
     anchorMatrix,
@@ -592,19 +577,15 @@ test("tiles transport keeps vertical currency separate from the live anchor", as
   assert.equal(initialDiagnostics.configGeneration, 1);
   assert.equal(initialDiagnostics.verticalExaggeration, 2.5);
   assert.equal(initialDiagnostics.verticalPivotZ, 105);
-  assert.equal(initialDiagnostics.role, "terrain");
-  assert.equal(initialDiagnostics.textureAssetId, "ortho-1");
   assert.deepEqual(initialDiagnostics.anchorUserMatrix, anchorMatrix);
 
   host.applyBlock(
     "mesh",
     tilesBlock({
       tiles3d: {
-        ecefToScene: IDENTITY,
+        tilesetToScene: IDENTITY,
         verticalExaggeration: 4,
         verticalPivotZ: -8,
-        role: "terrain",
-        textureAssetId: "ortho-2",
       },
     }),
     anchor,
@@ -617,15 +598,11 @@ test("tiles transport keeps vertical currency separate from the live anchor", as
   const changed = member.calls.findLast(([name]) => name === "config")[1];
   assert.equal(changed.verticalExaggeration, 4);
   assert.equal(changed.verticalPivotZ, -8);
-  assert.equal(changed.role, "terrain");
-  assert.equal(changed.textureAssetId, "ortho-2");
   assert.deepEqual(anchor.matrix, anchorMatrix);
   const changedDiagnostics = host.describe().members[0];
   assert.equal(changedDiagnostics.configGeneration, 2);
   assert.equal(changedDiagnostics.verticalExaggeration, 4);
   assert.equal(changedDiagnostics.verticalPivotZ, -8);
-  assert.equal(changedDiagnostics.role, "terrain");
-  assert.equal(changedDiagnostics.textureAssetId, "ortho-2");
   assert.deepEqual(changedDiagnostics.anchorUserMatrix, anchorMatrix);
   assert.deepEqual(host.describe().tiles3dQualityPolicy, {
     mode: "fixed",
@@ -1495,7 +1472,7 @@ test("scoped picking returns hit, miss, occluded, or unavailable conservatively"
     asset_id: "asset-1",
     revision: "rev-1",
     node_id: "target-node",
-    frame: "scene_enu",
+    frame: "scene",
     world: [1, 2, 3],
     distance_px: 2,
   });
@@ -1507,7 +1484,7 @@ test("scoped picking returns hit, miss, occluded, or unavailable conservatively"
     asset_id: "asset-1",
     revision: "rev-1",
     node_id: "target-node",
-    frame: "scene_enu",
+    frame: "scene",
   });
   blocker.occlusionResult = { status: "hit", rayDepth: 100 };
   assert.equal(

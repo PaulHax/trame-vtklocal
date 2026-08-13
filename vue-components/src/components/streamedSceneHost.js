@@ -220,13 +220,13 @@ function normalizePointCloud(value) {
 function normalizeTiles3d(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (
-    !Array.isArray(value.ecefToScene) ||
-    value.ecefToScene.length !== 16 ||
-    !value.ecefToScene.every(Number.isFinite)
+    !Array.isArray(value.tilesetToScene) ||
+    value.tilesetToScene.length !== 16 ||
+    !value.tilesetToScene.every(Number.isFinite)
   ) {
     return null;
   }
-  const m = value.ecefToScene;
+  const m = value.tilesetToScene;
   const determinant =
     m[0] * (m[5] * m[10] - m[9] * m[6]) -
     m[4] * (m[1] * m[10] - m[9] * m[2]) +
@@ -255,32 +255,16 @@ function normalizeTiles3d(value) {
     value.verticalExaggeration === undefined ? 1 : value.verticalExaggeration;
   const verticalPivotZ =
     value.verticalPivotZ === undefined ? 0 : value.verticalPivotZ;
-  const role = value.role === undefined ? "model" : value.role;
   if (
     !isPositiveFinite(verticalExaggeration) ||
-    !Number.isFinite(verticalPivotZ) ||
-    (role !== "model" && role !== "terrain")
+    !Number.isFinite(verticalPivotZ)
   ) {
     return null;
   }
-  const rawTextureAssetId = value.textureAssetId;
-  let textureAssetId = null;
-  if (rawTextureAssetId !== undefined && rawTextureAssetId !== null) {
-    if (
-      typeof rawTextureAssetId !== "string" ||
-      rawTextureAssetId.trim().length === 0 ||
-      role !== "terrain"
-    ) {
-      return null;
-    }
-    textureAssetId = rawTextureAssetId.trim();
-  }
   return {
-    ecefToScene: value.ecefToScene.map(Number),
+    tilesetToScene: value.tilesetToScene.map(Number),
     verticalExaggeration,
     verticalPivotZ,
-    role,
-    ...(textureAssetId === null ? {} : { textureAssetId }),
     ...(value.maximumScreenSpaceErrorPx === undefined ||
     value.maximumScreenSpaceErrorPx === null
       ? {}
@@ -939,11 +923,11 @@ export function createStreamedSceneHost(options = {}) {
       };
     }
     if (targetResult.status === "miss")
-      return { status: "miss", ...provenance, frame: "scene_enu" };
+      return { status: "miss", ...provenance, frame: "scene" };
     return {
       status: "hit",
       ...provenance,
-      frame: "scene_enu",
+      frame: "scene",
       world: targetResult.scenePoint,
       distance_px: targetResult.distancePx,
     };
@@ -998,8 +982,6 @@ export function createStreamedSceneHost(options = {}) {
                 verticalExaggeration:
                   entry.config.kindConfig.verticalExaggeration,
                 verticalPivotZ: entry.config.kindConfig.verticalPivotZ,
-                role: entry.config.kindConfig.role,
-                textureAssetId: entry.config.kindConfig.textureAssetId ?? null,
               }
             : {}),
           active: entry.active,

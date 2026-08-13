@@ -205,12 +205,10 @@ class Tiles3DSource:
     source_asset_id: str
     revision: str
     endpoint: str
-    ecef_to_scene: tuple[float, ...]
+    tileset_to_scene: tuple[float, ...]
     maximum_screen_space_error_px: float | None = None
     vertical_exaggeration: float = 1.0
     vertical_pivot_z: float = 0.0
-    role: str = "model"
-    texture_asset_id: str | None = None
 
     def __post_init__(self):
         object.__setattr__(
@@ -221,16 +219,16 @@ class Tiles3DSource:
         object.__setattr__(self, "revision", _as_identity(self.revision, "revision"))
         object.__setattr__(self, "endpoint", _as_endpoint(self.endpoint))
         try:
-            matrix = tuple(float(value) for value in self.ecef_to_scene)
+            matrix = tuple(float(value) for value in self.tileset_to_scene)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("ecef_to_scene must contain 16 finite numbers") from exc
+            raise ValueError("tileset_to_scene must contain 16 finite numbers") from exc
         if len(matrix) != 16 or not all(math.isfinite(value) for value in matrix):
-            raise ValueError("ecef_to_scene must contain 16 finite numbers")
+            raise ValueError("tileset_to_scene must contain 16 finite numbers")
         if not all(
             _is_affine_entry(matrix[index], expected)
             for index, expected in AFFINE_FIXED_ENTRIES
         ):
-            raise ValueError("ecef_to_scene must be a column-major affine transform")
+            raise ValueError("tileset_to_scene must be a column-major affine transform")
         determinant = (
             matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6])
             - matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2])
@@ -240,8 +238,10 @@ class Tiles3DSource:
             not math.isfinite(determinant)
             or abs(determinant) <= AFFINE_DETERMINANT_FLOOR
         ):
-            raise ValueError("ecef_to_scene must have an invertible linear transform")
-        object.__setattr__(self, "ecef_to_scene", matrix)
+            raise ValueError(
+                "tileset_to_scene must have an invertible linear transform"
+            )
+        object.__setattr__(self, "tileset_to_scene", matrix)
 
         if self.maximum_screen_space_error_px is not None:
             maximum = float(self.maximum_screen_space_error_px)
@@ -268,18 +268,6 @@ class Tiles3DSource:
         if not math.isfinite(vertical_pivot_z):
             raise ValueError("vertical_pivot_z must be finite")
         object.__setattr__(self, "vertical_pivot_z", vertical_pivot_z)
-
-        if self.role not in {"model", "terrain"}:
-            raise ValueError("role must be 'model' or 'terrain'")
-        if self.texture_asset_id is not None:
-            if not isinstance(self.texture_asset_id, str):
-                raise ValueError("texture_asset_id must be a non-empty string")
-            texture_asset_id = self.texture_asset_id.strip()
-            if not texture_asset_id:
-                raise ValueError("texture_asset_id must be a non-empty string")
-            if self.role != "terrain":
-                raise ValueError("texture_asset_id is valid only for terrain role")
-            object.__setattr__(self, "texture_asset_id", texture_asset_id)
 
 
 _SOURCE_TYPES = (PointCloudSource, Tiles3DSource)
@@ -349,13 +337,10 @@ def source_block(source):
         return {"kind": "pointCloud", **common, "pointCloud": config}
 
     config = {
-        "ecefToScene": list(source.ecef_to_scene),
+        "tilesetToScene": list(source.tileset_to_scene),
         "verticalExaggeration": source.vertical_exaggeration,
         "verticalPivotZ": source.vertical_pivot_z,
-        "role": source.role,
     }
-    if source.texture_asset_id is not None:
-        config["textureAssetId"] = source.texture_asset_id
     if source.maximum_screen_space_error_px is not None:
         config["maximumScreenSpaceErrorPx"] = source.maximum_screen_space_error_px
     return {"kind": "tiles3d", **common, "tiles3d": config}

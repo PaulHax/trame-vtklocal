@@ -218,13 +218,15 @@ function normalizePointCloud(value) {
 }
 
 function normalizeTiles3d(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("tiles3d must be an object");
+  }
   if (
     !Array.isArray(value.tilesetToScene) ||
     value.tilesetToScene.length !== 16 ||
     !value.tilesetToScene.every(Number.isFinite)
   ) {
-    return null;
+    throw new TypeError("tilesetToScene must contain 16 finite numbers");
   }
   const m = value.tilesetToScene;
   const determinant =
@@ -235,21 +237,23 @@ function normalizeTiles3d(value) {
     !Number.isFinite(determinant) ||
     Math.abs(determinant) <= AFFINE_DETERMINANT_FLOOR
   ) {
-    return null;
+    throw new TypeError("tilesetToScene must be invertible");
   }
   if (
     !AFFINE_FIXED_ENTRIES.every(([index, expected]) =>
       isAffineEntry(m[index], expected),
     )
   ) {
-    return null;
+    throw new TypeError("tilesetToScene must be an affine column-major matrix");
   }
   if (
     value.maximumScreenSpaceErrorPx !== undefined &&
     value.maximumScreenSpaceErrorPx !== null &&
     !isPositiveFinite(value.maximumScreenSpaceErrorPx)
   ) {
-    return null;
+    throw new RangeError(
+      "maximumScreenSpaceErrorPx must be positive and finite",
+    );
   }
   const verticalExaggeration =
     value.verticalExaggeration === undefined ? 1 : value.verticalExaggeration;
@@ -259,7 +263,10 @@ function normalizeTiles3d(value) {
     !isPositiveFinite(verticalExaggeration) ||
     !Number.isFinite(verticalPivotZ)
   ) {
-    return null;
+    if (!isPositiveFinite(verticalExaggeration)) {
+      throw new RangeError("verticalExaggeration must be positive and finite");
+    }
+    throw new RangeError("verticalPivotZ must be finite");
   }
   return {
     tilesetToScene: value.tilesetToScene.map(Number),
@@ -274,9 +281,47 @@ function normalizeTiles3d(value) {
   };
 }
 
+export function validateTiles3dSourceDocument(block, factories) {
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    throw new TypeError("Tiles3DSource document must be an object");
+  }
+  if (block.kind !== "tiles3d") {
+    throw new TypeError("Tiles3DSource kind must be tiles3d");
+  }
+  if (!nonEmptyString(block.sourceAssetId)) {
+    throw new TypeError("sourceAssetId must be non-empty");
+  }
+  if (!nonEmptyString(block.revision)) {
+    throw new TypeError("revision must be non-empty");
+  }
+  if (!nonEmptyString(block.endpoint) || block.endpoint.endsWith("/")) {
+    throw new TypeError("endpoint must be non-empty and must not end with '/'");
+  }
+  if (!factories?.has?.("tiles3d")) {
+    throw new TypeError("tiles3d member factory is unavailable");
+  }
+  if (block.pointCloud !== undefined) {
+    throw new TypeError("Tiles3DSource must not include pointCloud");
+  }
+  return {
+    kind: "tiles3d",
+    sourceAssetId: block.sourceAssetId,
+    revision: block.revision,
+    endpoint: block.endpoint,
+    kindConfig: normalizeTiles3d(block.tiles3d),
+  };
+}
+
 // Normalization is deliberately atomic. A malformed common field, a missing
 // kind payload, or an extra payload for another known kind drops the block.
 export function normalizeStreamedSceneBlock(block, factories) {
+  if (block?.kind === "tiles3d") {
+    try {
+      return validateTiles3dSourceDocument(block, factories);
+    } catch {
+      return null;
+    }
+  }
   if (!block || typeof block !== "object" || Array.isArray(block)) return null;
   const kind = nonEmptyString(block.kind);
   const sourceAssetId = nonEmptyString(block.sourceAssetId);
@@ -299,11 +344,7 @@ export function normalizeStreamedSceneBlock(block, factories) {
     return null;
   }
   const kindConfig =
-    kind === "pointCloud"
-      ? normalizePointCloud(block.pointCloud)
-      : kind === "tiles3d"
-        ? normalizeTiles3d(block.tiles3d)
-        : null;
+    kind === "pointCloud" ? normalizePointCloud(block.pointCloud) : null;
   return kindConfig
     ? { kind, sourceAssetId, revision, endpoint, kindConfig }
     : null;
@@ -416,23 +457,12 @@ export function isHeadlessBrowserUserAgent(userAgent) {
   return /(?:HeadlessChrome|HeadlessChromium)/i.test(String(userAgent ?? ""));
 }
 
-function queryParam(name) {
-  try {
-    return new URL(pageUrl()).searchParams.get(name);
-  } catch {
-    return null;
-  }
-}
-
-const requestedTexturePolicy = () => queryParam("tiles3dTexturePolicy");
-
-const requestedTiles3dQualityPolicy = () =>
-  queryParam("tiles3dQualityPolicy") === "fixed" ? "fixed" : "adaptive";
-
 export function texturePolicyRgbaReason(renderer, userAgent, requestedPolicy) {
+  if (requestedPolicy === "rgba") return "forced-control";
+  if (requestedPolicy === "native") return null;
   if (isSoftwareWebGLRenderer(renderer)) return "software-renderer";
   if (isHeadlessBrowserUserAgent(userAgent)) return "headless-browser";
-  return requestedPolicy === "rgba" ? "forced-control" : null;
+  return null;
 }
 
 function readWebGLRenderer(gl) {
@@ -457,7 +487,7 @@ function contextGl(context) {
   return openGLRenderWindow?.getContext?.() ?? null;
 }
 
-function probeTextureEnvironment(gl) {
+function probeTextureEnvironment(gl, tiles3dTexturePolicy) {
   if (!gl) {
     return {
       capabilities: {
@@ -471,7 +501,7 @@ function probeTextureEnvironment(gl) {
   const rgbaReason = texturePolicyRgbaReason(
     renderer.renderer,
     globalThis.navigator?.userAgent,
-    requestedTexturePolicy(),
+    tiles3dTexturePolicy,
   );
   const capabilities = rgbaReason
     ? {
@@ -562,10 +592,13 @@ export function enrichGestureWithCloudSolve(
 export function createStreamedSceneHost(options = {}) {
   const scheduleRender = options.scheduleRender ?? (() => {});
   const factories = options.factories ?? defaultMemberFactories;
+  const tiles3dTexturePolicy = ["native", "rgba"].includes(
+    options.tiles3dTexturePolicy,
+  )
+    ? options.tiles3dTexturePolicy
+    : "auto";
   const tiles3dQualityPolicy =
-    options.tiles3dQualityPolicy === "fixed"
-      ? "fixed"
-      : requestedTiles3dQualityPolicy();
+    options.tiles3dQualityPolicy === "fixed" ? "fixed" : "adaptive";
   const workerLease = options.workers ? null : acquirePageWorkers();
   const workers = options.workers ?? workerLease.workers;
   const textureCapabilities = {
@@ -600,12 +633,12 @@ export function createStreamedSceneHost(options = {}) {
       };
     } else {
       // GPU capabilities can only change with the GL context itself, and the
-      // probe costs ~9 GL entry-point calls plus a URL parse. beforeRender()
-      // runs it per paint and per applied message, so key it on the context.
+      // probe costs ~9 GL entry-point calls. beforeRender() runs it per paint
+      // and per applied message, so key it on the context.
       const gl = contextGl(context);
       if (gl && gl === probedGl) return;
       probedGl = gl;
-      environment = probeTextureEnvironment(gl);
+      environment = probeTextureEnvironment(gl, tiles3dTexturePolicy);
     }
     const next = environment.capabilities;
     webglRenderer = { ...environment.renderer };

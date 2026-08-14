@@ -51,6 +51,8 @@ export function useSceneSync(
     getOpenGLRenderWindow,
     renderScene,
     cameraAuthority = "server",
+    tiles3dTexturePolicy = "auto",
+    tiles3dQualityPolicy = "adaptive",
   },
   dependencies = {},
 ) {
@@ -107,6 +109,8 @@ export function useSceneSync(
     if (!streamedSceneHost) {
       streamedSceneHost = createStreamedSceneHostImpl({
         scheduleRender: () => renderRequestCallback?.(),
+        tiles3dTexturePolicy,
+        tiles3dQualityPolicy,
       });
       if (cameraInteractionStack.length > 0) {
         streamedSceneHost.beginInteraction();

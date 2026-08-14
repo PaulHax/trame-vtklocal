@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
@@ -8,6 +9,16 @@ after(async () => {
 });
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+const TILES3D_SOURCE_CORPUS = JSON.parse(
+  readFileSync(
+    new URL(
+      "../node_modules/pointcloud-lod/test/fixtures/tiles3d-source-contract.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
 
 function pct1() {
   const positions = [0.1, 0.1, 0.1, -0.1, -0.1, -0.1];
@@ -394,6 +405,36 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
     normalizeStreamedSceneBlock(pointBlock(), { has: () => false }),
     null,
   );
+});
+
+test("streamedScene normalization consumes the shared Tiles3DSource contract", async () => {
+  const { normalizeStreamedSceneBlock, validateTiles3dSourceDocument } =
+    await loadModule("/src/components/streamedSceneHost.js");
+  const factories = { has: (kind) => kind === "tiles3d" };
+
+  for (const fixture of TILES3D_SOURCE_CORPUS.valid) {
+    assert.equal(
+      normalizeStreamedSceneBlock(fixture.document, factories).kind,
+      "tiles3d",
+      fixture.name,
+    );
+    assert.doesNotThrow(
+      () => validateTiles3dSourceDocument(fixture.document, factories),
+      fixture.name,
+    );
+  }
+  for (const fixture of TILES3D_SOURCE_CORPUS.invalid) {
+    assert.equal(
+      normalizeStreamedSceneBlock(fixture.document, factories),
+      null,
+      fixture.name,
+    );
+    assert.throws(
+      () => validateTiles3dSourceDocument(fixture.document, factories),
+      new RegExp(fixture.reason, "i"),
+      fixture.name,
+    );
+  }
 });
 
 // Tolerance agreement with the producer. The same constants and the same
@@ -1113,6 +1154,15 @@ test("software WebGL contexts force KTX2 decoding through RGBA fallback", async 
     ),
     "headless-browser",
   );
+  assert.equal(
+    texturePolicyRgbaReason(
+      "Google SwiftShader",
+      "HeadlessChrome/128.0",
+      "native",
+    ),
+    null,
+    "an explicit native policy overrides automatic fallbacks",
+  );
 
   const member = fakeMember();
   const factories = factoriesFor(new Map([["tiles3d", [member]]]));
@@ -1164,6 +1214,64 @@ test("software WebGL contexts force KTX2 decoding through RGBA fallback", async 
     rgbaReason: "software-renderer",
   });
   host.dispose();
+});
+
+test("URL query parameters cannot override 3D Tiles host policies", async () => {
+  const { createStreamedSceneHost } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
+  const locationDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "location",
+  );
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: {
+      href: "http://localhost/?tiles3dTexturePolicy=rgba&tiles3dQualityPolicy=fixed",
+    },
+  });
+  const log = coordinatorLog();
+  const gl = {
+    VERSION: 0x1f02,
+    VENDOR: 0x1f00,
+    RENDERER: 0x1f01,
+    getExtension(name) {
+      if (name === "WEBGL_compressed_texture_astc") {
+        return {
+          COMPRESSED_RGBA_ASTC_4x4_KHR: 1,
+          COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR: 2,
+        };
+      }
+      return null;
+    },
+    getParameter(parameter) {
+      if (parameter === this.VENDOR) return "Google Inc.";
+      if (parameter === this.RENDERER) return "ANGLE (NVIDIA RTX 3000 Ada)";
+      if (parameter === this.VERSION) return "WebGL 2.0";
+      return null;
+    },
+  };
+  const host = createStreamedSceneHost({
+    createCoordinator: fakeCoordinatorFactory(log),
+  });
+  try {
+    host.beforeRender({ openGLRenderWindow: { getContext: () => gl } });
+    assert.deepEqual(host.describe().texturePolicy, {
+      mode: "native",
+      rgbaReason: null,
+    });
+    assert.deepEqual(host.describe().tiles3dQualityPolicy, {
+      mode: "adaptive",
+      reason: null,
+    });
+  } finally {
+    host.dispose();
+    if (locationDescriptor) {
+      Object.defineProperty(globalThis, "location", locationDescriptor);
+    } else {
+      delete globalThis.location;
+    }
+  }
 });
 
 test("masked software renderer forces RGBA when the debug extension is absent", async () => {
@@ -1719,6 +1827,7 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
   const handlers = new Map();
   const calls = [];
   let createCount = 0;
+  let hostOptions = null;
   let renders = 0;
   let engineCallbacks = null;
   const fakeHost = {
@@ -1738,6 +1847,8 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
       emit() {},
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
       renderScene() {},
+      tiles3dTexturePolicy: "rgba",
+      tiles3dQualityPolicy: "fixed",
     },
     {
       createManagedSyncContext: () => ({
@@ -1765,8 +1876,9 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
           getDiagnostics: () => ({}),
         };
       },
-      createStreamedSceneHost: () => {
+      createStreamedSceneHost: (options) => {
         createCount += 1;
+        hostOptions = options;
         return fakeHost;
       },
     },
@@ -1788,6 +1900,9 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
   const anchor = actor();
   handlers.get("streamedScene")("42", pointBlock(), anchor);
   assert.equal(createCount, 1);
+  assert.equal(hostOptions.tiles3dTexturePolicy, "rgba");
+  assert.equal(hostOptions.tiles3dQualityPolicy, "fixed");
+  assert.equal(typeof hostOptions.scheduleRender, "function");
   assert.deepEqual(calls.slice(0, 2), [
     ["begin"],
     ["block", "42", pointBlock(), anchor],

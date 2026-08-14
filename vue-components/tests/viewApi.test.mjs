@@ -55,6 +55,20 @@ test("every promised view API key is implemented by the scene", async () => {
   assert.deepEqual(missing, [], `scene is missing: ${missing.join(", ")}`);
 });
 
+test("view props expose validated declarative 3D Tiles host policies", async () => {
+  const { VIEW_PROPS } = await loadModule("/src/components/viewApi.js");
+  assert.equal(VIEW_PROPS.tiles3dTexturePolicy.default, "auto");
+  assert.equal(VIEW_PROPS.tiles3dQualityPolicy.default, "adaptive");
+  for (const value of ["auto", "native", "rgba"]) {
+    assert.equal(VIEW_PROPS.tiles3dTexturePolicy.validator(value), true);
+  }
+  assert.equal(VIEW_PROPS.tiles3dTexturePolicy.validator("compressed"), false);
+  for (const value of ["adaptive", "fixed"]) {
+    assert.equal(VIEW_PROPS.tiles3dQualityPolicy.validator(value), true);
+  }
+  assert.equal(VIEW_PROPS.tiles3dQualityPolicy.validator("manual"), false);
+});
+
 // The backend layer composes over the scene: it contributes the view-specific
 // entries, and any common key it names wins over the scene's method.
 test("a backend adds its own entries and overrides the common keys it names", async () => {

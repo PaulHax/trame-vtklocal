@@ -8,6 +8,7 @@ block; the actor deliberately has no mapper on the wire.
 from __future__ import annotations
 
 import math
+from numbers import Real
 from dataclasses import dataclass
 
 from vtkmodules.vtkRenderingCore import vtkActor
@@ -219,11 +220,17 @@ class Tiles3DSource:
         object.__setattr__(self, "revision", _as_identity(self.revision, "revision"))
         object.__setattr__(self, "endpoint", _as_endpoint(self.endpoint))
         try:
-            matrix = tuple(float(value) for value in self.tileset_to_scene)
-        except (TypeError, ValueError, OverflowError) as exc:
+            raw_matrix = tuple(self.tileset_to_scene)
+        except TypeError as exc:
             raise ValueError("tileset_to_scene must contain 16 finite numbers") from exc
-        if len(matrix) != 16 or not all(math.isfinite(value) for value in matrix):
+        if len(raw_matrix) != 16 or not all(
+            isinstance(value, Real)
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for value in raw_matrix
+        ):
             raise ValueError("tileset_to_scene must contain 16 finite numbers")
+        matrix = tuple(float(value) for value in raw_matrix)
         if not all(
             _is_affine_entry(matrix[index], expected)
             for index, expected in AFFINE_FIXED_ENTRIES
@@ -244,6 +251,12 @@ class Tiles3DSource:
         object.__setattr__(self, "tileset_to_scene", matrix)
 
         if self.maximum_screen_space_error_px is not None:
+            if isinstance(self.maximum_screen_space_error_px, bool) or not isinstance(
+                self.maximum_screen_space_error_px, Real
+            ):
+                raise ValueError(
+                    "maximum_screen_space_error_px must be positive and finite"
+                )
             maximum = float(self.maximum_screen_space_error_px)
             if not _is_positive_finite(maximum):
                 raise ValueError(

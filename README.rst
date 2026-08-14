@@ -165,6 +165,24 @@ Running examples
     # vtk.js layered renderers: preserve color while resetting overlay depth
     python ./examples/vtk/vtkjs_layered_renderers.py
 
+3D Tiles host policies
+----------------------------------------
+
+``VtkJsLocalView`` and ``VtkJsSharedView`` accept declarative policy options
+from Python. Texture policy defaults to ``"auto"``, which selects native GPU
+compression except when a software renderer or headless browser requires RGBA.
+Set it to ``"native"`` or ``"rgba"`` to override that detection. Quality
+policy defaults to ``"adaptive"`` and may be set to ``"fixed"`` for controlled
+comparisons.
+
+.. code-block:: python
+
+    view = VtkJsSharedView(
+        render_window,
+        tiles3d_texture_policy="rgba",
+        tiles3d_quality_policy="fixed",
+    )
+
 
 Some example are meant to test and validate WASM rendering.
 Some will default for remote rendering but if you want to force them to use WASM just run `export USE_WASM=1` before executing them.

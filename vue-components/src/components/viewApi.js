@@ -24,6 +24,16 @@ export const VIEW_PROPS = Object.freeze({
     default: "server",
     validator: (value) => value === "server" || value === "client",
   },
+  tiles3dTexturePolicy: {
+    type: String,
+    default: "auto",
+    validator: (value) => ["auto", "native", "rgba"].includes(value),
+  },
+  tiles3dQualityPolicy: {
+    type: String,
+    default: "adaptive",
+    validator: (value) => ["adaptive", "fixed"].includes(value),
+  },
   // The trame ref name this view is mounted under (e.g. "vtkMapView_map").
   // The Python widget sets it to the same value it uses for `ref`, so
   // consumers resolve the view via window.trameVtklocal.whenView(refName).

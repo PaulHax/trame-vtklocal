@@ -6,6 +6,16 @@ from trame_vtklocal.module.distance_to_camera import (
 from trame_vtklocal.module.camera_authority import validate_camera_authority
 
 
+TILES3D_TEXTURE_POLICIES = frozenset({"auto", "native", "rgba"})
+TILES3D_QUALITY_POLICIES = frozenset({"adaptive", "fixed"})
+
+
+def _validate_policy(name, value, choices):
+    if value not in choices:
+        raise ValueError(f"{name} must be one of {sorted(choices)}, got {value!r}")
+    return value
+
+
 class HtmlElement(AbstractElement):
     def __init__(self, _elem_name, children=None, **kwargs):
         super().__init__(_elem_name, children, **kwargs)
@@ -26,7 +36,25 @@ class VtkJsBaseView(HtmlElement):
         ("pointer_event", "pointerEvent"),
     ]
 
-    def __init__(self, _elem_name, render_window, camera_authority="server", **kwargs):
+    def __init__(
+        self,
+        _elem_name,
+        render_window,
+        camera_authority="server",
+        tiles3d_texture_policy="auto",
+        tiles3d_quality_policy="adaptive",
+        **kwargs,
+    ):
+        self._tiles3d_texture_policy = _validate_policy(
+            "tiles3d_texture_policy",
+            tiles3d_texture_policy,
+            TILES3D_TEXTURE_POLICIES,
+        )
+        self._tiles3d_quality_policy = _validate_policy(
+            "tiles3d_quality_policy",
+            tiles3d_quality_policy,
+            TILES3D_QUALITY_POLICIES,
+        )
         super().__init__(_elem_name, **kwargs)
 
         # "server": cameras are normal synced nodes. "client": the client owns
@@ -36,6 +64,12 @@ class VtkJsBaseView(HtmlElement):
         self._camera_authority = validate_camera_authority(camera_authority)
         self._attributes["camera_authority"] = (
             f'camera-authority="{self._camera_authority}"'
+        )
+        self._attributes["tiles3d_texture_policy"] = (
+            f'tiles3d-texture-policy="{self._tiles3d_texture_policy}"'
+        )
+        self._attributes["tiles3d_quality_policy"] = (
+            f'tiles3d-quality-policy="{self._tiles3d_quality_policy}"'
         )
 
         self._ref = kwargs.get("ref")
@@ -85,6 +119,14 @@ class VtkJsBaseView(HtmlElement):
     @property
     def camera_authority(self):
         return self._camera_authority
+
+    @property
+    def tiles3d_texture_policy(self):
+        return self._tiles3d_texture_policy
+
+    @property
+    def tiles3d_quality_policy(self):
+        return self._tiles3d_quality_policy
 
     def _init_publisher(self):
         from trame_vtklocal.widgets.publisher import ScenePublisher

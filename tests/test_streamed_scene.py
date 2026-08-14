@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import gc
+import json
 import subprocess
 import sys
 import weakref
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
@@ -53,6 +55,30 @@ IDENTITY = (
     0.0,
     1.0,
 )
+
+TILES3D_SOURCE_CORPUS = json.loads(
+    (
+        Path(__file__).parent.parent
+        / "vue-components/node_modules/pointcloud-lod/test/fixtures/tiles3d-source-contract.json"
+    ).read_text()
+)
+
+
+def _tiles_source_from_document(document):
+    config = document.get("tiles3d") or {}
+    return Tiles3DSource(
+        source_asset_id=document.get("sourceAssetId"),
+        revision=document.get("revision"),
+        endpoint=document.get("endpoint"),
+        tileset_to_scene=config.get("tilesetToScene"),
+        maximum_screen_space_error_px=config.get("maximumScreenSpaceErrorPx"),
+        vertical_exaggeration=config.get("verticalExaggeration", 1.0),
+        vertical_pivot_z=config.get("verticalPivotZ", 0.0),
+    )
+
+
+def _contract_reason_key(value):
+    return "".join(character for character in str(value).lower() if character.isalnum())
 
 
 class _Protocol:
@@ -318,6 +344,19 @@ def test_tiles_source_rejects_invalid_wire_values(kwargs, match):
     }
     with pytest.raises(ValueError, match=match):
         Tiles3DSource(**values)
+
+
+def test_tiles_source_consumes_shared_wire_contract_corpus():
+    for fixture in TILES3D_SOURCE_CORPUS["valid"]:
+        source = _tiles_source_from_document(fixture["document"])
+        assert source.source_asset_id == fixture["document"]["sourceAssetId"]
+
+    for fixture in TILES3D_SOURCE_CORPUS["invalid"]:
+        with pytest.raises(ValueError) as error:
+            _tiles_source_from_document(fixture["document"])
+        assert _contract_reason_key(fixture["reason"]) in _contract_reason_key(
+            error.value
+        ), fixture["name"]
 
 
 def test_source_update_bumps_mtime_and_reaches_translation():

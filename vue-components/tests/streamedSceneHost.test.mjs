@@ -317,6 +317,7 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
       tilesetToScene: IDENTITY,
       verticalExaggeration: 1,
       verticalPivotZ: 0,
+      geometricErrorScale: "maximum",
     },
   );
   assert.deepEqual(
@@ -334,6 +335,7 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
       tilesetToScene: IDENTITY,
       verticalExaggeration: 3.5,
       verticalPivotZ: -12,
+      geometricErrorScale: "maximum",
     },
   );
   for (const tiles3d of [

@@ -223,6 +223,7 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
             "maximumScreenSpaceErrorPx": 12.0,
             "verticalExaggeration": 2.5,
             "verticalPivotZ": 105.25,
+            "geometricErrorScale": "maximum",
         },
     }
 
@@ -233,6 +234,7 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         "tilesetToScene": list(IDENTITY),
         "verticalExaggeration": 1.0,
         "verticalPivotZ": 0.0,
+        "geometricErrorScale": "maximum",
     }
 
 

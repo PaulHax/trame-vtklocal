@@ -210,6 +210,7 @@ class Tiles3DSource:
     maximum_screen_space_error_px: float | None = None
     vertical_exaggeration: float = 1.0
     vertical_pivot_z: float = 0.0
+    geometric_error_scale: str = "maximum"
 
     def __post_init__(self):
         object.__setattr__(
@@ -282,6 +283,11 @@ class Tiles3DSource:
             raise ValueError("vertical_pivot_z must be finite")
         object.__setattr__(self, "vertical_pivot_z", vertical_pivot_z)
 
+        if self.geometric_error_scale not in {"maximum", "horizontal"}:
+            raise ValueError(
+                "geometric_error_scale must be 'maximum' or 'horizontal'"
+            )
+
 
 _SOURCE_TYPES = (PointCloudSource, Tiles3DSource)
 
@@ -353,6 +359,7 @@ def source_block(source):
         "tilesetToScene": list(source.tileset_to_scene),
         "verticalExaggeration": source.vertical_exaggeration,
         "verticalPivotZ": source.vertical_pivot_z,
+        "geometricErrorScale": source.geometric_error_scale,
     }
     if source.maximum_screen_space_error_px is not None:
         config["maximumScreenSpaceErrorPx"] = source.maximum_screen_space_error_px

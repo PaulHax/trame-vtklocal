@@ -259,6 +259,7 @@ function normalizeTiles3d(value) {
     value.verticalExaggeration === undefined ? 1 : value.verticalExaggeration;
   const verticalPivotZ =
     value.verticalPivotZ === undefined ? 0 : value.verticalPivotZ;
+  const geometricErrorScale = value.geometricErrorScale ?? "maximum";
   if (
     !isPositiveFinite(verticalExaggeration) ||
     !Number.isFinite(verticalPivotZ)
@@ -268,10 +269,16 @@ function normalizeTiles3d(value) {
     }
     throw new RangeError("verticalPivotZ must be finite");
   }
+  if (!["maximum", "horizontal"].includes(geometricErrorScale)) {
+    throw new RangeError(
+      "geometricErrorScale must be 'maximum' or 'horizontal'",
+    );
+  }
   return {
     tilesetToScene: value.tilesetToScene.map(Number),
     verticalExaggeration,
     verticalPivotZ,
+    geometricErrorScale,
     ...(value.maximumScreenSpaceErrorPx === undefined ||
     value.maximumScreenSpaceErrorPx === null
       ? {}

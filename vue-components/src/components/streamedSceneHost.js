@@ -420,6 +420,49 @@ function qualityPolicy(config, tiles3dQualityPolicy) {
   };
 }
 
+export function createTilesetManifestFetch(
+  fetchImpl = globalThis.fetch,
+  maxEntries = 64,
+) {
+  const manifests = new Map();
+  return async (url) => {
+    let pending = manifests.get(url);
+    if (!pending) {
+      pending = Promise.resolve(fetchImpl(url))
+        .then(async (response) => {
+          // Endpoints include immutable revisions. Do not bind the shared read
+          // to one member's abort signal: a replacement member can adopt the
+          // same in-flight manifest instead of issuing a second GET.
+          const body = response.ok ? await response.json() : undefined;
+          if (!response.ok) manifests.delete(url);
+          return {
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            body,
+          };
+        })
+        .catch((error) => {
+          manifests.delete(url);
+          throw error;
+        });
+      manifests.set(url, pending);
+      while (manifests.size > maxEntries) {
+        manifests.delete(manifests.keys().next().value);
+      }
+    }
+    const response = await pending;
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      json: async () => response.body,
+    };
+  };
+}
+
+const pageTilesetManifestFetch = createTilesetManifestFetch();
+
 function memberConfig(entry) {
   const { config } = entry;
   const common = {
@@ -431,6 +474,7 @@ function memberConfig(entry) {
     return {
       ...common,
       ...config.kindConfig,
+      fetchTileset: pageTilesetManifestFetch,
       wasm: tiles3dWasmUrls(),
     };
   }

@@ -132,6 +132,38 @@ function fakeMember() {
   };
 }
 
+test("tileset manifest fetches collapse by immutable endpoint", async () => {
+  const { createTilesetManifestFetch } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
+  let calls = 0;
+  let resolveFetch;
+  const sharedFetch = createTilesetManifestFetch(async () => {
+    calls += 1;
+    await new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ asset: { version: "1.1" } }),
+    };
+  }, 2);
+
+  const first = sharedFetch("/tiles/a/rev/tileset.json", {
+    signal: new AbortController().signal,
+  });
+  const second = sharedFetch("/tiles/a/rev/tileset.json", {});
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  resolveFetch();
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(await a.json(), { asset: { version: "1.1" } });
+  assert.deepEqual(await b.json(), { asset: { version: "1.1" } });
+  assert.equal(calls, 1);
+});
+
 function fakeCoordinatorFactory(log) {
   return (options) => {
     log.options = options;

@@ -6,12 +6,118 @@
 // applier (`apply_ops` in tests/test_scene_store.py). Violations of the op
 // contract (removing an unknown id, patching a missing array) throw so the
 // engine can fall back to a resync.
+//
+// Derived array counts and ref-edge indexes are updated with each operation.
+// Removing a target preserves its incoming edges because those edges belong to
+// the referrers and are needed if the target is recreated.
 
 import { deepClone } from "./values";
 
 export function createMirrorStore() {
   const nodes = new Map();
   const arrayRefCounts = new Map();
+  const forwardRefs = new Map(); // referrer id -> Map(slot -> ordered target ids)
+  const reverseRefs = new Map(); // target id -> Map(slot -> Set(referrer ids))
+  let refRevision = 0;
+
+  function refIds(value) {
+    if (value === undefined || value === null) return [];
+    const values = Array.isArray(value) ? value : [value];
+    return values.map(String);
+  }
+
+  function sameIds(left, right) {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => value === right[index])
+    );
+  }
+
+  function normalizedRefs(refs) {
+    const normalized = new Map();
+    for (const [slot, value] of Object.entries(refs || {})) {
+      const ids = refIds(value);
+      if (ids.length) normalized.set(slot, ids);
+    }
+    return normalized;
+  }
+
+  function sameRefs(left, right) {
+    if (left.size !== right.size) return false;
+    for (const [slot, ids] of left) {
+      if (!right.has(slot) || !sameIds(ids, right.get(slot))) return false;
+    }
+    return true;
+  }
+
+  function addReverse(targetId, slot, referrerId) {
+    let slots = reverseRefs.get(targetId);
+    if (!slots) {
+      slots = new Map();
+      reverseRefs.set(targetId, slots);
+    }
+    let referrers = slots.get(slot);
+    if (!referrers) {
+      referrers = new Set();
+      slots.set(slot, referrers);
+    }
+    referrers.add(referrerId);
+  }
+
+  function removeReverse(targetId, slot, referrerId) {
+    const slots = reverseRefs.get(targetId);
+    const referrers = slots?.get(slot);
+    referrers?.delete(referrerId);
+    if (referrers?.size === 0) slots.delete(slot);
+    if (slots?.size === 0) reverseRefs.delete(targetId);
+  }
+
+  function updateRefs(id, refs) {
+    const previous = forwardRefs.get(id) || new Map();
+    const next = normalizedRefs(refs);
+    if (sameRefs(previous, next)) return;
+
+    for (const [slot, targetIds] of previous) {
+      for (const targetId of new Set(targetIds)) {
+        removeReverse(targetId, slot, id);
+      }
+    }
+    for (const [slot, targetIds] of next) {
+      for (const targetId of new Set(targetIds)) {
+        addReverse(targetId, slot, id);
+      }
+    }
+    if (next.size) forwardRefs.set(id, next);
+    else forwardRefs.delete(id);
+    refRevision += 1;
+  }
+
+  function referrersOf(targetId, slot) {
+    return [...(reverseRefs.get(String(targetId))?.get(slot) || [])];
+  }
+
+  function referrerSlotsOf(targetId) {
+    const slots = reverseRefs.get(String(targetId));
+    if (!slots) return [];
+    const edges = [];
+    for (const [slot, referrers] of slots) {
+      for (const referrerId of referrers) {
+        edges.push({ referrerId, slot });
+      }
+    }
+    return edges;
+  }
+
+  function referrerCount(targetId) {
+    const uniqueReferrers = new Set();
+    for (const slotReferrers of reverseRefs.get(String(targetId))?.values() ||
+      []) {
+      for (const referrerId of slotReferrers) {
+        uniqueReferrers.add(referrerId);
+      }
+    }
+    return uniqueReferrers.size;
+  }
 
   function adjustRef(ref, delta) {
     const count = (arrayRefCounts.get(ref) || 0) + delta;
@@ -39,6 +145,7 @@ export function createMirrorStore() {
       adjustNodeRefs(nodes.get(id), -1);
       nodes.set(id, node);
       adjustNodeRefs(node, 1);
+      updateRefs(id, node.refs);
       return;
     }
     if (op.op === "remove") {
@@ -49,6 +156,7 @@ export function createMirrorStore() {
       }
       adjustNodeRefs(node, -1);
       nodes.delete(id);
+      updateRefs(id, {});
       return;
     }
     if (op.op === "patchArray") {
@@ -75,8 +183,12 @@ export function createMirrorStore() {
   }
 
   function clear() {
+    const hadRefs = forwardRefs.size > 0;
     nodes.clear();
     arrayRefCounts.clear();
+    forwardRefs.clear();
+    reverseRefs.clear();
+    if (hadRefs) refRevision += 1;
   }
 
   function ids() {
@@ -131,6 +243,10 @@ export function createMirrorStore() {
     size,
     liveRefs,
     refCount,
+    referrersOf,
+    referrerSlotsOf,
+    referrerCount,
+    refRevision: () => refRevision,
     gcBlobCache,
     toObject,
   };

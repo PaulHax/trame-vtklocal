@@ -198,27 +198,18 @@ export function useSceneSync(
     );
   }
 
-  // Which mirrored nodes name `nodeId` in the given ref slot. The mirror is
-  // the wire's own statement of the scene graph, so a block handler needing a
-  // related node (an anchor actor for a mapper, the renderer hosting it)
-  // resolves the association here instead of scanning live vtk collections.
+  // Which desired nodes name `nodeId` in the given ref slot. The mirror
+  // maintains the reverse index as operations land, so association queries
+  // are proportional to actual referrers rather than scene size.
   function referrersOf(nodeId, slot) {
-    const target = String(nodeId);
-    const ids = [];
-    if (!mirror) return ids;
-    for (const [id, node] of mirror.entries()) {
-      const ref = node.refs?.[slot];
-      if (ref === target || (Array.isArray(ref) && ref.includes(target))) {
-        ids.push(id);
-      }
-    }
-    return ids;
+    return mirror?.referrersOf?.(nodeId, slot) || [];
   }
 
-  // Advances once per applied sync message — the only time actor/renderer
-  // topology can change, which is what lets per-frame passes reuse
-  // associations resolved from the mirror.
-  let sceneTopologyVersion = 0;
+  function getSceneTopologyVersion() {
+    return (
+      (mirror?.refRevision?.() ?? 0) + (reconciler?.instanceRevision?.() ?? 0)
+    );
+  }
 
   // Stage a texture source for this view's external-texture registry;
   // vtkProjectedTextureMapper instances resolve it by textureKey at render
@@ -519,6 +510,10 @@ export function useSceneSync(
         }
       }
     }
+    const appliedIdentity = reconciler?.describeAppliedRegistry?.() ?? {
+      instanceRevision: 0,
+      records: [],
+    };
     return {
       mySeq,
       live,
@@ -533,6 +528,14 @@ export function useSceneSync(
         completedFrameSerial,
         completedPreparedFrameSerial,
         sceneSeqAtLastPaint,
+      },
+      appliedIdentity: {
+        ...appliedIdentity,
+        records: appliedIdentity.records.map((record) => ({
+          ...record,
+          desiredType: mirror?.get?.(record.id)?.type ?? null,
+          referrerCount: mirror?.referrerCount?.(record.id) ?? 0,
+        })),
       },
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
         distanceToCameraGlyphs,
@@ -580,7 +583,7 @@ export function useSceneSync(
       openGLRenderWindow: getOpenGLRenderWindow?.(),
       referrersOf,
       getInstance,
-      topologyVersion: sceneTopologyVersion,
+      topologyVersion: getSceneTopologyVersion(),
       frameSerial,
     });
   }
@@ -601,9 +604,7 @@ export function useSceneSync(
     }
   }
 
-  // Everything the scene owes a frame before it is painted. Views ask for this
-  // one pass, so a new pre-paint pass is added here and nowhere else — no view
-  // has to carry its own copy of the list.
+  // Apply all scene-derived render state before painting.
   function beforeRender() {
     // vtk.js can notify RenderEvent from inside a view's explicit pre-paint
     // hook. Both calls prepare the same paint, so retain one serial until that
@@ -626,7 +627,6 @@ export function useSceneSync(
   // scene state schedules a paint through the engine callbacks; streaming work
   // belongs to that paint's pre-render pass, never to websocket message count.
   function afterApply(message) {
-    sceneTopologyVersion += 1;
     bindPrimaryCameraToRenderers();
     protectPreviewBindings();
     dragPreview.reapply(message);
@@ -805,8 +805,7 @@ export function useSceneSync(
     if (cameraInteractionStack.includes(true)) reportCamera();
   }
 
-  // The gesture's own `report` flag comes off the stack, so callers need pass
-  // nothing here — whatever `begin` declared is what `end` retracts.
+  // End the most recently opened camera gesture.
   function endCameraInteraction() {
     if (cameraInteractionStack.length === 0) return;
     const reported = cameraInteractionStack.pop();

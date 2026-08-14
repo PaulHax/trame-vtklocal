@@ -9,8 +9,11 @@ mirror-store client engine) against a shared-GL VtkJsSharedView:
 - the common scene API surface stays intact,
 - ``getRenderer()`` degrades gracefully on broken renderer collections.
 
-Run with --headed (VTK.js WebGL needs a GPU context):
-    pytest tests/test_shared_gl_context.py -v -s --headed
+The correctness suite runs headlessly by default:
+    pytest tests/test_shared_gl_context.py -v -s --browser chromium
+
+For an explicit hardware-renderer or performance qualification, add --headed
+and verify WEBGL_debug_renderer_info is not a software renderer.
 """
 
 import base64

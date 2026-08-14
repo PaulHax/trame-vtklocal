@@ -874,7 +874,7 @@ test("retained blocks survive unresolved anchors, config changes, migration, and
   host.dispose();
 });
 
-test("host adopts a reconciler replacement when an unchanged block does not re-fire", async () => {
+test("the reconciler re-fires a block when applied actor identity changes, and the host adopts the replacement", async () => {
   const [hostModule, reconcileModule, mirrorModule] = await Promise.all([
     loadModule("/src/components/streamedSceneHost.js"),
     loadModule("/src/components/engine/reconcile.js"),
@@ -988,7 +988,11 @@ test("host adopts a reconciler replacement when an unchanged block does not re-f
     new Map(),
   );
   context.topologyVersion += 1;
-  assert.equal(blockCalls, 1, "unchanged feature block was not invoked again");
+  assert.equal(
+    blockCalls,
+    2,
+    "a replaced actor instance is a scene identity change, so the block re-fires",
+  );
   host.beforeRender(context);
   assert.equal(firstMember.calls.at(-1)[0], "dispose");
   assert.equal(

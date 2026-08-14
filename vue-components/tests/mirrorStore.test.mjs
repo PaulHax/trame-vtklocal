@@ -71,10 +71,10 @@ test("first commit's upserts reproduce the full node graph", async () => {
 
   assert.deepEqual(mirror.toObject(), basicNodes());
   assert.equal(mirror.size(), 6);
-  assert.deepEqual(
-    [...mirror.liveRefs()].sort(),
-    ["c2:conn-1:off-1", "c:pts-hash-1"],
-  );
+  assert.deepEqual([...mirror.liveRefs()].sort(), [
+    "c2:conn-1:off-1",
+    "c:pts-hash-1",
+  ]);
   assert.equal(mirror.refCount("c:pts-hash-1"), 1);
 });
 
@@ -218,10 +218,10 @@ test("gcBlobCache drops refs no mirror node references", async () => {
     ["c:orphan", new Float32Array(3)],
   ]);
   mirror.gcBlobCache(cache);
-  assert.deepEqual(
-    [...cache.keys()].sort(),
-    ["c2:conn-1:off-1", "c:pts-hash-1"],
-  );
+  assert.deepEqual([...cache.keys()].sort(), [
+    "c2:conn-1:off-1",
+    "c:pts-hash-1",
+  ]);
 
   const renderer = basicNodes()["2"];
   renderer.refs.viewProps = [];
@@ -233,4 +233,116 @@ test("gcBlobCache drops refs no mirror node references", async () => {
   ]);
   mirror.gcBlobCache(cache);
   assert.equal(cache.size, 0);
+});
+
+test("desired ref indexes preserve order and deduplicate reverse edges", async () => {
+  const createMirrorStore = await loadMirrorStore();
+  const mirror = createMirrorStore();
+  const target = { type: "vtkTarget", refs: {} };
+  const owner = {
+    type: "vtkOwner",
+    refs: {
+      mapper: "target",
+      inputs: ["target", "target"],
+      viewProps: ["first", "second"],
+    },
+  };
+
+  mirror.applyOp({ op: "upsert", id: "target", node: target });
+  assert.equal(mirror.refRevision(), 0);
+  mirror.applyOp({ op: "upsert", id: "owner", node: owner });
+  assert.equal(mirror.refRevision(), 1);
+  assert.deepEqual(mirror.referrersOf("target", "mapper"), ["owner"]);
+  assert.deepEqual(mirror.referrersOf("target", "inputs"), ["owner"]);
+  assert.equal(
+    mirror.referrerCount("target"),
+    1,
+    "one desired node counts once even when several slots name the target",
+  );
+
+  mirror.applyOp({ op: "upsert", id: "owner", node: owner });
+  assert.equal(mirror.refRevision(), 1, "an identical upsert is not noise");
+
+  mirror.applyOp({
+    op: "upsert",
+    id: "owner",
+    node: {
+      ...owner,
+      refs: {
+        ...owner.refs,
+        inputs: ["target"],
+        viewProps: ["second", "first"],
+      },
+    },
+  });
+  assert.equal(
+    mirror.refRevision(),
+    2,
+    "list order and duplicate cardinality are desired topology",
+  );
+  assert.deepEqual(mirror.referrersOf("target", "inputs"), ["owner"]);
+
+  mirror.applyOp({
+    op: "upsert",
+    id: "second-owner",
+    node: { type: "vtkOwner", refs: { mapper: "target" } },
+  });
+  assert.equal(mirror.referrerCount("target"), 2);
+
+  mirror.applyOp({
+    op: "upsert",
+    id: "second-owner",
+    node: { type: "vtkOwner", refs: { mapper: "new-target" } },
+  });
+  assert.equal(mirror.refRevision(), 4);
+  assert.equal(mirror.referrerCount("target"), 1);
+  assert.deepEqual(mirror.referrersOf("new-target", "mapper"), [
+    "second-owner",
+  ]);
+});
+
+test("target removal preserves incoming refs while referrer removal clears them", async () => {
+  const createMirrorStore = await loadMirrorStore();
+  const mirror = createMirrorStore();
+  mirror.applyOps([
+    { op: "upsert", id: "target", node: { type: "vtkTarget", refs: {} } },
+    {
+      op: "upsert",
+      id: "owner",
+      node: {
+        type: "vtkOwner",
+        refs: { mapper: "target", inputs: ["target"] },
+      },
+    },
+  ]);
+  assert.equal(mirror.refRevision(), 1);
+
+  mirror.applyOp({ op: "remove", id: "target" });
+  assert.equal(mirror.refRevision(), 1);
+  assert.deepEqual(mirror.referrerSlotsOf("target"), [
+    { referrerId: "owner", slot: "mapper" },
+    { referrerId: "owner", slot: "inputs" },
+  ]);
+
+  mirror.applyOp({ op: "remove", id: "owner" });
+  assert.equal(mirror.refRevision(), 2);
+  assert.deepEqual(mirror.referrerSlotsOf("target"), []);
+  assert.equal(mirror.referrerCount("target"), 0);
+});
+
+test("clear invalidates ref topology once and is quiet when already empty", async () => {
+  const createMirrorStore = await loadMirrorStore();
+  const mirror = createMirrorStore();
+  mirror.applyOp({
+    op: "upsert",
+    id: "owner",
+    node: { type: "vtkOwner", refs: { mapper: "target" } },
+  });
+  assert.equal(mirror.refRevision(), 1);
+
+  mirror.clear();
+  assert.equal(mirror.refRevision(), 2);
+  assert.deepEqual(mirror.referrersOf("target", "mapper"), []);
+  mirror.clear();
+  assert.equal(mirror.refRevision(), 2);
 });

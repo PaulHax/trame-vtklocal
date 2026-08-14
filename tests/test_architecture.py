@@ -81,7 +81,9 @@ SIZE_BUDGETS = {
     # dataset children, pipeline producers — plus the dtc rewire-noise filter
     "widgets/dirty_tracker.py": 510,
     # publish tick + wire encoding + resync + dropped-blob re-entry guard
-    "widgets/publisher.py": 540,
+    # Raised at the streamed-scene merge: the blob-restore path and the
+    # streamed publisher additions landed independently, each under budget.
+    "widgets/publisher.py": 550,
 }
 
 

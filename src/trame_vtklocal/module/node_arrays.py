@@ -114,6 +114,94 @@ def registered_blob(object_manager, hash_value):
         return blob
 
 
+def _flat_array_bytes(array):
+    """Return one VTK data array's logical values as contiguous bytes."""
+    if array.GetClassName() == "vtkBitArray":
+        flat = np.fromiter(
+            (array.GetValue(index) for index in range(array.GetNumberOfValues())),
+            dtype=np.uint8,
+            count=array.GetNumberOfValues(),
+        )
+    else:
+        flat = vtk_to_numpy(array)
+    return np.ascontiguousarray(flat).reshape(-1).view(np.uint8)
+
+
+def _live_arrays_for_key(dataset, key):
+    if key == "points":
+        points = dataset.GetPoints() if hasattr(dataset, "GetPoints") else None
+        data = points.GetData() if points is not None else None
+        return [] if data is None else [data]
+
+    cell_getter = {
+        "verts": "GetVerts",
+        "lines": "GetLines",
+        "polys": "GetPolys",
+        "strips": "GetStrips",
+    }.get(key)
+    if cell_getter is not None:
+        cells = getattr(dataset, cell_getter, lambda: None)()
+        if cells is None:
+            return []
+        connectivity = cells.GetConnectivityArray()
+        offsets = cells.GetOffsetsArray()
+        return (
+            [] if connectivity is None or offsets is None else [connectivity, offsets]
+        )
+
+    if not key.startswith("field:"):
+        return []
+    _prefix, location, name = key.split(":", 2)
+    field_getter = {
+        "pointData": "GetPointData",
+        "cellData": "GetCellData",
+        "fieldData": "GetFieldData",
+    }.get(location)
+    if field_getter is None:
+        return []
+    field_data = getattr(dataset, field_getter, lambda: None)()
+    array = field_data.GetArray(name) if field_data is not None else None
+    return [] if array is None else [array]
+
+
+def restore_dataset_blobs(object_manager, node_id, node):
+    """Re-register missing blobs for one translated live dataset node.
+
+    VTK 9.6.2 can retain a cached array state after ``UnRegisterBlob`` without
+    restoring that state's payload during a render-window reserialization.
+    The translated node still names the correct hashes, so bridge the live VTK
+    arrays back into the object manager under those hashes.
+    """
+    dataset = object_manager.GetObjectAtId(int(node_id))
+    if dataset is None:
+        return set()
+
+    restored = set()
+    for key, entry in (node.get("arrays") or {}).items():
+        ref = entry.get("ref") if isinstance(entry, dict) else None
+        if not ref:
+            continue
+        if ref.startswith(REF_CONTENT_PREFIX):
+            hashes = [ref[len(REF_CONTENT_PREFIX) :]]
+        elif ref.startswith(REF_CELLS_PREFIX):
+            hashes = ref[len(REF_CELLS_PREFIX) :].split(":", 1)
+        else:
+            continue
+
+        arrays = _live_arrays_for_key(dataset, key)
+        if len(arrays) != len(hashes):
+            continue
+        for hash_value, array in zip(hashes, arrays):
+            if registered_blob(object_manager, hash_value) is not None:
+                continue
+            raw_bytes = _flat_array_bytes(array)
+            if raw_bytes.nbytes == 0:
+                continue
+            object_manager.RegisterBlob(hash_value, numpy_to_vtk(raw_bytes, deep=True))
+            restored.add(hash_value)
+    return restored
+
+
 def _register_field_array_blob(object_manager, array, location):
     # vtkObjectManager doesn't serialize vtkDataSetAttributes arrays, so
     # bridge them by hand: md5-address the raw bytes and register the blob
@@ -135,16 +223,7 @@ def _register_field_array_blob(object_manager, array, location):
     # byte per bit rather than advertising a logical value count for a shorter
     # packed payload.  ``vtk_to_numpy`` correctly exposes all other numeric
     # VTK arrays without relying on the Python array protocol.
-    if array.GetClassName() == "vtkBitArray":
-        flat = np.fromiter(
-            (array.GetValue(index) for index in range(array.GetNumberOfValues())),
-            dtype=np.uint8,
-            count=array.GetNumberOfValues(),
-        )
-    else:
-        flat = vtk_to_numpy(array)
-    flat = np.ascontiguousarray(flat).reshape(-1)
-    raw_bytes = flat.view(np.uint8)
+    raw_bytes = _flat_array_bytes(array)
     content_hash = hashlib.md5(raw_bytes).hexdigest()
     # RegisterBlob requires a vtkTypeUInt8Array (= vtkUnsignedCharArray).
     object_manager.RegisterBlob(content_hash, numpy_to_vtk(raw_bytes, deep=True))

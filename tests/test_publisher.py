@@ -47,10 +47,15 @@ class _CountingObjectManager:
     def __init__(self, wrapped):
         self.wrapped = wrapped
         self.get_state_calls = []
+        self.update_state_calls = []
 
     def GetState(self, object_id):
         self.get_state_calls.append(int(object_id))
         return self.wrapped.GetState(object_id)
+
+    def UpdateStateFromObject(self, object_id):
+        self.update_state_calls.append(int(object_id))
+        return self.wrapped.UpdateStateFromObject(object_id)
 
     def __getattr__(self, name):
         return getattr(self.wrapped, name)
@@ -205,6 +210,28 @@ def test_two_distant_point_moves_emit_two_small_patches(publisher_env):
     assert sum(len(bytes(op["data"])) for op in patches) == 6 * 4
 
 
+def test_retained_point_patch_skips_full_object_manager_serialization():
+    scene = make_points_cloud_scene()
+    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    scene.api.vtk_object_manager = counting
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        _start_retention(scene, publisher, server)
+        counting.update_state_calls.clear()
+
+        _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+        publisher.sync()
+
+        ((_topic, message),) = server.protocol.drain()
+        assert [op["op"] for op in message["ops"]] == ["patchArray"]
+        assert counting.update_state_calls == []
+    finally:
+        publisher.cleanup()
+
+
 def test_registered_named_point_data_array_uses_region_patches():
     scene = make_points_cloud_scene(point_count=1_000)
     values = np.arange(1_000, dtype=np.float32)
@@ -311,6 +338,9 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
     _start_retention(scene, publisher, server)
 
     _touch_point(scene, 42, (1.0, 1.0, 1.0))
+    # A simultaneous non-array change deliberately takes the full translation
+    # fallback, which creates the unused fresh blob this test exercises.
+    scene.handles["actor"].SetVisibility(False)
     publisher.sync()
     orphan_ref = publisher._hot_arrays._orphaned_refs[_dataset_id(scene)]
     (orphan_hash,) = ref_manager_hashes([orphan_ref])
@@ -319,6 +349,7 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
     # The next patch mints a new fresh hash; the previous orphan's blob is
     # no longer referenced by any state and is queued for the debounced GC.
     _touch_point(scene, 43, (2.0, 2.0, 2.0))
+    scene.handles["actor"].SetVisibility(True)
     publisher.sync()
     assert blob_size(object_manager, orphan_hash)  # retire is deferred
     scene.api.flush_stale_blobs()

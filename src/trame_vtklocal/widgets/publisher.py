@@ -47,9 +47,9 @@ from trame_vtklocal.widgets.dirty_tracker import DirtyTracker
 from trame_vtklocal.widgets.hot_arrays import (
     DEFAULT_HOT_ARRAY_KEYS,
     HotArrayDiffer,
+    commit_hot_array_batch,
     live_dataset_array,
 )
-
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
 RESYNC_BASE_SEQ = -1
@@ -319,6 +319,9 @@ class ScenePublisher:
         self._after_publish(batch, result)
 
     def _commit_batch(self, batch):
+        fast_result = commit_hot_array_batch(batch, self._object_manager, self._store, self._hot_arrays)
+        if fast_result is not None:
+            return fast_result
         # One serialization scope for the whole tick: the dtc bypass walks
         # every renderer's prop tree and rewires every dtc-fed mapper, so
         # entering it once (not per step) halves that walk and the rewire

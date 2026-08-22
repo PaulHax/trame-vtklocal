@@ -49,6 +49,30 @@ def live_dataset_array_sources(object_manager, node_id, key):
     return tuple(source for source in sources if source is not None)
 
 
+def live_dataset_array_containers(object_manager, node_id, key):
+    """Objects that only aggregate a supported dataset array's MTime.
+
+    ``vtkFieldData.GetMTime()`` is the maximum over the arrays it owns, so
+    editing an array's values moves its owning ``vtkPointData``'s MTime with
+    no ``ModifiedEvent`` of its own: the container shows up in a tick's
+    *swept* set. The container also carries state that is not any array's
+    values -- active-attribute assignments, array membership -- and those
+    edits do fire its ModifiedEvent, which keeps them out of the swept set.
+    That is the whole discriminator: a caller may excuse a dirty container
+    only when it was swept.
+
+    ``points`` needs no entry here: its ``vtkPoints`` fires its own event on
+    a coordinate edit and is already one of the array's sources.
+    """
+    vtk_object = object_manager.GetObjectAtId(int(node_id))
+    if vtk_object is None or not key.startswith("field:pointData:"):
+        return ()
+    point_data = (
+        vtk_object.GetPointData() if hasattr(vtk_object, "GetPointData") else None
+    )
+    return () if point_data is None else (point_data,)
+
+
 def live_dataset_array(object_manager, node_id, key):
     """Flat numpy view for a supported dataset array key, or ``None``."""
     sources = live_dataset_array_sources(object_manager, node_id, key)
@@ -302,8 +326,9 @@ def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
         return None
 
     dirty_ids = {str(object_id) for object_id in batch.dirty_ids}
+    swept_ids = {str(object_id) for object_id in batch.swept_ids}
     allowed_dirty_ids = {
-        str(node_id) for node_id in batch.candidates if str(node_id) in batch.swept_ids
+        str(node_id) for node_id in batch.candidates if str(node_id) in swept_ids
     }
     plans = []
     for node_id in batch.candidates:
@@ -319,7 +344,14 @@ def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
                 str(object_manager.GetId(source))
                 for source in live_dataset_array_sources(object_manager, node_id, key)
             }
+            container_ids = {
+                str(object_manager.GetId(container))
+                for container in live_dataset_array_containers(
+                    object_manager, node_id, key
+                )
+            }
             allowed_dirty_ids.update(source_ids)
+            allowed_dirty_ids.update(container_ids & swept_ids)
             if dirty_ids.isdisjoint(source_ids):
                 continue
             plan = hot_arrays.plan_retained_patch(node_id, key, entry)

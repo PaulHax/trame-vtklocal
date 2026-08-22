@@ -14,6 +14,7 @@ every tick:
 
 from __future__ import annotations
 
+import contextlib
 import copy
 
 import numpy as np
@@ -35,6 +36,7 @@ from push_oracle.scenes import (
 )
 from test_scene_store import apply_ops
 from trame_vtklocal.module import interaction as pick
+from trame_vtklocal.widgets import publisher as publisher_module
 from trame_vtklocal.widgets.hot_arrays import JS_ARRAY_DTYPE_MAP
 from trame_vtklocal.widgets.publisher import OPS_TOPIC, ScenePublisher
 
@@ -140,24 +142,64 @@ def assert_client_matches_server(client, publisher):
         assert cached == publisher._resolve_ref_payload(ref), ref
 
 
-def run_v2_oracle(scene_factory, mutators):
-    scene = scene_factory()
-    publisher, server = make_publisher(scene)
-    try:
-        client = MirrorClient()
-        client.resync(publisher)
-        assert_client_matches_server(client, publisher)
+@contextlib.contextmanager
+def hot_array_fast_path(enabled):
+    """Run the block with the publisher's sparse-patch bypass on or off.
 
-        for name, mutate in mutators:
-            mutate(scene)
-            publisher.sync()
-            for topic, message in server.protocol.drain():
-                assert topic == OPS_TOPIC
-                assert client.apply(message) == "applied", (name, message["seq"])
-            assert_client_matches_server(client, publisher)
-        return scene, publisher, server, client
+    Disabled, every tick goes through full object-manager serialization and
+    translation -- the path every assertion in this module was written
+    against before the bypass existed.
+    """
+    if enabled:
+        yield
+        return
+    original = publisher_module.commit_hot_array_batch
+    publisher_module.commit_hot_array_batch = lambda *args, **kwargs: None
+    try:
+        yield
     finally:
-        publisher.cleanup()
+        publisher_module.commit_hot_array_batch = original
+
+
+def run_v2_oracle(scene_factory, mutators, fast_path=True):
+    with hot_array_fast_path(fast_path):
+        scene = scene_factory()
+        publisher, server = make_publisher(scene)
+        try:
+            client = MirrorClient()
+            client.resync(publisher)
+            assert_client_matches_server(client, publisher)
+
+            for name, mutate in mutators:
+                mutate(scene)
+                publisher.sync()
+                for topic, message in server.protocol.drain():
+                    assert topic == OPS_TOPIC
+                    assert client.apply(message) == "applied", (name, message["seq"])
+                assert_client_matches_server(client, publisher)
+            return scene, publisher, server, client
+        finally:
+            publisher.cleanup()
+
+
+def run_v2_oracle_both_paths(scene_factory, mutators):
+    """Differential oracle: the bypass must be invisible to the client.
+
+    The same scenario runs twice, once with the sparse-patch fast path and
+    once forced down full translation. Both mirrors must end on the same
+    nodes, the same seq, and byte-identical blob content -- the fast path
+    skips serialization, so anything it fails to notice shows up here as a
+    divergence from the run that serialized everything.
+    """
+    runs = []
+    for fast_path in (True, False):
+        _scene, _publisher, _server, client = run_v2_oracle(
+            scene_factory, mutators, fast_path=fast_path
+        )
+        runs.append((client.seq, client.nodes, client.blobs))
+    fast, full = runs
+    assert fast == full
+    return fast
 
 
 # ----------------------------------------------------------------------
@@ -213,7 +255,7 @@ def _retag_pickable(scene):
 
 
 def test_oracle_basic_scene_mutations():
-    run_v2_oracle(
+    run_v2_oracle_both_paths(
         make_basic_scene,
         [
             ("hide-actor", _hide_actor),
@@ -223,6 +265,41 @@ def test_oracle_basic_scene_mutations():
             ("move-points", _move_points),
             ("mark-pickable", _mark_pickable),
             ("retag-pickable", _retag_pickable),
+        ],
+    )
+
+
+def _move_point(index, coords):
+    def mutate(scene):
+        scene.handles["points"].SetPoint(index, *coords)
+        scene.handles["points"].Modified()
+
+    return mutate
+
+
+def test_oracle_repeated_point_moves():
+    """The tick shape the sparse-patch bypass exists for, run both ways.
+
+    Every other scenario in this module changes a given array at most once,
+    which is always a full resend -- the bypass needs a retained copy from an
+    earlier tick, so it never engages there. This one moves the same points
+    over and over, with a no-op tick and a node-property tick mixed in, so
+    the fast path is chosen, declined and re-chosen inside one run.
+    """
+    run_v2_oracle_both_paths(
+        make_quad_scene,
+        [
+            ("prime-retention", _move_point(0, (0.25, 0.25, 0.0))),
+            ("move-1", _move_point(1, (1.5, 0.25, 0.0))),
+            ("move-3", _move_point(3, (0.0, 1.5, 0.0))),
+            (
+                "modified-without-change",
+                lambda scene: scene.handles["points"].Modified(),
+            ),
+            ("move-1-again", _move_point(1, (3.5, 0.75, 0.0))),
+            ("set-opacity", _set_opacity),
+            ("move-3-after-a-node-change", _move_point(3, (0.0, 4.5, 0.0))),
+            ("move-0-again", _move_point(0, (5.5, 1.25, 0.0))),
         ],
     )
 
@@ -240,10 +317,22 @@ def _mutate_field_data(scene):
         scene.handles["homography"],
         [
             (
-                2.0, 0.0, 0.5, 0.0,
-                0.0, 2.0, 0.5, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0,
+                2.0,
+                0.0,
+                0.5,
+                0.0,
+                0.0,
+                2.0,
+                0.5,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
             )
         ],
     )
@@ -251,7 +340,7 @@ def _mutate_field_data(scene):
 
 
 def test_oracle_quad_array_mutations():
-    run_v2_oracle(
+    run_v2_oracle_both_paths(
         make_quad_scene,
         [
             ("move-tcoords", _mutate_tcoords),
@@ -273,7 +362,7 @@ def _mutate_cell_scalars(scene):
 
 
 def test_oracle_scalars_mutations():
-    run_v2_oracle(
+    run_v2_oracle_both_paths(
         make_scalars_scene,
         [
             ("point-scalars", _mutate_point_scalars),
@@ -297,7 +386,7 @@ def _replace_lines_cell_array(scene):
 
 
 def test_oracle_cell_array_replacement():
-    run_v2_oracle(
+    run_v2_oracle_both_paths(
         make_polyline_scene,
         [("replace-lines", _replace_lines_cell_array)],
     )
@@ -308,7 +397,7 @@ def _bump_cone_resolution(scene):
 
 
 def test_oracle_pipeline_source_mutation():
-    run_v2_oracle(
+    run_v2_oracle_both_paths(
         make_pipeline_cone_scene,
         [("bump-cone-resolution", _bump_cone_resolution)],
     )
@@ -319,7 +408,7 @@ def _bump_sphere_resolution(scene):
 
 
 def test_oracle_two_stage_pipeline_mutation():
-    run_v2_oracle(
+    run_v2_oracle_both_paths(
         make_two_stage_pipeline_scene,
         [("bump-sphere-resolution", _bump_sphere_resolution)],
     )
@@ -327,13 +416,19 @@ def test_oracle_two_stage_pipeline_mutation():
 
 def test_oracle_map_drape_frame_loop():
     mutators = [
-        (f"frame-{index}", lambda scene, index=index: mutate_map_drape_frame(scene, index))
+        (
+            f"frame-{index}",
+            lambda scene, index=index: mutate_map_drape_frame(scene, index),
+        )
         for index in range(1, 5)
     ]
     mutators.append(
-        ("visibility-only", lambda scene: scene.handles["actors"][0].SetVisibility(False))
+        (
+            "visibility-only",
+            lambda scene: scene.handles["actors"][0].SetVisibility(False),
+        )
     )
-    run_v2_oracle(make_map_drape_scene, mutators)
+    run_v2_oracle_both_paths(make_map_drape_scene, mutators)
 
 
 # ----------------------------------------------------------------------
@@ -396,7 +491,9 @@ def test_oracle_commands_ride_ops_and_order_with_scene_changes():
         publisher.sync()
         ((_topic, message),) = server.protocol.drain()
         assert message["ops"]
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 1}, "render": True}]
+        assert message["commands"] == [
+            {"name": "mapCamera", "payload": {"frame": 1}, "render": True}
+        ]
         assert client.apply(message) == "applied"
 
         # Command with no pending ops: empty-ops message with a fresh seq.

@@ -80,7 +80,7 @@ Optionally, you can develop with bleeding edge VTK by following these steps. Mak
     # Windows: Set environment variables
     ./utils/dev_environment.ps1 -b master -c RelWithDebInfo
     
-    # Unix: Set environemt variables
+    # Unix: Set environment variables
     source ./utils/dev_environment.sh -b master -c RelWithDebInfo
 
 

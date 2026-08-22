@@ -173,9 +173,7 @@ class JsOracle:
                     "server_seq": server_shadow.get("seq"),
                     "last_applied_op": diag.get("lastAppliedOp"),
                     "first_difference": diff,
-                    "console_errors": (self.console_messages() or {}).get(
-                        "errors", []
-                    ),
+                    "console_errors": (self.console_messages() or {}).get("errors", []),
                 },
             )
 

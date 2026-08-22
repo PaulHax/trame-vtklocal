@@ -382,7 +382,9 @@ def test_transaction_batches_mutations_into_one_broadcast():
         assert (
             str(object_manager.GetId(scene.handles["actor"].GetProperty())) in upserted
         )
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}, "render": True}]
+        assert message["commands"] == [
+            {"name": "mapCamera", "payload": {"frame": 3}, "render": True}
+        ]
     finally:
         publisher.cleanup()
 
@@ -592,7 +594,9 @@ def test_commands_and_request_resync_ignore_camera_authority():
         publisher.send_command("mapCamera", {"frame": 3})
         publisher.sync()
         ((_topic, message),) = server.protocol.drain()
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}, "render": True}]
+        assert message["commands"] == [
+            {"name": "mapCamera", "payload": {"frame": 3}, "render": True}
+        ]
         assert message["ops"] == []
 
         seq_before = publisher.store.seq
@@ -807,9 +811,9 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
             if op["op"] == "upsert" and op["id"] == dataset_id
         ]
         entry = upsert["node"]["arrays"]["points"]
-        assert entry["ref"] in message["blobs"], (
-            "the re-entering dataset's points blob must be inlined"
-        )
+        assert (
+            entry["ref"] in message["blobs"]
+        ), "the re-entering dataset's points blob must be inlined"
         payload = bytes(message["blobs"][entry["ref"]])
         assert len(payload) == expected_bytes, (
             f"re-entering dataset broadcast {len(payload)} bytes, expected "

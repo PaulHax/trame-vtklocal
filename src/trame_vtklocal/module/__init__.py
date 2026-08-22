@@ -19,6 +19,7 @@ def _versioned_asset(asset_name):
     version = int(asset_path.stat().st_mtime)
     return f"__trame_vtklocal/js/{asset_name}?v={version}"
 
+
 serve = {"__trame_vtklocal": serve_path}
 scripts = [_versioned_asset("trame_vtklocal.umd.js")]
 styles = [_versioned_asset("trame_vtklocal.css")]

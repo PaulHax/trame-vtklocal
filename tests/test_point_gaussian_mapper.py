@@ -32,9 +32,7 @@ from trame_vtklocal.module.node_translator import translate_scene
 from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.widgets.blob_payloads import resolve_ref_payload
 
-POSITIONS = np.array(
-    [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float32
-)
+POSITIONS = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float32)
 # Full-range channels straddling the signed-byte midpoint (0/127/128/255).
 COLORS = np.array(
     [[0, 127, 128], [255, 0, 127], [128, 255, 0], [127, 128, 255]],
@@ -122,7 +120,9 @@ def test_native_mapper_maps_to_the_client_point_gaussian_type():
     assert POINT_GAUSSIAN_ONLY.isdisjoint(props)
 
     # No native OpenGL class name survives anywhere in the scene.
-    assert all(node["type"] != "vtkOpenGLPointGaussianMapper" for node in nodes.values())
+    assert all(
+        node["type"] != "vtkOpenGLPointGaussianMapper" for node in nodes.values()
+    )
 
 
 def test_native_scale_and_opacity_array_names_do_not_cross_the_wire():

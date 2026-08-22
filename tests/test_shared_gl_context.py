@@ -36,9 +36,7 @@ def wait_for_ready(page: Page):
 def trigger_and_wait(page: Page, name: str):
     """Fire a server trigger returning ``{"seq"}`` and wait for the client
     engine's cursor to reach it."""
-    result = page.evaluate(
-        "([name]) => window.trame.trigger(name, [])", [name]
-    )
+    result = page.evaluate("([name]) => window.trame.trigger(name, [])", [name])
     seq = result["seq"]
     page.evaluate("([seq]) => window.testWaitForSeq(seq, 5000)", [seq])
     return seq
@@ -53,12 +51,12 @@ def test_shared_common_scene_api(server, server_path, page: Page):
     assert result["ready"], "Shared view should be initialized before API inspection"
     assert result["missing"] == [], f"Missing common scene methods: {result['missing']}"
     assert result["hasRenderer"], "Shared view should expose getRenderer()"
-    assert result["cameraChanged"], (
-        "setCamera() should update the shared renderer camera"
-    )
-    assert result["cameraReset"], (
-        "resetCamera() should restore the shared renderer camera"
-    )
+    assert result[
+        "cameraChanged"
+    ], "setCamera() should update the shared renderer camera"
+    assert result[
+        "cameraReset"
+    ], "resetCamera() should restore the shared renderer camera"
 
 
 def test_scene_ops_apply_on_arrival(server, server_path, page: Page):
@@ -108,9 +106,9 @@ def test_point_nudge_rides_patch_array(server, server_path, page: Page):
     assert first and second, "applied scene should expose points content"
     before = struct.unpack("<f", base64.b64decode(first[0])[:4])[0]
     after = struct.unpack("<f", base64.b64decode(second[0])[:4])[0]
-    assert after == pytest.approx(before + 0.1, abs=1e-5), (
-        f"patched x should move by +0.1 (before={before}, after={after})"
-    )
+    assert after == pytest.approx(
+        before + 0.1, abs=1e-5
+    ), f"patched x should move by +0.1 (before={before}, after={after})"
 
     errors = page.evaluate("window.__consoleErrors || []")
     assert not errors, f"console errors during patchArray apply: {errors}"

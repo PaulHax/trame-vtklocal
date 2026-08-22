@@ -105,10 +105,22 @@ def make_quad_polydata():
         16,
         [
             (
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
             )
         ],
     )
@@ -315,7 +327,9 @@ def populate_scalars(api, render_window):
     render_window.AddRenderer(renderer)
 
     polydata, points, _tcoords, _homography = make_quad_polydata()
-    point_scalars = make_float_array("PointScalars", 1, [(0.0,), (0.5,), (1.0,), (0.5,)])
+    point_scalars = make_float_array(
+        "PointScalars", 1, [(0.0,), (0.5,), (1.0,), (0.5,)]
+    )
     cell_scalars = make_float_array("CellScalars", 1, [(0.25,)])
     polydata.GetPointData().SetScalars(point_scalars)
     polydata.GetCellData().SetScalars(cell_scalars)
@@ -514,22 +528,30 @@ def mutate_map_drape_frame(scene: OracleScene, frame_index: int):
         handles["homography"],
         [
             (
-                1.0, 0.0, offset, 0.0,
-                0.0, 1.0, offset * 0.5, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                offset, offset * 0.5, 0.0, 1.0,
+                1.0,
+                0.0,
+                offset,
+                0.0,
+                0.0,
+                1.0,
+                offset * 0.5,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                offset,
+                offset * 0.5,
+                0.0,
+                1.0,
             )
         ],
     )
 
     for index in range(3):
-        handles["frustum_points"].SetPoint(
-            index, offset + index, offset, index * 0.25
-        )
+        handles["frustum_points"].SetPoint(index, offset + index, offset, index * 0.25)
         handles["connection_points"].SetPoint(index, offset, index + offset, 0.0)
-        handles["trail_points"].SetPoint(
-            index, index * 0.5, offset + index * 0.1, 0.0
-        )
+        handles["trail_points"].SetPoint(index, index * 0.5, offset + index * 0.1, 0.0)
     for key in ["frustum_points", "connection_points", "trail_points"]:
         handles[key].Modified()
 

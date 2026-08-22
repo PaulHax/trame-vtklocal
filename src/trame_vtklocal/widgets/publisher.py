@@ -50,6 +50,7 @@ from trame_vtklocal.widgets.hot_arrays import (
     commit_hot_array_batch,
     live_dataset_array,
 )
+
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
 RESYNC_BASE_SEQ = -1
@@ -319,7 +320,13 @@ class ScenePublisher:
         self._after_publish(batch, result)
 
     def _commit_batch(self, batch):
-        fast_result = commit_hot_array_batch(batch, self._object_manager, self._store, self._hot_arrays)
+        # The fast path only reads VTK (GetObjectAtId/GetPoints/GetData), but
+        # it is still VTK work done on our behalf: suppressing makes that a
+        # contract instead of a property nobody re-checks.
+        with self._tracker.suppress():
+            fast_result = commit_hot_array_batch(
+                batch, self._object_manager, self._store, self._hot_arrays
+            )
         if fast_result is not None:
             return fast_result
         # One serialization scope for the whole tick: the dtc bypass walks

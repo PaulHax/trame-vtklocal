@@ -83,7 +83,12 @@ SIZE_BUDGETS = {
     # publish tick + wire encoding + resync + dropped-blob re-entry guard
     # Raised at the streamed-scene merge: the blob-restore path and the
     # streamed publisher additions landed independently, each under budget.
-    "widgets/publisher.py": 550,
+    # Raised again for the hot-array fast-path dispatch in _commit_batch:
+    # the file sat exactly at 550, so no arrangement of the dispatch (which
+    # needs the guard call plus the suppress() scope it runs under) fits.
+    # Next reduction: event_is_current() is a VTK-free, store-only predicate
+    # with one in-module caller and belongs beside the store, not here.
+    "widgets/publisher.py": 557,
 }
 
 

@@ -66,8 +66,7 @@ def _changed_spans(changed, gap_elements):
     firsts = changed[np.concatenate(([0], breaks + 1))]
     lasts = changed[np.concatenate((breaks, [changed.size - 1]))]
     return [
-        (int(first), int(last) - int(first) + 1)
-        for first, last in zip(firsts, lasts)
+        (int(first), int(last) - int(first) + 1) for first, last in zip(firsts, lasts)
     ]
 
 
@@ -193,7 +192,10 @@ class HotArrayDiffer:
         """Queue a retained patch plan and advance only its changed spans."""
         retained = self._retained[self._cache_key(plan.node_id, plan.key)]
         for offset, length in plan.spans:
-            values = plan.current[offset : offset + length]
+            # ``plan.current`` is a live view of VTK-owned memory. Copy the
+            # span once so the bytes on the wire and the bytes recorded as
+            # the client's new content are the same read.
+            values = plan.current[offset : offset + length].copy()
             tx.patch_array(
                 plan.node_id,
                 plan.key,
@@ -251,7 +253,9 @@ class HotArrayDiffer:
 
         entry["ref"] = stored_entry["ref"]
         for offset, length in spans:
-            values = current[offset : offset + length]
+            # One read of the live VTK memory feeds both the wire bytes and
+            # the retained copy (see :meth:`apply_retained_patch`).
+            values = current[offset : offset + length].copy()
             tx.patch_array(
                 node_id,
                 key,
@@ -279,15 +283,27 @@ def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
 
     Any structural, pipeline, node, or unsupported-array dirtiness returns
     ``None`` so the publisher uses its ordinary translation path.
+
+    The guard accepts a tick only when every dirty id is *explained* by a hot
+    array the plan re-validates. Explaining a dataset node itself relies on an
+    invariant of ``DirtyTracker``: every non-hot child of a supported dataset
+    (its ``vtkPoints``, ``vtkPointData``/``vtkCellData``/``vtkFieldData``, its
+    ``vtkCellArray`` children and every array they own) is observed, so a
+    change to one of them always contributes a dirty id this whitelist does
+    not cover and the tick falls back. ``test_hot_array_fast_path`` pins that
+    invariant — a child that stops being observed becomes silent data loss,
+    since the sweep only ever re-marks the dataset the guard then accepts.
+
+    Reads VTK but never mutates it; the publisher still enters its tracker's
+    ``suppress()`` around the call so that stays a contract rather than an
+    assumption.
     """
     if batch.structural or batch.producers or not batch.candidates:
         return None
 
     dirty_ids = {str(object_id) for object_id in batch.dirty_ids}
     allowed_dirty_ids = {
-        str(node_id)
-        for node_id in batch.candidates
-        if str(node_id) in batch.swept_ids
+        str(node_id) for node_id in batch.candidates if str(node_id) in batch.swept_ids
     }
     plans = []
     for node_id in batch.candidates:
@@ -314,7 +330,7 @@ def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
         if not node_has_dirty_hot_array:
             return None
 
-    if not dirty_ids or not dirty_ids.issubset(allowed_dirty_ids):
+    if not dirty_ids.issubset(allowed_dirty_ids):
         return None
 
     tx = store.transact()

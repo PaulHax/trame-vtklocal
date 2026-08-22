@@ -214,7 +214,7 @@ def _register_field_array_blob(object_manager, array, location):
     if cached is not None and cached[0] == mtime:
         entry = dict(cached[1])
         entry["location"] = location
-        hash_value = entry["ref"][len(REF_CONTENT_PREFIX):]
+        hash_value = entry["ref"][len(REF_CONTENT_PREFIX) :]
         if registered_blob(object_manager, hash_value) is not None:
             return entry
 
@@ -267,9 +267,7 @@ def _field_data_arrays(reader, dataset_id):
             array = field_data.GetArray(index)
             if array is None or array.GetNumberOfTuples() == 0:
                 continue
-            entry = _register_field_array_blob(
-                reader.object_manager, array, location
-            )
+            entry = _register_field_array_blob(reader.object_manager, array, location)
             registration = attribute_registrations.get(entry["name"])
             if registration:
                 entry["registration"] = registration

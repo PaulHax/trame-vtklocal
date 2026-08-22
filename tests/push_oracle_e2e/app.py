@@ -268,9 +268,7 @@ class OracleApp:
 
     def reset(self, scene_name: str):
         if scene_name not in known_scenes():
-            raise ValueError(
-                f"unknown scene {scene_name!r}; known: {known_scenes()}"
-            )
+            raise ValueError(f"unknown scene {scene_name!r}; known: {known_scenes()}")
 
         api = self.view_widget.api
 

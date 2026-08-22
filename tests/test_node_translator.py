@@ -330,7 +330,7 @@ def test_scene_commits_to_store_without_dangling_refs(scene_factory):
             assert pack_cell_array_payload(object_manager, ref)
         else:
             assert ref.startswith("c:")
-            assert blob_size(object_manager, ref[len("c:"):])
+            assert blob_size(object_manager, ref[len("c:") :])
 
 
 @pytest.mark.parametrize("scene_factory", SCENE_FACTORIES)
@@ -554,9 +554,7 @@ def test_client_camera_authority_excludes_cameras_and_the_active_camera_slot(
     )
 
     camera_ids = {
-        node_id
-        for node_id, node in server_nodes.items()
-        if node["type"] == "vtkCamera"
+        node_id for node_id, node in server_nodes.items() if node["type"] == "vtkCamera"
     }
     renderer_ids = {
         node_id
@@ -596,8 +594,7 @@ def test_client_camera_authority_translate_object_skips_the_camera():
 
     assert translate_object(object_manager, camera_id) is not None
     assert (
-        translate_object(object_manager, camera_id, camera_authority="client")
-        is None
+        translate_object(object_manager, camera_id, camera_authority="client") is None
     )
 
 
@@ -834,9 +831,10 @@ def test_field_array_datatype_matches_the_concrete_vtk_class(np_dtype, expected_
     payload = resolve_ref_payload(
         scene.api.vtk_object_manager, entry["ref"], lambda *_: None
     )
-    assert len(payload) == entry["size"] * np.dtype(
-        NUMPY_BY_JS_DATATYPE[entry["dataType"]]
-    ).itemsize
+    assert (
+        len(payload)
+        == entry["size"] * np.dtype(NUMPY_BY_JS_DATATYPE[entry["dataType"]]).itemsize
+    )
     decoded = np.frombuffer(payload, dtype=NUMPY_BY_JS_DATATYPE[entry["dataType"]])
     assert decoded.tolist() == values.tolist()
 

@@ -371,4 +371,3 @@ def bypass_distance_to_camera_for_serialization(vtk_root):
                 _restore_mapper_primary_input_connection(mapper, input_algorithm)
                 if hasattr(mapper, "GetMTime"):
                     _POST_REWIRE_MTIMES[mapper] = mapper.GetMTime()
-

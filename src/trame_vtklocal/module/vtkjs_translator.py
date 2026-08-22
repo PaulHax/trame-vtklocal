@@ -371,8 +371,4 @@ def actor_user_matrix_property(vtk_obj):
     if matrix is None:
         return None
 
-    return [
-        float(matrix.GetElement(row, col))
-        for col in range(4)
-        for row in range(4)
-    ]
+    return [float(matrix.GetElement(row, col)) for col in range(4) for row in range(4)]

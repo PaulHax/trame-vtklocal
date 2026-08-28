@@ -104,6 +104,18 @@ export function useSceneSync(
   let completedFrameSerial = 0;
   let completedPreparedFrameSerial = 0;
   let sceneSeqAtLastPaint = -1;
+  // Unlike the transport cursor, this advances only for a message that can
+  // change pixels. Empty ops messages deliberately do not request a paint, so
+  // consumers waiting for visual currency must compare against this watermark
+  // rather than mySeq.
+  let sceneSeqRequiringPaint = -1;
+
+  function requireScenePaint(message) {
+    const seq = Number(message?.seq);
+    if (Number.isFinite(seq)) {
+      sceneSeqRequiringPaint = Math.max(sceneSeqRequiringPaint, seq);
+    }
+  }
 
   function ensureStreamedSceneHost() {
     if (!streamedSceneHost) {
@@ -447,6 +459,7 @@ export function useSceneSync(
           afterApply(snapshot);
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
+          requireScenePaint(snapshot);
           if (!snapshot.commands?.some((command) => command?.render === true)) {
             renderRequestCallback?.();
           }
@@ -456,11 +469,15 @@ export function useSceneSync(
           afterApply(message);
           noteMessageApplied(message);
           if (!Array.isArray(message?.ops) || message.ops.length) {
+            requireScenePaint(message);
             renderRequestCallback?.();
           }
         },
-        onRenderRequested() {
-          if (!disposed) renderRequestCallback?.();
+        onRenderRequested(message) {
+          if (!disposed) {
+            requireScenePaint(message);
+            renderRequestCallback?.();
+          }
         },
         onCommand(name, payload) {
           if (!disposed) emit?.("command", { name, payload });
@@ -528,6 +545,7 @@ export function useSceneSync(
         completedFrameSerial,
         completedPreparedFrameSerial,
         sceneSeqAtLastPaint,
+        sceneSeqRequiringPaint,
       },
       appliedIdentity: {
         ...appliedIdentity,

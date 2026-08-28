@@ -1968,6 +1968,7 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     completedFrameSerial: 0,
     completedPreparedFrameSerial: 0,
     sceneSeqAtLastPaint: -1,
+    sceneSeqRequiringPaint: 1,
   });
   scene.recordFrameDuration(3);
   assert.equal(
@@ -1981,7 +1982,16 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     completedFrameSerial: 1,
     completedPreparedFrameSerial: 1,
     sceneSeqAtLastPaint: -1,
+    sceneSeqRequiringPaint: 1,
   });
+  const rendersAfterVisualMessage = renders;
+  engineCallbacks.onApplied({ kind: "ops", seq: 2, ops: [] });
+  assert.equal(
+    scene.getSyncDiagnostics().rendering.sceneSeqRequiringPaint,
+    1,
+    "a paint-free transport advance does not move the visual watermark",
+  );
+  assert.equal(renders, rendersAfterVisualMessage);
   scene.beforeRender();
   assert.equal(
     calls.filter(([name]) => name === "before").at(-1)[1].frameSerial,

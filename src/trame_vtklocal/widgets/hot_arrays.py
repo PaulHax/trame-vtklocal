@@ -95,6 +95,25 @@ def _changed_spans(changed, gap_elements):
 
 
 @dataclass(frozen=True)
+class Verdict:
+    """A payload-free classification of one array's change."""
+
+    name: str
+
+
+DROP = Verdict("drop")  # gone or past the retention cap: keep no copy
+RESET = Verdict("reset")  # send the whole array and retain it
+NO_OP = Verdict("no-op")  # unchanged: reuse the client's stored content
+
+
+@dataclass(frozen=True)
+class Patch:
+    """Changed regions small enough to send as ``patchArray`` ops."""
+
+    spans: tuple
+
+
+@dataclass(frozen=True)
 class HotArrayPatchPlan:
     node_id: str
     key: str
@@ -174,6 +193,41 @@ class HotArrayDiffer:
         if fresh_ref != used_ref:
             self._orphaned_refs[cache_key] = fresh_ref
 
+    def classify_change(self, current, retained, data_type):
+        """Decide what one configured array's tick needs, in cascade order.
+
+        ``retained`` is ``None`` whenever no comparable client-side content
+        exists -- including when the caller holds no stored entry to reuse.
+        The retention cap is answered before anything else, so an array too
+        large to ever patch is never copied into the retained map.
+        """
+        if current is None or current.nbytes > self._cap_bytes:
+            return DROP
+
+        expected_dtype = JS_ARRAY_DTYPE_MAP.get(data_type)
+        if (
+            retained is None
+            or expected_dtype is None
+            or retained.size != current.size
+            or retained.dtype != current.dtype
+            or current.dtype != np.dtype(expected_dtype)
+        ):
+            return RESET
+
+        changed = np.flatnonzero(retained != current)
+        if changed.size == 0:
+            return NO_OP
+        # Spans only widen the patch beyond the changed elements, so half the
+        # array changed already decides full-resend without assembling spans.
+        if changed.size * 2 >= current.size:
+            return RESET
+
+        spans = tuple(_changed_spans(changed, self._gap_elements))
+        patched_size = sum(length for _offset, length in spans)
+        if len(spans) > self._max_spans or patched_size * 2 >= current.size:
+            return RESET
+        return Patch(spans)
+
     def plan_retained_patch(self, node_id, key, stored_entry):
         """Plan a patch without serializing a fresh object-manager state.
 
@@ -184,110 +238,54 @@ class HotArrayDiffer:
         key = str(key)
         cache_key = self._cache_key(node_id, key)
         current = self._live_array(node_id, key)
-        retained = self._retained.get(cache_key)
-        if current is None or retained is None or stored_entry is None:
-            return None
-        if current.nbytes > self._cap_bytes:
-            return None
+        retained = None if stored_entry is None else self._retained.get(cache_key)
+        data_type = None if stored_entry is None else stored_entry.get("dataType")
 
-        data_type = stored_entry.get("dataType")
-        expected_dtype = JS_ARRAY_DTYPE_MAP.get(data_type)
-        if (
-            expected_dtype is None
-            or retained.size != current.size
-            or retained.dtype != current.dtype
-            or current.dtype != np.dtype(expected_dtype)
-        ):
-            return None
-
-        changed = np.flatnonzero(retained != current)
-        if changed.size == 0:
+        verdict = self.classify_change(current, retained, data_type)
+        if verdict is NO_OP:
             return HotArrayPatchPlan(node_id, key, data_type, current, ())
-        if changed.size * 2 >= current.size:
-            return None
+        if isinstance(verdict, Patch):
+            return HotArrayPatchPlan(node_id, key, data_type, current, verdict.spans)
+        return None
 
-        spans = tuple(_changed_spans(changed, self._gap_elements))
-        patched_size = sum(length for _offset, length in spans)
-        if len(spans) > self._max_spans or patched_size * 2 >= current.size:
-            return None
-        return HotArrayPatchPlan(node_id, key, data_type, current, spans)
+    def _write_spans(self, node_id, key, current, spans, data_type, tx):
+        """Queue each span and advance the retained copy over the same bytes."""
+        retained = self._retained[self._cache_key(node_id, key)]
+        for offset, length in spans:
+            # ``current`` is a live view of VTK-owned memory. Copy the span
+            # once so the bytes on the wire and the bytes recorded as the
+            # client's new content are the same read.
+            values = current[offset : offset + length].copy()
+            tx.patch_array(node_id, key, offset, values.tobytes(), data_type)
+            retained[offset : offset + length] = values
 
     def apply_retained_patch(self, plan, tx):
         """Queue a retained patch plan and advance only its changed spans."""
-        retained = self._retained[self._cache_key(plan.node_id, plan.key)]
-        for offset, length in plan.spans:
-            # ``plan.current`` is a live view of VTK-owned memory. Copy the
-            # span once so the bytes on the wire and the bytes recorded as
-            # the client's new content are the same read.
-            values = plan.current[offset : offset + length].copy()
-            tx.patch_array(
-                plan.node_id,
-                plan.key,
-                offset,
-                values.tobytes(),
-                plan.data_type,
-            )
-            retained[offset : offset + length] = values
+        self._write_spans(
+            plan.node_id, plan.key, plan.current, plan.spans, plan.data_type, tx
+        )
 
     def _apply_key(self, node_id, key, entry, stored_entry, tx):
         cache_key = self._cache_key(node_id, key)
         current = self._live_array(node_id, key)
-        if current is None or current.nbytes > self._cap_bytes:
+        retained = None if stored_entry is None else self._retained.get(cache_key)
+        verdict = self.classify_change(current, retained, entry.get("dataType"))
+
+        if verdict is DROP:
             self.drop(node_id, key)
             return
 
         fresh_ref = entry["ref"]
-        retained = self._retained.get(cache_key)
-        if retained is None or stored_entry is None:
-            self._retained[cache_key] = current.copy()
-            self._note_orphan(cache_key, fresh_ref, fresh_ref)
-            return
-
-        expected_dtype = JS_ARRAY_DTYPE_MAP.get(entry.get("dataType"))
-        comparable = (
-            expected_dtype is not None
-            and retained.size == current.size
-            and retained.dtype == current.dtype
-            and current.dtype == np.dtype(expected_dtype)
-        )
-        if not comparable:
-            self._retained[cache_key] = current.copy()
-            self._note_orphan(cache_key, fresh_ref, fresh_ref)
-            return
-
-        changed = np.flatnonzero(retained != current)
-        if changed.size == 0:
-            entry["ref"] = stored_entry["ref"]
-            self._note_orphan(cache_key, fresh_ref, stored_entry["ref"])
-            return
-
-        # Spans only widen the patch beyond the changed elements, so half the
-        # array changed already decides full-resend without assembling spans.
-        if changed.size * 2 >= current.size:
-            self._retained[cache_key] = current.copy()
-            self._note_orphan(cache_key, fresh_ref, fresh_ref)
-            return
-
-        spans = _changed_spans(changed, self._gap_elements)
-        patched_size = sum(length for _offset, length in spans)
-        if len(spans) > self._max_spans or patched_size * 2 >= current.size:
+        if verdict is RESET:
             self._retained[cache_key] = current.copy()
             self._note_orphan(cache_key, fresh_ref, fresh_ref)
             return
 
         entry["ref"] = stored_entry["ref"]
-        for offset, length in spans:
-            # One read of the live VTK memory feeds both the wire bytes and
-            # the retained copy (see :meth:`apply_retained_patch`).
-            values = current[offset : offset + length].copy()
-            tx.patch_array(
-                node_id,
-                key,
-                offset,
-                values.tobytes(),
-                entry["dataType"],
+        if isinstance(verdict, Patch):
+            self._write_spans(
+                node_id, key, current, verdict.spans, entry["dataType"], tx
             )
-            retained[offset : offset + length] = values
         self._note_orphan(cache_key, fresh_ref, stored_entry["ref"])
 
     def apply(self, node_id, node, stored_node, tx):

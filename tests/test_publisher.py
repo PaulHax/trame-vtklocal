@@ -303,6 +303,31 @@ def test_length_change_resends_full_content_ref(publisher_env):
     assert not [op for op in message["ops"] if op["op"] == "patchArray"]
 
 
+def test_over_cap_array_is_never_retained(publisher_env):
+    """The retention cap outranks "there is no retained copy yet".
+
+    Retention exists only to make patching possible, and an array past the
+    cap can never be patched. Copying one would hold exactly the memory the
+    cap refuses, for a diff that will never be taken.
+    """
+    scene, publisher, server = publisher_env
+    publisher._hot_arrays._cap_bytes = 8
+
+    _touch_point(scene, 0, (9.0, 9.0, 9.0))
+    publisher.sync()
+
+    ((_topic, message),) = server.protocol.drain()
+    (op,) = message["ops"]
+    assert op["op"] == "upsert"
+    assert publisher._hot_arrays._retained == {}
+
+    # Still refused on a later tick, when a stored entry does exist.
+    _touch_point(scene, 1, (8.0, 8.0, 8.0))
+    publisher.sync()
+    server.protocol.drain()
+    assert publisher._hot_arrays._retained == {}
+
+
 def test_identical_content_publishes_nothing(publisher_env):
     scene, publisher, server = publisher_env
     _start_retention(scene, publisher, server)

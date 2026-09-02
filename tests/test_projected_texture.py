@@ -77,9 +77,7 @@ def test_marked_mapper_translates_with_type_and_props():
 
 def test_matrix_updates_ride_the_mapper_state():
     api, rw, mapper, render_window_id = _make_scene()
-    ptx.mark_projected_texture(
-        mapper, "video", mode=ptx.MODE_WORLD_TO_CLIP
-    )
+    ptx.mark_projected_texture(mapper, "video", mode=ptx.MODE_WORLD_TO_CLIP)
 
     mtime_before = mapper.GetMTime()
     matrix = [float(i) for i in range(16)]
@@ -93,13 +91,19 @@ def test_matrix_updates_ride_the_mapper_state():
     assert node["blocks"]["projectedTexture"]["worldToClip"] == matrix
     assert node["blocks"]["projectedTexture"]["mode"] == "worldToClip"
 
-    ptx.set_projected_texture_matrix(
-        mapper, homography=[1, 0, 0, 0, 1, 0, 0, 0, 1]
-    )
+    ptx.set_projected_texture_matrix(mapper, homography=[1, 0, 0, 0, 1, 0, 0, 0, 1])
     state = _translate(api, rw, render_window_id)
     (node,) = _find_nodes(state, ptx.PROJECTED_TEXTURE_TYPE)
     assert node["blocks"]["projectedTexture"]["homography"] == [
-        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ]
     # Remarking (e.g. a mode flip) keeps previously set matrices.
     ptx.mark_projected_texture(mapper, "video", mode=ptx.MODE_HOMOGRAPHY)

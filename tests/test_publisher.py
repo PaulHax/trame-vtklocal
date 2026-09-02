@@ -47,10 +47,15 @@ class _CountingObjectManager:
     def __init__(self, wrapped):
         self.wrapped = wrapped
         self.get_state_calls = []
+        self.update_state_calls = []
 
     def GetState(self, object_id):
         self.get_state_calls.append(int(object_id))
         return self.wrapped.GetState(object_id)
+
+    def UpdateStateFromObject(self, object_id):
+        self.update_state_calls.append(int(object_id))
+        return self.wrapped.UpdateStateFromObject(object_id)
 
     def __getattr__(self, name):
         return getattr(self.wrapped, name)
@@ -205,6 +210,28 @@ def test_two_distant_point_moves_emit_two_small_patches(publisher_env):
     assert sum(len(bytes(op["data"])) for op in patches) == 6 * 4
 
 
+def test_retained_point_patch_skips_full_object_manager_serialization():
+    scene = make_points_cloud_scene()
+    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    scene.api.vtk_object_manager = counting
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        _start_retention(scene, publisher, server)
+        counting.update_state_calls.clear()
+
+        _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+        publisher.sync()
+
+        ((_topic, message),) = server.protocol.drain()
+        assert [op["op"] for op in message["ops"]] == ["patchArray"]
+        assert counting.update_state_calls == []
+    finally:
+        publisher.cleanup()
+
+
 def test_registered_named_point_data_array_uses_region_patches():
     scene = make_points_cloud_scene(point_count=1_000)
     values = np.arange(1_000, dtype=np.float32)
@@ -276,6 +303,31 @@ def test_length_change_resends_full_content_ref(publisher_env):
     assert not [op for op in message["ops"] if op["op"] == "patchArray"]
 
 
+def test_over_cap_array_is_never_retained(publisher_env):
+    """The retention cap outranks "there is no retained copy yet".
+
+    Retention exists only to make patching possible, and an array past the
+    cap can never be patched. Copying one would hold exactly the memory the
+    cap refuses, for a diff that will never be taken.
+    """
+    scene, publisher, server = publisher_env
+    publisher._hot_arrays._cap_bytes = 8
+
+    _touch_point(scene, 0, (9.0, 9.0, 9.0))
+    publisher.sync()
+
+    ((_topic, message),) = server.protocol.drain()
+    (op,) = message["ops"]
+    assert op["op"] == "upsert"
+    assert publisher._hot_arrays._retained == {}
+
+    # Still refused on a later tick, when a stored entry does exist.
+    _touch_point(scene, 1, (8.0, 8.0, 8.0))
+    publisher.sync()
+    server.protocol.drain()
+    assert publisher._hot_arrays._retained == {}
+
+
 def test_identical_content_publishes_nothing(publisher_env):
     scene, publisher, server = publisher_env
     _start_retention(scene, publisher, server)
@@ -311,6 +363,9 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
     _start_retention(scene, publisher, server)
 
     _touch_point(scene, 42, (1.0, 1.0, 1.0))
+    # A simultaneous non-array change deliberately takes the full translation
+    # fallback, which creates the unused fresh blob this test exercises.
+    scene.handles["actor"].SetVisibility(False)
     publisher.sync()
     orphan_ref = publisher._hot_arrays._orphaned_refs[_dataset_id(scene)]
     (orphan_hash,) = ref_manager_hashes([orphan_ref])
@@ -319,6 +374,7 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
     # The next patch mints a new fresh hash; the previous orphan's blob is
     # no longer referenced by any state and is queued for the debounced GC.
     _touch_point(scene, 43, (2.0, 2.0, 2.0))
+    scene.handles["actor"].SetVisibility(True)
     publisher.sync()
     assert blob_size(object_manager, orphan_hash)  # retire is deferred
     scene.api.flush_stale_blobs()
@@ -351,7 +407,9 @@ def test_transaction_batches_mutations_into_one_broadcast():
         assert (
             str(object_manager.GetId(scene.handles["actor"].GetProperty())) in upserted
         )
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}, "render": True}]
+        assert message["commands"] == [
+            {"name": "mapCamera", "payload": {"frame": 3}, "render": True}
+        ]
     finally:
         publisher.cleanup()
 
@@ -561,7 +619,9 @@ def test_commands_and_request_resync_ignore_camera_authority():
         publisher.send_command("mapCamera", {"frame": 3})
         publisher.sync()
         ((_topic, message),) = server.protocol.drain()
-        assert message["commands"] == [{"name": "mapCamera", "payload": {"frame": 3}, "render": True}]
+        assert message["commands"] == [
+            {"name": "mapCamera", "payload": {"frame": 3}, "render": True}
+        ]
         assert message["ops"] == []
 
         seq_before = publisher.store.seq
@@ -776,9 +836,9 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
             if op["op"] == "upsert" and op["id"] == dataset_id
         ]
         entry = upsert["node"]["arrays"]["points"]
-        assert entry["ref"] in message["blobs"], (
-            "the re-entering dataset's points blob must be inlined"
-        )
+        assert (
+            entry["ref"] in message["blobs"]
+        ), "the re-entering dataset's points blob must be inlined"
         payload = bytes(message["blobs"][entry["ref"]])
         assert len(payload) == expected_bytes, (
             f"re-entering dataset broadcast {len(payload)} bytes, expected "

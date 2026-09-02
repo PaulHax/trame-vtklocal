@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from trame_vtklocal.widgets.blob_payloads import numpy_array_from_vtk_data
@@ -26,22 +28,55 @@ JS_ARRAY_DTYPE_MAP = {
 }
 
 
-def live_dataset_array(object_manager, node_id, key):
-    """Flat numpy view for a supported dataset array key, or ``None``."""
+def live_dataset_array_sources(object_manager, node_id, key):
+    """VTK objects whose modification can change a supported dataset array."""
     vtk_object = object_manager.GetObjectAtId(int(node_id))
     if vtk_object is None:
-        return None
+        return ()
     if key == HOT_ARRAY_KEY:
         points = vtk_object.GetPoints() if hasattr(vtk_object, "GetPoints") else None
         data = points.GetData() if points is not None else None
+        sources = (points, data)
     elif key.startswith("field:pointData:"):
         name = key.split(":", 2)[2]
         point_data = (
             vtk_object.GetPointData() if hasattr(vtk_object, "GetPointData") else None
         )
         data = point_data.GetArray(name) if point_data is not None else None
+        sources = (data,)
     else:
-        data = None
+        sources = ()
+    return tuple(source for source in sources if source is not None)
+
+
+def live_dataset_array_containers(object_manager, node_id, key):
+    """Objects that only aggregate a supported dataset array's MTime.
+
+    ``vtkFieldData.GetMTime()`` is the maximum over the arrays it owns, so
+    editing an array's values moves its owning ``vtkPointData``'s MTime with
+    no ``ModifiedEvent`` of its own: the container shows up in a tick's
+    *swept* set. The container also carries state that is not any array's
+    values -- active-attribute assignments, array membership -- and those
+    edits do fire its ModifiedEvent, which keeps them out of the swept set.
+    That is the whole discriminator: a caller may excuse a dirty container
+    only when it was swept.
+
+    ``points`` needs no entry here: its ``vtkPoints`` fires its own event on
+    a coordinate edit and is already one of the array's sources.
+    """
+    vtk_object = object_manager.GetObjectAtId(int(node_id))
+    if vtk_object is None or not key.startswith("field:pointData:"):
+        return ()
+    point_data = (
+        vtk_object.GetPointData() if hasattr(vtk_object, "GetPointData") else None
+    )
+    return () if point_data is None else (point_data,)
+
+
+def live_dataset_array(object_manager, node_id, key):
+    """Flat numpy view for a supported dataset array key, or ``None``."""
+    sources = live_dataset_array_sources(object_manager, node_id, key)
+    data = sources[-1] if sources else None
     if data is None:
         return None
     return np.asarray(numpy_array_from_vtk_data(data)).reshape(-1)
@@ -55,9 +90,36 @@ def _changed_spans(changed, gap_elements):
     firsts = changed[np.concatenate(([0], breaks + 1))]
     lasts = changed[np.concatenate((breaks, [changed.size - 1]))]
     return [
-        (int(first), int(last) - int(first) + 1)
-        for first, last in zip(firsts, lasts)
+        (int(first), int(last) - int(first) + 1) for first, last in zip(firsts, lasts)
     ]
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """A payload-free classification of one array's change."""
+
+    name: str
+
+
+DROP = Verdict("drop")  # gone or past the retention cap: keep no copy
+RESET = Verdict("reset")  # send the whole array and retain it
+NO_OP = Verdict("no-op")  # unchanged: reuse the client's stored content
+
+
+@dataclass(frozen=True)
+class Patch:
+    """Changed regions small enough to send as ``patchArray`` ops."""
+
+    spans: tuple
+
+
+@dataclass(frozen=True)
+class HotArrayPatchPlan:
+    node_id: str
+    key: str
+    data_type: str
+    current: np.ndarray
+    spans: tuple
 
 
 class HotArrayDiffer:
@@ -79,6 +141,10 @@ class HotArrayDiffer:
         self._retained = {}  # (node_id, key) -> last-sent flat numpy copy
         self._orphaned_refs = {}  # (node_id, key) -> unused fresh content ref
         self._released_refs = set()
+
+    @property
+    def hot_keys(self):
+        return self._hot_keys
 
     def take_released_refs(self):
         released = self._released_refs
@@ -127,62 +193,99 @@ class HotArrayDiffer:
         if fresh_ref != used_ref:
             self._orphaned_refs[cache_key] = fresh_ref
 
+    def classify_change(self, current, retained, data_type):
+        """Decide what one configured array's tick needs, in cascade order.
+
+        ``retained`` is ``None`` whenever no comparable client-side content
+        exists -- including when the caller holds no stored entry to reuse.
+        The retention cap is answered before anything else, so an array too
+        large to ever patch is never copied into the retained map.
+        """
+        if current is None or current.nbytes > self._cap_bytes:
+            return DROP
+
+        expected_dtype = JS_ARRAY_DTYPE_MAP.get(data_type)
+        if (
+            retained is None
+            or expected_dtype is None
+            or retained.size != current.size
+            or retained.dtype != current.dtype
+            or current.dtype != np.dtype(expected_dtype)
+        ):
+            return RESET
+
+        changed = np.flatnonzero(retained != current)
+        if changed.size == 0:
+            return NO_OP
+        # Spans only widen the patch beyond the changed elements, so half the
+        # array changed already decides full-resend without assembling spans.
+        if changed.size * 2 >= current.size:
+            return RESET
+
+        spans = tuple(_changed_spans(changed, self._gap_elements))
+        patched_size = sum(length for _offset, length in spans)
+        if len(spans) > self._max_spans or patched_size * 2 >= current.size:
+            return RESET
+        return Patch(spans)
+
+    def plan_retained_patch(self, node_id, key, stored_entry):
+        """Plan a patch without serializing a fresh object-manager state.
+
+        ``None`` means the caller must use the full translation path. An empty
+        span tuple is a verified no-op.
+        """
+        node_id = str(node_id)
+        key = str(key)
+        cache_key = self._cache_key(node_id, key)
+        current = self._live_array(node_id, key)
+        retained = None if stored_entry is None else self._retained.get(cache_key)
+        data_type = None if stored_entry is None else stored_entry.get("dataType")
+
+        verdict = self.classify_change(current, retained, data_type)
+        if verdict is NO_OP:
+            return HotArrayPatchPlan(node_id, key, data_type, current, ())
+        if isinstance(verdict, Patch):
+            return HotArrayPatchPlan(node_id, key, data_type, current, verdict.spans)
+        return None
+
+    def _write_spans(self, node_id, key, current, spans, data_type, tx):
+        """Queue each span and advance the retained copy over the same bytes."""
+        retained = self._retained[self._cache_key(node_id, key)]
+        for offset, length in spans:
+            # ``current`` is a live view of VTK-owned memory. Copy the span
+            # once so the bytes on the wire and the bytes recorded as the
+            # client's new content are the same read.
+            values = current[offset : offset + length].copy()
+            tx.patch_array(node_id, key, offset, values.tobytes(), data_type)
+            retained[offset : offset + length] = values
+
+    def apply_retained_patch(self, plan, tx):
+        """Queue a retained patch plan and advance only its changed spans."""
+        self._write_spans(
+            plan.node_id, plan.key, plan.current, plan.spans, plan.data_type, tx
+        )
+
     def _apply_key(self, node_id, key, entry, stored_entry, tx):
         cache_key = self._cache_key(node_id, key)
         current = self._live_array(node_id, key)
-        if current is None or current.nbytes > self._cap_bytes:
+        retained = None if stored_entry is None else self._retained.get(cache_key)
+        verdict = self.classify_change(current, retained, entry.get("dataType"))
+
+        if verdict is DROP:
             self.drop(node_id, key)
             return
 
         fresh_ref = entry["ref"]
-        retained = self._retained.get(cache_key)
-        if retained is None or stored_entry is None:
-            self._retained[cache_key] = current.copy()
-            self._note_orphan(cache_key, fresh_ref, fresh_ref)
-            return
-
-        expected_dtype = JS_ARRAY_DTYPE_MAP.get(entry.get("dataType"))
-        comparable = (
-            expected_dtype is not None
-            and retained.size == current.size
-            and retained.dtype == current.dtype
-            and current.dtype == np.dtype(expected_dtype)
-        )
-        if not comparable:
-            self._retained[cache_key] = current.copy()
-            self._note_orphan(cache_key, fresh_ref, fresh_ref)
-            return
-
-        changed = np.flatnonzero(retained != current)
-        if changed.size == 0:
-            entry["ref"] = stored_entry["ref"]
-            self._note_orphan(cache_key, fresh_ref, stored_entry["ref"])
-            return
-
-        # Spans only widen the patch beyond the changed elements, so half the
-        # array changed already decides full-resend without assembling spans.
-        if changed.size * 2 >= current.size:
-            self._retained[cache_key] = current.copy()
-            self._note_orphan(cache_key, fresh_ref, fresh_ref)
-            return
-
-        spans = _changed_spans(changed, self._gap_elements)
-        patched_size = sum(length for _offset, length in spans)
-        if len(spans) > self._max_spans or patched_size * 2 >= current.size:
+        if verdict is RESET:
             self._retained[cache_key] = current.copy()
             self._note_orphan(cache_key, fresh_ref, fresh_ref)
             return
 
         entry["ref"] = stored_entry["ref"]
-        for offset, length in spans:
-            tx.patch_array(
-                node_id,
-                key,
-                offset,
-                current[offset : offset + length].tobytes(),
-                entry["dataType"],
+        if isinstance(verdict, Patch):
+            self._write_spans(
+                node_id, key, current, verdict.spans, entry["dataType"], tx
             )
-        self._retained[cache_key] = current.copy()
         self._note_orphan(cache_key, fresh_ref, stored_entry["ref"])
 
     def apply(self, node_id, node, stored_node, tx):
@@ -195,3 +298,72 @@ class HotArrayDiffer:
                 self.drop(node_id, key)
                 continue
             self._apply_key(node_id, key, entry, stored_arrays.get(key), tx)
+
+
+def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
+    """Commit an array-only tick before VTK serializes the whole payload.
+
+    Any structural, pipeline, node, or unsupported-array dirtiness returns
+    ``None`` so the publisher uses its ordinary translation path.
+
+    The guard accepts a tick only when every dirty id is *explained* by a hot
+    array the plan re-validates. Explaining a dataset node itself relies on an
+    invariant of ``DirtyTracker``: every non-hot child of a supported dataset
+    (its ``vtkPoints``, ``vtkPointData``/``vtkCellData``/``vtkFieldData``, its
+    ``vtkCellArray`` children and every array they own) is observed, so a
+    change to one of them always contributes a dirty id this whitelist does
+    not cover and the tick falls back. ``test_hot_array_fast_path`` pins that
+    invariant — a child that stops being observed becomes silent data loss,
+    since the sweep only ever re-marks the dataset the guard then accepts.
+
+    Reads VTK but never mutates it; the publisher still enters its tracker's
+    ``suppress()`` around the call so that stays a contract rather than an
+    assumption.
+    """
+    if batch.structural or batch.producers or not batch.candidates:
+        return None
+
+    dirty_ids = {str(object_id) for object_id in batch.dirty_ids}
+    swept_ids = {str(object_id) for object_id in batch.swept_ids}
+    allowed_dirty_ids = {
+        str(node_id) for node_id in batch.candidates if str(node_id) in swept_ids
+    }
+    plans = []
+    for node_id in batch.candidates:
+        node_id = str(node_id)
+        stored = store.get(node_id)
+        arrays = (stored or {}).get("arrays") or {}
+        node_has_dirty_hot_array = False
+        for key in hot_arrays.hot_keys:
+            entry = arrays.get(key)
+            if entry is None:
+                continue
+            source_ids = {
+                str(object_manager.GetId(source))
+                for source in live_dataset_array_sources(object_manager, node_id, key)
+            }
+            container_ids = {
+                str(object_manager.GetId(container))
+                for container in live_dataset_array_containers(
+                    object_manager, node_id, key
+                )
+            }
+            allowed_dirty_ids.update(source_ids)
+            allowed_dirty_ids.update(container_ids & swept_ids)
+            if dirty_ids.isdisjoint(source_ids):
+                continue
+            plan = hot_arrays.plan_retained_patch(node_id, key, entry)
+            if plan is None:
+                return None
+            plans.append(plan)
+            node_has_dirty_hot_array = True
+        if not node_has_dirty_hot_array:
+            return None
+
+    if not dirty_ids.issubset(allowed_dirty_ids):
+        return None
+
+    tx = store.transact()
+    for plan in plans:
+        hot_arrays.apply_retained_patch(plan, tx)
+    return tx.commit()

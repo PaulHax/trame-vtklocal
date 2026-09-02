@@ -101,14 +101,18 @@ class TwoViewClient:
         srv_shadow = self.shadow(view)
         if js_dump is None:
             raise JsOracleMismatch(
-                view=view, scene=scene, step=step,
+                view=view,
+                scene=scene,
+                step=step,
                 report={"actual": "JS dump returned None"},
             )
         js_norm = normalize_client_dump(js_dump)
         sh_norm = normalize_server_shadow(srv_shadow)
         if js_norm != sh_norm:
             raise JsOracleMismatch(
-                view=view, scene=scene, step=step,
+                view=view,
+                scene=scene,
+                step=step,
                 report={
                     "first_difference": first_difference(js_norm, sh_norm),
                 },

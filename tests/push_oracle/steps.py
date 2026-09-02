@@ -39,6 +39,7 @@ class E2EStep:
 # basic scene
 # ---------------------------------------------------------------------------
 
+
 def _basic_hide_actor(scene: OracleScene):
     scene.handles["actor"].SetVisibility(False)
 
@@ -63,6 +64,7 @@ def _basic_move_points(scene: OracleScene):
 # quad scene
 # ---------------------------------------------------------------------------
 
+
 def _quad_set_color(scene: OracleScene):
     scene.handles["actor"].GetProperty().SetColor(0.5, 0.25, 0.75)
 
@@ -80,10 +82,22 @@ def _quad_change_homography(scene: OracleScene):
         scene.handles["homography"],
         [
             (
-                2.0, 0.0, 0.0, 0.0,
-                0.0, 2.0, 0.0, 0.0,
-                0.0, 0.0, 2.0, 0.0,
-                0.5, 0.5, 0.0, 1.0,
+                2.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+                0.5,
+                0.5,
+                0.0,
+                1.0,
             )
         ],
     )
@@ -93,6 +107,7 @@ def _quad_change_homography(scene: OracleScene):
 # ---------------------------------------------------------------------------
 # map_drape scene
 # ---------------------------------------------------------------------------
+
 
 def _map_drape_frame_0(scene: OracleScene):
     mutate_map_drape_frame(scene, 0)
@@ -110,6 +125,7 @@ def _map_drape_frame_2(scene: OracleScene):
 # scalars scene
 # ---------------------------------------------------------------------------
 
+
 def _scalars_change_point_data(scene: OracleScene):
     set_float_array_values(
         scene.handles["point_scalars"],
@@ -126,6 +142,7 @@ def _scalars_change_cell_data(scene: OracleScene):
 # ---------------------------------------------------------------------------
 # polyline scene
 # ---------------------------------------------------------------------------
+
 
 def _polyline_move_points(scene: OracleScene):
     pts = scene.handles["points"]
@@ -155,9 +172,7 @@ REGISTRY: dict[str, dict[str, E2EStep]] = {
     "quad": {
         "set-color": E2EStep("set-color", _quad_set_color),
         "change-tcoords": E2EStep("change-tcoords", _quad_change_tcoords),
-        "change-homography": E2EStep(
-            "change-homography", _quad_change_homography
-        ),
+        "change-homography": E2EStep("change-homography", _quad_change_homography),
     },
     "map_drape": {
         "frame-0": E2EStep("frame-0", _map_drape_frame_0),
@@ -165,12 +180,8 @@ REGISTRY: dict[str, dict[str, E2EStep]] = {
         "frame-2": E2EStep("frame-2", _map_drape_frame_2),
     },
     "scalars": {
-        "change-point-data": E2EStep(
-            "change-point-data", _scalars_change_point_data
-        ),
-        "change-cell-data": E2EStep(
-            "change-cell-data", _scalars_change_cell_data
-        ),
+        "change-point-data": E2EStep("change-point-data", _scalars_change_point_data),
+        "change-cell-data": E2EStep("change-cell-data", _scalars_change_cell_data),
     },
     "polyline": {
         "move-points": E2EStep("move-points", _polyline_move_points),
@@ -187,9 +198,7 @@ def lookup_step(scene_name: str, step_name: str) -> E2EStep:
     if scene_name not in REGISTRY:
         raise KeyError(f"Unknown e2e scene {scene_name!r}")
     if step_name not in REGISTRY[scene_name]:
-        raise KeyError(
-            f"Unknown e2e step {step_name!r} for scene {scene_name!r}"
-        )
+        raise KeyError(f"Unknown e2e step {step_name!r} for scene {scene_name!r}")
     return REGISTRY[scene_name][step_name]
 
 

@@ -89,4 +89,3 @@ def set_projected_texture_matrix(mapper, homography=None, world_to_clip=None):
 def projected_texture_config(mapper):
     config = _MAPPER_CONFIGS.get(mapper)
     return dict(config) if config else None
-

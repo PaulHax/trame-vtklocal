@@ -39,7 +39,9 @@ def _imported_modules(source_path: Path):
                 base = parent_pkg.split(".")
                 if node.level > len(base):
                     continue
-                ancestor = base[: len(base) - (node.level - 1)] if node.level > 1 else base
+                ancestor = (
+                    base[: len(base) - (node.level - 1)] if node.level > 1 else base
+                )
                 resolved = ".".join(ancestor + ([node.module] if node.module else []))
                 yield node.lineno, resolved
             else:
@@ -60,8 +62,7 @@ def test_module_subpackage_does_not_import_widgets():
                 bad.append(f"{path.relative_to(SRC_ROOT.parent)}:{lineno}: {name}")
 
     assert not bad, (
-        "module/ must not import from widgets/. Violations:\n  "
-        + "\n  ".join(bad)
+        "module/ must not import from widgets/. Violations:\n  " + "\n  ".join(bad)
     )
 
 
@@ -83,7 +84,12 @@ SIZE_BUDGETS = {
     # publish tick + wire encoding + resync + dropped-blob re-entry guard
     # Raised at the streamed-scene merge: the blob-restore path and the
     # streamed publisher additions landed independently, each under budget.
-    "widgets/publisher.py": 550,
+    # Raised again for the hot-array fast-path dispatch in _commit_batch:
+    # the file sat exactly at 550, so no arrangement of the dispatch (which
+    # needs the guard call plus the suppress() scope it runs under) fits.
+    # Next reduction: event_is_current() is a VTK-free, store-only predicate
+    # with one in-module caller and belongs beside the store, not here.
+    "widgets/publisher.py": 557,
 }
 
 

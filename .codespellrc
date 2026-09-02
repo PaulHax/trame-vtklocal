@@ -1,2 +1,4 @@
 [codespell]
 skip = **/package-lock.json,**/vtkWasmSceneManager-9.3.mjs,CHANGELOG.md
+# LOD is level-of-detail throughout the point-cloud client, not a misspelling.
+ignore-words-list = lod

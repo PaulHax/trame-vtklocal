@@ -32,18 +32,14 @@ def _start_app(xprocess, server_relative_path: str):
 
 @pytest.fixture(scope="module")
 def e2e_app_shared(xprocess):
-    name, monitor = _start_app(
-        xprocess, "tests/push_oracle_e2e/app_shared.py"
-    )
+    name, monitor = _start_app(xprocess, "tests/push_oracle_e2e/app_shared.py")
     yield monitor
     xprocess.getinfo(name).terminate()
 
 
 @pytest.fixture(scope="module")
 def e2e_app_local(xprocess):
-    name, monitor = _start_app(
-        xprocess, "tests/push_oracle_e2e/app_local.py"
-    )
+    name, monitor = _start_app(xprocess, "tests/push_oracle_e2e/app_local.py")
     yield monitor
     xprocess.getinfo(name).terminate()
 

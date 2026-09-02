@@ -137,9 +137,7 @@ class TwoViewOracleApp:
     def run_step(self, view: str, step_name: str):
         widget = self._widgets[view]
         if view not in self._current_scene:
-            raise RuntimeError(
-                f"oracle.reset must be called for view {view!r} first"
-            )
+            raise RuntimeError(f"oracle.reset must be called for view {view!r} first")
         step = lookup_step(self._current_scene[view], step_name)
         step.mutate(self._current_oracle_scene[view])
         widget.sync()

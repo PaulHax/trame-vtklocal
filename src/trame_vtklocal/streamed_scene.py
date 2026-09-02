@@ -284,9 +284,7 @@ class Tiles3DSource:
         object.__setattr__(self, "vertical_pivot_z", vertical_pivot_z)
 
         if self.geometric_error_scale not in {"maximum", "horizontal"}:
-            raise ValueError(
-                "geometric_error_scale must be 'maximum' or 'horizontal'"
-            )
+            raise ValueError("geometric_error_scale must be 'maximum' or 'horizontal'")
 
 
 _SOURCE_TYPES = (PointCloudSource, Tiles3DSource)

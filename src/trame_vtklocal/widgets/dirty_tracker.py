@@ -14,10 +14,9 @@ live ``GetMTime`` values against the last snapshot.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.node_translator import is_node_class
+from trame_vtklocal.widgets.dirty_batch import DirtyBatch
 
 DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
 
@@ -107,36 +106,6 @@ def _owned_collections(vtk_obj):
         yield from _iter_via_getters(vtk_obj, ("GetViewProps", "GetLights"))
 
 
-# ---------------------------------------------------------------------------
-# Batch shape handed to the publisher
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class DirtyBatch:
-    """One tick's worth of dirty candidates.
-
-    - ``candidates``: node-level object-manager ids to re-translate.
-    - ``refresh_ids``: manager ids whose serialized state must refresh first
-      (includes structural collections — refreshing a collection's state is
-      what registers newly added members with the object manager).
-    - ``producers``: terminal pipeline producers to ``Update()`` before the
-      state refresh.
-    - ``structural``: a collection changed; the publisher re-syncs observers
-      after the tick so new objects get observed.
-    """
-
-    candidates: set = field(default_factory=set)
-    refresh_ids: set = field(default_factory=set)
-    producers: dict = field(default_factory=dict)
-    structural: bool = False
-
-    def __bool__(self):
-        return bool(
-            self.candidates or self.refresh_ids or self.producers or self.structural
-        )
-
-
 class DirtyTracker:
     """Observes a render window's dependency graph for dirty candidates."""
 
@@ -145,6 +114,7 @@ class DirtyTracker:
         self._rw_id = int(rw_id)
         self._on_dirty = on_dirty
         self._dirty_ids = set()
+        self._swept_ids = set()
         self._owner_ids = {}
         self._pipeline_updates = {}
         self._structural_ids = set()
@@ -179,6 +149,7 @@ class DirtyTracker:
         ):
             return
         self._dirty_ids.add(str(object_id))
+        self._swept_ids.discard(str(object_id))
         if self._on_dirty is not None:
             self._on_dirty()
 
@@ -234,6 +205,7 @@ class DirtyTracker:
                 ids = list(object_manager.GetAllDependencies(self._rw_id))
 
         pending_dirty_ids = set(self._dirty_ids)
+        pending_swept_ids = set(self._swept_ids)
         self._clear_observers()
         live_ids = {str(object_id) for object_id in ids}
 
@@ -282,6 +254,7 @@ class DirtyTracker:
             or object_id in owner_ids
             or object_id in pipeline_updates
         }
+        self._swept_ids = pending_swept_ids & self._dirty_ids
 
     def _sync_dataset_children(self, dataset_id, dataset, live_ids, owner_ids=None):
         if owner_ids is None:
@@ -451,8 +424,11 @@ class DirtyTracker:
 
     # -- consuming -----------------------------------------------------
 
-    def _map_dirty(self, dirty_ids):
-        batch = DirtyBatch()
+    def _map_dirty(self, dirty_ids, swept_ids=()):
+        batch = DirtyBatch(
+            dirty_ids=set(dirty_ids),
+            swept_ids=set(swept_ids),
+        )
         for object_id in dirty_ids:
             owners = self._owner_ids.get(object_id, ())
             batch.candidates.update(owners)
@@ -473,8 +449,10 @@ class DirtyTracker:
     def consume(self):
         """Take the pending dirty marks as a :class:`DirtyBatch`."""
         dirty_ids = self._dirty_ids
+        swept_ids = self._swept_ids
         self._dirty_ids = set()
-        return self._map_dirty(dirty_ids)
+        self._swept_ids = set()
+        return self._map_dirty(dirty_ids, swept_ids)
 
     def sweep(self):
         """Fold ids whose live mtime moved since the last snapshot into the
@@ -492,11 +470,14 @@ class DirtyTracker:
                 # always lands on a strictly larger MTime.
                 if dtc.mtime_is_rewire_noise(vtk_obj, mtime):
                     continue
+                if object_id not in self._dirty_ids:
+                    self._swept_ids.add(object_id)
                 self._dirty_ids.add(object_id)
 
     def cleanup(self):
         self._clear_observers()
         self._dirty_ids.clear()
+        self._swept_ids.clear()
         self._owner_ids.clear()
         self._pipeline_updates.clear()
         self._structural_ids.clear()

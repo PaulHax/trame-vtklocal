@@ -85,9 +85,17 @@ def first_difference(a, b, path="$"):
     if isinstance(a, dict) and isinstance(b, dict):
         for key in sorted(set(a) | set(b), key=str):
             if key not in a:
-                return {"path": f"{path}.{key}", "client": "<missing>", "server": b[key]}
+                return {
+                    "path": f"{path}.{key}",
+                    "client": "<missing>",
+                    "server": b[key],
+                }
             if key not in b:
-                return {"path": f"{path}.{key}", "client": a[key], "server": "<missing>"}
+                return {
+                    "path": f"{path}.{key}",
+                    "client": a[key],
+                    "server": "<missing>",
+                }
             found = first_difference(a[key], b[key], f"{path}.{key}")
             if found:
                 return found

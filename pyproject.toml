@@ -32,7 +32,9 @@ vtk = [
     # Older wheels resolve the mapper to vtkOpenGLPointGaussianMapper and then
     # fail to add its state, so every point-cloud anchor silently drops off the
     # wire instead of raising.
-    "vtk>=9.6",
+    # The fork is qualified against 9.6. VTK 9.7 changes serialized scene
+    # properties and needs separate client reconciliation work.
+    "vtk>=9.6,<9.7",
 ]
 dev = [
     "pre-commit",

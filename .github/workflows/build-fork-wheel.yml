@@ -103,7 +103,7 @@ jobs:
           sudo apt-get install -y libosmesa6-dev xvfb
           python -m venv /tmp/smoke
           /tmp/smoke/bin/pip install --upgrade pip
-          /tmp/smoke/bin/pip install "$(ls dist/trame_vtklocal-*.whl)[vtk]" -r tests/requirements.txt
+          /tmp/smoke/bin/pip install "$(ls dist/trame_vtklocal-*.whl)[vtk]" "vtk==9.6.0" -r tests/requirements.txt
           /tmp/smoke/bin/playwright install --with-deps chromium
           xvfb-run -a /tmp/smoke/bin/python -m pytest tests/test_shared_gl_context.py -v \
             --browser chromium --headed

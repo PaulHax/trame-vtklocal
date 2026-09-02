@@ -31,10 +31,7 @@ export function viewAsTypedArray(data, dataType, { copy = false } = {}) {
     // Copy when the caller will retain the result long-term (cache, store)
     // so the underlying msgpack packet can be GC'd; otherwise alias when the
     // byte offset is element-aligned for the fast path.
-    if (
-      !copy &&
-      data.byteOffset % Ctor.BYTES_PER_ELEMENT === 0
-    ) {
+    if (!copy && data.byteOffset % Ctor.BYTES_PER_ELEMENT === 0) {
       return new Ctor(
         data.buffer,
         data.byteOffset,

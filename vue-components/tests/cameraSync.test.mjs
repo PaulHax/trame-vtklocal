@@ -84,9 +84,7 @@ async function makeScene() {
   const renderWindow = {
     getRenderers: () => [renderer],
     getRenderersByReference: () => [renderer],
-    getViews: () => [
-      { getSize: () => [800, 400], getCanvas: () => canvas },
-    ],
+    getViews: () => [{ getSize: () => [800, 400], getCanvas: () => canvas }],
   };
   const events = [];
   const commandHandlers = new Map();
@@ -192,18 +190,12 @@ test("camera interaction is reference-counted across overlapping sources", async
     scene.endCameraInteraction();
 
     // The inner end must NOT emit a terminal report — depth is still > 0.
-    assert.equal(
-      events.filter((event) => event.name === "camera").length,
-      0,
-    );
+    assert.equal(events.filter((event) => event.name === "camera").length, 0);
 
     // The still-active source keeps reporting after the inner end.
     scene.cameraInteraction();
     fakeWindow.flush();
-    assert.equal(
-      events.filter((event) => event.name === "camera").length,
-      1,
-    );
+    assert.equal(events.filter((event) => event.name === "camera").length, 1);
 
     // The outermost end emits exactly one terminal report.
     scene.endCameraInteraction();
@@ -215,10 +207,7 @@ test("camera interaction is reference-counted across overlapping sources", async
     // An unmatched extra end at depth 0 is a no-op — no terminal report.
     scene.endCameraInteraction();
     fakeWindow.flush();
-    assert.equal(
-      events.filter((event) => event.name === "camera").length,
-      2,
-    );
+    assert.equal(events.filter((event) => event.name === "camera").length, 2);
   } finally {
     globalThis.window = previousWindow;
   }

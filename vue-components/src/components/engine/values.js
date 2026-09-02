@@ -19,7 +19,12 @@ export function deepEqual(a, b) {
   if (a === b) {
     return true;
   }
-  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== "object" ||
+    typeof b !== "object"
+  ) {
     return false;
   }
   const aIsArray = Array.isArray(a);

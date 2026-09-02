@@ -9,7 +9,9 @@ after(async () => {
 
 function buildScene(instances) {
   return async () => {
-    const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+    const { useSceneSync } = await loadModule(
+      "/src/components/useSceneSync.js",
+    );
     const synchronizerContext = {
       getInstance: (id) => instances.get(String(id)),
     };

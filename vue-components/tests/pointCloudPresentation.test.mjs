@@ -12,10 +12,8 @@ async function loadPresentationModule() {
 }
 
 test("direct point-cloud mapper tracks device-pixel ratio for CSS sizing", async () => {
-  const {
-    applyPointCloudPresentationBlock,
-    updatePointCloudPresentations,
-  } = await loadPresentationModule();
+  const { applyPointCloudPresentationBlock, updatePointCloudPresentations } =
+    await loadPresentationModule();
   const previous = globalThis.devicePixelRatio;
   const values = [];
   const mapper = {
@@ -56,10 +54,8 @@ function makeMapper() {
 }
 
 test("a mapper deleted after registration is dropped on the next update", async () => {
-  const {
-    applyPointCloudPresentationBlock,
-    updatePointCloudPresentations,
-  } = await loadPresentationModule();
+  const { applyPointCloudPresentationBlock, updatePointCloudPresentations } =
+    await loadPresentationModule();
   const mapper = makeMapper();
   const registry = new Map();
   applyPointCloudPresentationBlock(

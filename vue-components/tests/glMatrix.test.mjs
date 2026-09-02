@@ -79,7 +79,6 @@ const TRANSFORM = {
 const B = [2e-6, 0, 0, 0, 0, -2e-6, 0, 0, 0, 0, 3e-6, 0, 0.5, 0.5, 0.001, 1];
 const P = [1.2, 0, 0, 0, 0, 1.5, 0, 0, 0.1, 0.2, -1.001, -1, 0, 0, -0.2, 0];
 
-
 test("look-at pipeline survives sub-epsilon eye-center spans (close zoom)", () => {
   // A nadir camera ~19 m above its target in normalized-Mercator units:
   // every |eye - center| component is below gl-matrix's 1e-6 EPSILON, the
@@ -93,7 +92,11 @@ test("look-at pipeline survives sub-epsilon eye-center spans (close zoom)", () =
   // to identity here, so it must never rejoin the pipeline.
   const viewUp = newComputeViewUp(TRANSFORM);
   const bailed = mat4.lookAt(new Float64Array(16), eye, center, viewUp);
-  assertClose(bailed, mat4.identity(new Float64Array(16)), "lookAt identity bail");
+  assertClose(
+    bailed,
+    mat4.identity(new Float64Array(16)),
+    "lookAt identity bail",
+  );
   assert.ok(
     Math.abs(bailed[12] - newOut.look[12]) > 0.1,
     "identity bail diverges from the real view matrix",

@@ -115,7 +115,32 @@ export function createReconciler({
   // Ref slots
   // ---------------------------------------------------------------------
 
-  function applyListSlot(instance, spec, prevIds, nextIds) {
+  // referrer instance -> slot -> refId -> the child instance this reconciler
+  // last attached there. A vtk.js collection also holds children the client
+  // owns (streamed LOD tile actors, for one), which no server node names, so
+  // "everything in the collection" is never a safe stand-in for "everything
+  // the server put there".
+  const attachedChildren = new WeakMap();
+
+  function attachedSlot(instance, slot) {
+    let bySlot = attachedChildren.get(instance);
+    if (!bySlot) {
+      bySlot = new Map();
+      attachedChildren.set(instance, bySlot);
+    }
+    let children = bySlot.get(slot);
+    if (!children) {
+      children = new Map();
+      bySlot.set(slot, children);
+    }
+    return children;
+  }
+
+  function forgetAttachedSlot(instance, slot) {
+    attachedChildren.get(instance)?.get(slot)?.clear();
+  }
+
+  function applyListSlot(instance, slot, spec, prevIds, nextIds) {
     if (sameIdList(prevIds, nextIds)) {
       return;
     }
@@ -128,16 +153,23 @@ export function createReconciler({
       ? prevIds.filter((id) => !nextSet.has(id))
       : prevIds;
     const addIds = appendOnly ? nextIds.slice(survivors.length) : nextIds;
+    const attached = attachedSlot(instance, slot);
     for (const refId of removeIds) {
-      const child = getInstance(refId);
+      // The attached instance, not the one the id resolves to now: a replaced
+      // node leaves its predecessor in the collection under the same id. Every
+      // list removal filters the referrer's own collection by identity, so a
+      // detached child is never touched and liveness does not matter here.
+      const child = attached.get(refId) ?? getInstance(refId);
       if (child) {
         instance[spec.remove](child);
       }
+      attached.delete(refId);
     }
     for (const refId of addIds) {
       const child = liveInstanceFor(refId);
       if (child) {
         instance[spec.add](child);
+        attached.set(refId, child);
       }
     }
   }
@@ -190,7 +222,13 @@ export function createReconciler({
     }
     const listSpec = LIST_REF_SLOTS[slot];
     if (listSpec) {
-      applyListSlot(instance, listSpec, slotIds(prevValue), slotIds(nextValue));
+      applyListSlot(
+        instance,
+        slot,
+        listSpec,
+        slotIds(prevValue),
+        slotIds(nextValue),
+      );
       return;
     }
     const indexedSetter = INDEXED_REF_SETTERS[slot];
@@ -213,19 +251,32 @@ export function createReconciler({
     }
   }
 
-  function drainListSlot(instance, listSpec) {
+  function drainListSlot(instance, slot, listSpec) {
     for (const item of [...(instance[listSpec.read]?.() || [])]) {
       instance[listSpec.remove](item);
     }
+    forgetAttachedSlot(instance, slot);
+  }
+
+  // Detach only what this reconciler attached, leaving client-owned entries in
+  // place. Removal goes by recorded instance rather than by id, which is what
+  // the full drain was really for: a replaced node leaves a predecessor in the
+  // collection that id lookups can no longer name.
+  function drainAttachedSlot(instance, slot, listSpec) {
+    const attached = attachedChildren.get(instance)?.get(slot);
+    if (!attached) return;
+    for (const child of attached.values()) {
+      instance[listSpec.remove](child);
+    }
+    attached.clear();
   }
 
   // Re-apply a slot from scratch against live state after a target is created
-  // or replaced. The referrer's collections may still hold an instance that
-  // ID lookups can no longer name, so drain lists before applying from empty.
+  // or replaced, so the slot ends in server order with every reference live.
   function forceApplySlot(instance, slot, value) {
     const listSpec = LIST_REF_SLOTS[slot];
     if (listSpec) {
-      drainListSlot(instance, listSpec);
+      drainAttachedSlot(instance, slot, listSpec);
     }
     applySlotDiff(instance, slot, undefined, value);
   }
@@ -415,7 +466,7 @@ export function createReconciler({
     // A widget-owned render window can carry renderers from a previous
     // binding when the first root node arrives; the diff below is against an
     // empty mirror, so drain by hand once.
-    drainListSlot(instance, LIST_REF_SLOTS.renderers);
+    drainListSlot(instance, "renderers", LIST_REF_SLOTS.renderers);
   }
 
   function applyNodeDiff(id, node, prev, cache) {

@@ -8,6 +8,8 @@ these; array scalar types live in ``array_datatypes``.
 
 CLASS_NAME_MAP = {
     "vtkXOpenGLRenderWindow": "vtkRenderWindow",
+    "vtkEGLRenderWindow": "vtkRenderWindow",
+    "vtkOSOpenGLRenderWindow": "vtkRenderWindow",
     "vtkCocoaRenderWindow": "vtkRenderWindow",
     "vtkWin32OpenGLRenderWindow": "vtkRenderWindow",
     "vtkOpenGLRenderWindow": "vtkRenderWindow",

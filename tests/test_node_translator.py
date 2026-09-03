@@ -25,6 +25,7 @@ from push_oracle.scenes import (
     make_map_drape_scene,
     make_two_stage_pipeline_scene,
 )
+from trame_vtklocal.module.vtkjs_translator import map_class_name
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
@@ -897,3 +898,24 @@ def test_bit_array_publishes_one_uint8_per_logical_value():
 def test_unknown_numeric_array_type_is_rejected():
     with pytest.raises(ValueError, match="unsupported VTK numeric array datatype 999"):
         js_datatype("vtkFutureNumericArray", 999)
+
+
+@pytest.mark.parametrize(
+    "class_name",
+    [
+        "vtkXOpenGLRenderWindow",
+        "vtkEGLRenderWindow",
+        "vtkOSOpenGLRenderWindow",
+        "vtkCocoaRenderWindow",
+        "vtkWin32OpenGLRenderWindow",
+    ],
+)
+def test_platform_render_windows_map_to_vtkjs_render_window(class_name):
+    """Every platform render window must translate to the vtk.js type.
+
+    A name missing here still becomes a node, but under its own type: vtk.js
+    has no such class, and the "vtkRenderWindow" property skips stop applying,
+    so `position`/`size` leak into the state and the scene never renders. The
+    headless windows matter because VTK's factory picks one with no X server.
+    """
+    assert map_class_name(class_name) == "vtkRenderWindow"

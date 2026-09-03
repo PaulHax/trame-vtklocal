@@ -2141,3 +2141,111 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
   poly.delete();
   pts.delete();
 });
+
+test("useSceneSync reports the presentation interval, not the paint duration", async () => {
+  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
+  const pending = [];
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    requestAnimationFrame: (callback) => pending.push(callback),
+    cancelAnimationFrame(handle) {
+      pending[handle - 1] = null;
+    },
+  };
+  // One presentation tick: every callback armed so far runs with the same
+  // timestamp, exactly as the browser drains its callback list.
+  function present(at) {
+    const due = pending.splice(0, pending.length);
+    for (const callback of due) callback?.(at);
+  }
+
+  const frames = [];
+  const fakeHost = {
+    applyBlock() {},
+    beforeRender() {},
+    beginInteraction() {},
+    endInteraction() {},
+    recordHostFrame: (metrics) => frames.push(metrics),
+    needsFrame: () => false,
+    pickAsset: () => null,
+    describe: () => ({ members: [], coordinator: {} }),
+    dispose() {},
+  };
+  const handlers = new Map();
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit() {},
+      getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
+      renderScene() {},
+    },
+    {
+      createManagedSyncContext: () => ({
+        synchronizerContext: { getInstance: () => null },
+        syncRenderWindow: null,
+        cleanup() {},
+      }),
+      createMirrorStore: () => ({
+        entries: () => [][Symbol.iterator](),
+        get: () => null,
+        clear() {},
+      }),
+      createReconciler: () => ({
+        registerBlockHandler(key, handler) {
+          handlers.set(key, handler);
+        },
+        teardown() {},
+      }),
+      createSceneEngine: () => ({
+        start() {},
+        stop() {},
+        onCommand: () => () => {},
+        getDiagnostics: () => ({}),
+      }),
+      createStreamedSceneHost: () => fakeHost,
+    },
+  );
+  try {
+    scene.initialize({ contextName: "presentation", renderWindowId: 1 });
+    handlers.get("streamedScene")("42", pointBlock(), actor());
+
+    scene.recordPaintDuration(4);
+    present(1000);
+    assert.deepEqual(frames, [], "the first presentation has no interval yet");
+
+    scene.recordPaintDuration(4);
+    present(1016);
+    assert.deepEqual(frames, [{ hostFrameMs: 16, now: 1016 }]);
+    assert.equal(
+      "vtkFrameMs" in frames[0],
+      false,
+      "the whole paint is not the streamed sub-pass the budget divides down",
+    );
+
+    // Two paints coalescing into one presentation: the interval covers both.
+    scene.recordPaintDuration(5);
+    scene.recordPaintDuration(6);
+    present(1049);
+    assert.deepEqual(frames.at(-1), { hostFrameMs: 33, now: 1049 });
+
+    // A pause between bursts is idle time, not a slow frame.
+    scene.recordPaintDuration(3);
+    present(2000);
+    assert.equal(frames.length, 2, "an idle gap is not reported as a frame");
+
+    // A genuinely slow paint is reported even though it exceeds the idle gap.
+    scene.recordPaintDuration(90);
+    present(2100);
+    assert.deepEqual(frames.at(-1), { hostFrameMs: 100, now: 2100 });
+
+    // Once the host measures whole frames, the view stops measuring its own.
+    scene.recordHostFrame({ hostFrameMs: 8 });
+    scene.recordPaintDuration(4);
+    present(2116);
+    assert.deepEqual(frames.at(-1), { hostFrameMs: 8 });
+  } finally {
+    scene.cleanup();
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});

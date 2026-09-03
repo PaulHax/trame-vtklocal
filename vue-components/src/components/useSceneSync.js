@@ -42,6 +42,10 @@ import { createDragPreview } from "./dragPreview";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
+// Above any real refresh period, below the pause that separates one burst of
+// painting from the next. An interval longer than this spans idle time even
+// when the paint inside it was cheap.
+const IDLE_PRESENTATION_GAP_MS = 80;
 
 export function useSceneSync(
   {
@@ -94,9 +98,14 @@ export function useSceneSync(
   // state, not scene-sync state: the server owns it and only its pushes may
   // change it, so a scene re-initialization must not silently disarm.
   let armedCloudPickAssetId = null;
-  // Once the host reports whole-frame metrics, the raw paint durations stop
-  // being fed to the budget loop so the same frame is never counted twice.
+  // Once the host reports whole-frame metrics, the view's own presentation
+  // measurement stops being fed to the budget loop so the same frame is never
+  // counted twice.
   let hostFrameFeedbackSeen = false;
+  // Presentation bookkeeping for the frames this view measures itself.
+  let presentationFrame = 0;
+  let pendingPaintMs = null;
+  let lastPresentedAt = null;
   // Streamed members publish their selected/drawn state from beforeRender().
   // Keep an explicit public paint boundary so support clients can distinguish
   // that prepared state from pixels which have actually reached the canvas.
@@ -355,6 +364,7 @@ export function useSceneSync(
     streamedSceneHost = null;
     pointCloudPresentations.clear();
     hostFrameFeedbackSeen = false;
+    cancelPresentationReport();
     managedSyncContext?.cleanup?.();
     managedSyncContext = null;
   }
@@ -658,17 +668,64 @@ export function useSceneSync(
     if (streamedSceneHost?.needsFrame()) renderRequestCallback?.();
   }
 
+  function cancelPresentationReport() {
+    if (presentationFrame) {
+      globalThis.window?.cancelAnimationFrame?.(presentationFrame);
+    }
+    presentationFrame = 0;
+    pendingPaintMs = null;
+    lastPresentedAt = null;
+  }
+
+  // `hostFrameMs` is the interval between presentations, not how long a frame
+  // took to build. The budget loop reads the shortest intervals it sees as the
+  // display's refresh period, so a build duration teaches it a quantum far
+  // below the real one; it also cannot say whether a frame reached the
+  // display. So the report waits for the next presentation tick and carries
+  // the interval measured there.
+  //
+  // No `vtkFrameMs` accompanies it. That sibling names the streamed sub-pass
+  // inside a larger host frame and is divided by the fraction of a frame
+  // budgeted to it; this view's paint is the whole frame's work, so passing it
+  // there would inflate every measurement by the reciprocal of that fraction.
+  function schedulePresentationReport() {
+    if (presentationFrame) return;
+    presentationFrame = requestFrame((presentedAt) => {
+      presentationFrame = 0;
+      const paintMs = pendingPaintMs ?? 0;
+      pendingPaintMs = null;
+      const interval =
+        lastPresentedAt === null ? null : presentedAt - lastPresentedAt;
+      lastPresentedAt = presentedAt;
+      // An interval far longer than the work inside it spans idle time: a view
+      // that painted, sat still, and painted again has not slowed down, and
+      // reporting the gap as a frame cost drives quality to the floor.
+      const contiguous = Math.max(IDLE_PRESENTATION_GAP_MS, paintMs * 4);
+      const usable =
+        interval !== null && interval > 0 && interval <= contiguous;
+      if (usable && !hostFrameFeedbackSeen) {
+        streamedSceneHost?.recordHostFrame({
+          hostFrameMs: interval,
+          now: presentedAt,
+        });
+      }
+      // Asked on every presentation, including one whose interval was
+      // rejected: the budget loop only keeps measuring while something keeps
+      // painting, so a frame dropped for spanning idle time must still renew
+      // the request or the loop stops here.
+      requestFrameWhileBudgetWorks();
+    });
+  }
+
   // The view measures each paint's wall-time and reports it here; it feeds the
   // adaptive-quality budget loop for any streamed LOD cloud (a no-op when no
   // cloud has adaptive enabled).
   function recordFrameDuration(durationMs) {
-    if (!hostFrameFeedbackSeen) {
-      streamedSceneHost?.recordHostFrame({
-        hostFrameMs: durationMs,
-        vtkFrameMs: durationMs,
-      });
-      requestFrameWhileBudgetWorks();
-    }
+    if (hostFrameFeedbackSeen) return;
+    // Paints that coalesce into one presentation all count: the interval has
+    // to cover the work of every paint inside it.
+    pendingPaintMs = (pendingPaintMs ?? 0) + (durationMs || 0);
+    schedulePresentationReport();
   }
 
   function recordPaintDuration(durationMs) {
@@ -678,6 +735,7 @@ export function useSceneSync(
 
   function recordHostFrame(metrics) {
     hostFrameFeedbackSeen = true;
+    cancelPresentationReport();
     streamedSceneHost?.recordHostFrame(metrics);
     requestFrameWhileBudgetWorks();
   }

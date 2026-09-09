@@ -246,6 +246,18 @@ export function useSceneSync(
     return true;
   }
 
+  // Release one caller-owned external texture without disturbing any other
+  // texture in this render window.  This is the lifetime twin of
+  // uploadTexture: closing one video consumer must not clear a sibling source.
+  function removeTexture(key) {
+    const registry = getExternalTextures(getRenderWindow?.() || null);
+    if (!registry || key == null) {
+      return false;
+    }
+    registry.removeKey(key);
+    return true;
+  }
+
   function requestResync(reason = "scene-sync") {
     engine?.resync?.(reason);
   }
@@ -952,6 +964,7 @@ export function useSceneSync(
     getInstance,
     getSeq,
     uploadTexture,
+    removeTexture,
     pickAt,
     pickCloudPoint,
     setArmedCloudPick,

@@ -67,6 +67,7 @@ export const COMMON_VIEW_API_KEYS = Object.freeze([
   "getInstance",
   "getSeq",
   "uploadTexture",
+  "removeTexture",
   "pickAt",
   "pickCloudPoint",
   "setArmedCloudPick",

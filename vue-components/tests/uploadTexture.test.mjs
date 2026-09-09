@@ -96,6 +96,26 @@ test("uploadTexture without a render window reports failure", async () => {
   assert.equal(scene.uploadTexture("video", { width: 2, height: 2 }), false);
 });
 
+test("removeTexture releases only the named view texture", async () => {
+  const { getExternalTextures } = await loadModule(
+    "/src/components/externalTextures.js",
+  );
+  const renderWindow = { id: "rw-remove" };
+  const scene = await buildScene(renderWindow);
+  const gl = createMockGL();
+  const registry = getExternalTextures(renderWindow);
+
+  scene.uploadTexture("video-a", { width: 4, height: 4 });
+  scene.uploadTexture("video-b", { width: 8, height: 8 });
+  registry.bindTexture("video-a", gl);
+  registry.bindTexture("video-b", gl);
+
+  assert.equal(scene.removeTexture("video-a"), true);
+  assert.deepEqual(registry.describe().entries.map(({ key }) => key), ["video-b"]);
+  assert.equal(gl.deleted.length, 1);
+  assert.equal(scene.removeTexture(null), false);
+});
+
 test("cleanup deletes the view's GL textures", async () => {
   const { getExternalTextures } = await loadModule(
     "/src/components/externalTextures.js",

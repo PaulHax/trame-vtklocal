@@ -2108,7 +2108,7 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
     { grabPx: 8, priority: 0, tags: { depth_asset_id: "tagged" } },
     mapper,
   );
-  scene.setArmedCloudPick("armed");
+  scene.setArmedCloudPick({generation: 1, token: "armed-gesture", asset_id: "armed"});
   assert.equal(
     scene.startTargetDrag({
       clientX: 110,

@@ -27,6 +27,7 @@ import {
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
+import { createRegistrationGesture } from "./registrationGesture";
 import {
   createStreamedSceneHost,
   enrichGestureWithCloudSolve,
@@ -97,7 +98,7 @@ export function useSceneSync(
   // depth against this asset id instead of the picked glyph's tag. View
   // state, not scene-sync state: the server owns it and only its pushes may
   // change it, so a scene re-initialization must not silently disarm.
-  let armedCloudPickAssetId = null;
+  const registrationGesture = createRegistrationGesture();
   // Once the host reports whole-frame metrics, the view's own presentation
   // measurement stops being fed to the budget loop so the same frame is never
   // counted twice.
@@ -762,9 +763,8 @@ export function useSceneSync(
   // armed, the id is authoritative for target/background clicks — the app
   // has explicitly named which cloud a click means, so no glyph tag under
   // the cursor may redirect it. Drags are untouched.
-  function setArmedCloudPick(assetId) {
-    armedCloudPickAssetId =
-      typeof assetId === "string" && assetId.length > 0 ? assetId : null;
+  function setArmedCloudPick(spec) {
+    return registrationGesture.set(spec);
   }
 
   // The camera matrices this view last rendered with, in the flat layout the
@@ -916,12 +916,14 @@ export function useSceneSync(
     // Runs synchronously after rAF coalescing, on the payload's own pointer
     // (grab offset already applied): the solved ray is exactly the one the
     // server would otherwise resolve for this event.
-    enrichPayload: (payload) =>
-      enrichGestureWithCloudSolve(
-        payload,
+    enrichPayload: (payload) => {
+      const captured = registrationGesture.capture();
+      return enrichGestureWithCloudSolve(
+        { ...payload, registration_token: captured.token },
         pickCloudPoint,
-        armedCloudPickAssetId,
-      ),
+        captured.asset_id,
+      );
+    },
     emit: (payload) => emit?.("pointerEvent", payload),
     onDragStart: dragPreview.start,
     onDragMove: dragPreview.move,

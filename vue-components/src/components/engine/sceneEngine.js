@@ -86,11 +86,16 @@ export function createSceneEngine({
   }
 
   function enqueue(message, snapshot = false) {
-    const bytes = messageBytes(message);
-    pending.push({ message, snapshot, bytes });
-    pendingBytes += bytes;
+    const entry = { message, snapshot, bytes: 0 };
+    pending.push(entry);
     receivedSeq = message.seq;
     flushAdmission();
+    // Only walk payloads that actually wait. Unconditionally sizing a large
+    // immediately admissible scene would add work to the normal render path.
+    if (pending.at(-1) === entry) {
+      entry.bytes = messageBytes(message);
+      pendingBytes += entry.bytes;
+    }
     // Never discard individual deltas: recover through an authoritative snapshot.
     if (
       !snapshot &&
@@ -147,10 +152,14 @@ export function createSceneEngine({
       const last = batch.at(-1).message;
       if (snapshotApplied) callbacks.onSnapshotApplied?.(last);
       else
-        callbacks.onApplied?.({
-          ...last,
-          ops: batch.flatMap(({ message }) => message.ops || []),
-        });
+        callbacks.onApplied?.(
+          batch.length === 1
+            ? last
+            : {
+                ...last,
+                ops: batch.flatMap(({ message }) => message.ops || []),
+              },
+        );
       if (renderRequested) callbacks.onRenderRequested?.(last);
     } catch (error) {
       console.warn(`[sceneEngine] admission apply failed: ${error.message}`);

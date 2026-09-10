@@ -156,3 +156,21 @@ test("resync replaces blocked operations with an authoritative snapshot", async 
   assert.deepEqual(paints.at(-1), [3, "new"]);
   engine.stop();
 });
+
+test("queue overflow recovers through one current snapshot", async () => {
+  const { engine, session, ready, snapshot, paints, operations } =
+    await fixture();
+  snapshot.seq = 130;
+  snapshot.commands = [{ name: "frame", payload: "latest" }];
+  for (let seq = 1; seq <= 129; seq += 1)
+    session.push(message(seq - 1, seq, "missing"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(engine.getDiagnostics().admissionLength, 1);
+  assert.ok(engine.getDiagnostics().admissionBytes > 0);
+  ready.add("latest");
+  engine.flushAdmission();
+  assert.deepEqual(paints.at(-1), [130, "latest"]);
+  assert.deepEqual(operations, []);
+  assert.equal(engine.getDiagnostics().admissionBytes, 0);
+  engine.stop();
+});

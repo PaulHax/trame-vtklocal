@@ -198,6 +198,9 @@ export function useSceneSync(
     };
   }
 
+  // prepare examines the candidate retained commands without side effects.
+  // Return null to wait, or a synchronous function that stages the matching
+  // external resources. Every predicate must be ready before any commit runs.
   function registerSceneAdmission(prepare) {
     admissionPredicates.add(prepare);
     engine?.flushAdmission();

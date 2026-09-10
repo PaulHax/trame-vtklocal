@@ -36,7 +36,7 @@ function createMockGL() {
   return gl;
 }
 
-async function buildScene(renderWindow) {
+async function buildScene(renderWindow, onEngineReady = () => {}) {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
   const scene = useSceneSync(
     {
@@ -57,17 +57,20 @@ async function buildScene(renderWindow) {
         },
         teardown() {},
       }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        resync() {},
-        onCommand() {
-          return () => {};
-        },
-        getDiagnostics() {
-          return {};
-        },
-      }),
+      createSceneEngine: ({ callbacks }) => {
+        onEngineReady(callbacks);
+        return {
+          start() {},
+          stop() {},
+          resync() {},
+          onCommand() {
+            return () => {};
+          },
+          getDiagnostics() {
+            return {};
+          },
+        };
+      },
     },
   );
   scene.initialize({ contextName: "ctx", renderWindowId: 1 });
@@ -96,6 +99,30 @@ test("uploadTexture without a render window reports failure", async () => {
   assert.equal(scene.uploadTexture("video", { width: 2, height: 2 }), false);
 });
 
+test("paint completion names the texture consumed, not a newer staged source", async () => {
+  const { getExternalTextures } = await loadModule(
+    "/src/components/externalTextures.js",
+  );
+  const renderWindow = {};
+  const scene = await buildScene(renderWindow);
+  const registry = getExternalTextures(renderWindow);
+  const events = [];
+  const detach = scene.onPaintCompleted((event) => events.push(event));
+  scene.uploadTexture("video", { width: 2, height: 2 }, { token: "first" });
+  assert.equal(events.length, 0);
+  scene.beforeRender();
+  registry.bindTexture("video", createMockGL());
+  scene.uploadTexture("video", { width: 2, height: 2 }, { token: "second" });
+  scene.recordPaintDuration(1);
+  assert.deepEqual(events[0].textures, [{ key: "video", token: "first" }]);
+  scene.beforeRender();
+  scene.recordPaintDuration(1);
+  assert.deepEqual(events[1].textures, []);
+  detach();
+  scene.recordPaintDuration(1);
+  assert.equal(events.length, 2);
+});
+
 test("removeTexture releases only the named view texture", async () => {
   const { getExternalTextures } = await loadModule(
     "/src/components/externalTextures.js",
@@ -111,7 +138,10 @@ test("removeTexture releases only the named view texture", async () => {
   registry.bindTexture("video-b", gl);
 
   assert.equal(scene.removeTexture("video-a"), true);
-  assert.deepEqual(registry.describe().entries.map(({ key }) => key), ["video-b"]);
+  assert.deepEqual(
+    registry.describe().entries.map(({ key }) => key),
+    ["video-b"],
+  );
   assert.equal(gl.deleted.length, 1);
   assert.equal(scene.removeTexture(null), false);
 });
@@ -146,4 +176,26 @@ test("sync diagnostics report the external textures", async () => {
   const described = scene.getSyncDiagnostics().externalTextures;
   assert.equal(described.size, 1);
   assert.equal(described.entries[0].key, "video");
+});
+
+test("retiring a frame identity preserves live siblings and clears replay state", async () => {
+  let command;
+  let beforeSnapshot;
+  const scene = await buildScene({ id: "rw-identities" }, (callbacks) => {
+    command = callbacks.onCommand;
+    beforeSnapshot = callbacks.beforeSnapshot;
+  });
+  const live = { slot_id: "b", frame_id: 20, seq: 2 };
+  command("video.frame.a", { slot_id: "a", frame_id: 10, seq: 1 });
+  command("video.frame.b", live);
+  command("video.frame.a", null);
+  assert.equal(scene.getAppliedCommand("video.frame.a"), undefined);
+  assert.deepEqual(scene.getAppliedCommand("video.frame.b"), live);
+  // A reconnect snapshot replaces the retained command set, including when
+  // the client missed the removal command while disconnected.
+  beforeSnapshot();
+  assert.equal(scene.getAppliedCommand("video.frame.b"), undefined);
+  command("video.frame.b", live);
+  scene.cleanup();
+  assert.equal(scene.getAppliedCommand("video.frame.b"), undefined);
 });

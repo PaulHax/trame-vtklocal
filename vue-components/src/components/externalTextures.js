@@ -25,10 +25,13 @@ function createTextureState() {
     needsUpload: false,
     uploadSource: null,
     pixelData: null,
+    token: null,
+    uploadedToken: null,
   };
 }
 
 function createTexture(gl, textureState) {
+  textureState.uploadedToken = null;
   textureState.glContext = gl;
   textureState.glTexture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, textureState.glTexture);
@@ -64,6 +67,7 @@ function uploadPending(gl, textureState) {
       gl.UNSIGNED_BYTE,
       textureState.uploadSource,
     );
+    textureState.uploadedToken = textureState.token;
   } else if (textureState.pixelData) {
     gl.texImage2D(
       gl.TEXTURE_2D,
@@ -76,6 +80,7 @@ function uploadPending(gl, textureState) {
       gl.UNSIGNED_BYTE,
       textureState.pixelData,
     );
+    textureState.uploadedToken = textureState.token;
   }
   textureState.needsUpload = false;
   textureState.uploadSource = null;
@@ -92,6 +97,7 @@ function deleteTexture(textureState) {
 
 function createExternalTextureRegistry() {
   const entries = new Map();
+  const painted = new Map();
 
   function getOrCreateEntry(key) {
     let entry = entries.get(key);
@@ -106,7 +112,7 @@ function createExternalTextureRegistry() {
     // source: any TexImageSource (ImageBitmap, canvas, ImageData, video
     // element) or a typed pixel array with explicit width/height. The caller
     // owns the source's lifetime until the next bind uploads it.
-    setSource(key, source, { width = 0, height = 0 } = {}) {
+    setSource(key, source, { width = 0, height = 0, token = null } = {}) {
       const entry = getOrCreateEntry(key);
       const isPixelData = ArrayBuffer.isView(source);
       entry.width = isPixelData ? width : (source?.width ?? width);
@@ -114,6 +120,15 @@ function createExternalTextureRegistry() {
       entry.uploadSource = isPixelData ? null : source;
       entry.pixelData = isPixelData ? source : null;
       entry.needsUpload = true;
+      entry.token = token;
+    },
+
+    beginPaint() {
+      painted.clear();
+    },
+
+    paintedTextures() {
+      return Array.from(painted, ([key, token]) => ({ key, token }));
     },
 
     hasSource(key) {
@@ -136,6 +151,7 @@ function createExternalTextureRegistry() {
       if (entry.needsUpload) {
         uploadPending(gl, entry);
       }
+      painted.set(key, entry.uploadedToken);
       return true;
     },
 
@@ -144,6 +160,7 @@ function createExternalTextureRegistry() {
       if (entry) {
         deleteTexture(entry);
         entries.delete(key);
+        painted.delete(key);
       }
     },
 
@@ -152,6 +169,7 @@ function createExternalTextureRegistry() {
         deleteTexture(entry);
       }
       entries.clear();
+      painted.clear();
     },
 
     describe() {

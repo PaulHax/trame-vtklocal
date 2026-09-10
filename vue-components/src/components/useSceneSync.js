@@ -112,6 +112,8 @@ export function useSceneSync(
   // that prepared state from pixels which have actually reached the canvas.
   let preparedFrameSerial = 0;
   let completedFrameSerial = 0;
+  const paintCompletedCallbacks = new Set();
+  const appliedCommands = new Map();
   let completedPreparedFrameSerial = 0;
   let sceneSeqAtLastPaint = -1;
   // Unlike the transport cursor, this advances only for a message that can
@@ -193,6 +195,11 @@ export function useSceneSync(
     return () => {
       sceneAppliedCallbacks.delete(callback);
     };
+  }
+
+  function onPaintCompleted(callback) {
+    paintCompletedCallbacks.add(callback);
+    return () => paintCompletedCallbacks.delete(callback);
   }
 
   // Register a handler for server commands riding scene.ops broadcasts.
@@ -358,6 +365,7 @@ export function useSceneSync(
   }
 
   function cleanupSyncContext() {
+    appliedCommands.clear();
     engine?.stop?.();
     engine = null;
     reconciler?.teardown?.();
@@ -471,6 +479,7 @@ export function useSceneSync(
       cache: blobCache,
       callbacks: {
         beforeSnapshot() {
+          appliedCommands.clear();
           dragPreview.end();
           if (!disposed) emit?.("beforeSceneLoaded");
         },
@@ -503,7 +512,11 @@ export function useSceneSync(
           }
         },
         onCommand(name, payload) {
-          if (!disposed) emit?.("command", { name, payload });
+          if (!disposed) {
+            if (payload == null) appliedCommands.delete(name);
+            else appliedCommands.set(name, payload);
+            emit?.("command", { name, payload });
+          }
         },
       },
     });
@@ -531,6 +544,7 @@ export function useSceneSync(
     peekExternalTextures(getRenderWindow?.() || null)?.clear();
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
+    paintCompletedCallbacks.clear();
   }
 
   function getSyncDiagnostics() {
@@ -653,6 +667,7 @@ export function useSceneSync(
     // admission drain idempotent.
     if (preparedFrameSerial === completedPreparedFrameSerial) {
       preparedFrameSerial += 1;
+      peekExternalTextures(getRenderWindow?.())?.beginPaint();
     }
     updateDistanceToCameraGlyphsForRender();
     updateStreamedSceneForRender(preparedFrameSerial);
@@ -662,6 +677,13 @@ export function useSceneSync(
     completedFrameSerial += 1;
     completedPreparedFrameSerial = preparedFrameSerial;
     sceneSeqAtLastPaint = engine?.getDiagnostics?.()?.mySeq ?? -1;
+    const event = {
+      frameSerial: completedFrameSerial,
+      sceneSeq: sceneSeqAtLastPaint,
+      textures:
+        peekExternalTextures(getRenderWindow?.())?.paintedTextures() || [],
+    };
+    paintCompletedCallbacks.forEach((callback) => callback(event));
   }
 
   // The post-apply pass every applied message runs, snapshot or ops. Applying
@@ -960,6 +982,8 @@ export function useSceneSync(
     cameraInteraction,
     endCameraInteraction,
     onSceneApplied,
+    onPaintCompleted,
+    getAppliedCommand: (name) => appliedCommands.get(name),
     onCommand,
     getInstance,
     getSeq,

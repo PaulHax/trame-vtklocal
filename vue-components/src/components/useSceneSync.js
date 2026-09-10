@@ -81,6 +81,7 @@ export function useSceneSync(
   let messageAppliedCallback = null;
   let renderRequestCallback = null;
   const sceneAppliedCallbacks = new Set();
+  const admissionPredicates = new Set();
   const commandRegistrations = new Set(); // { name, callback } — survive re-init
   let syncedRootId = null;
   let renderedCamera = null;
@@ -195,6 +196,19 @@ export function useSceneSync(
     return () => {
       sceneAppliedCallbacks.delete(callback);
     };
+  }
+
+  function registerSceneAdmission(prepare) {
+    admissionPredicates.add(prepare);
+    engine?.flushAdmission();
+    return () => {
+      admissionPredicates.delete(prepare);
+      engine?.flushAdmission();
+    };
+  }
+
+  function retrySceneAdmission() {
+    engine?.flushAdmission();
   }
 
   function onPaintCompleted(callback) {
@@ -477,6 +491,15 @@ export function useSceneSync(
       reconciler,
       mirror,
       cache: blobCache,
+      prepareAdmission(commands) {
+        const commits = [];
+        for (const prepare of admissionPredicates) {
+          const commit = prepare(commands);
+          if (!commit) return null;
+          commits.push(commit);
+        }
+        return () => commits.forEach((commit) => commit());
+      },
       callbacks: {
         beforeSnapshot() {
           appliedCommands.clear();
@@ -545,11 +568,15 @@ export function useSceneSync(
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
     paintCompletedCallbacks.clear();
+    admissionPredicates.clear();
   }
 
   function getSyncDiagnostics() {
     const {
       mySeq = -1,
+      receivedSeq = -1,
+      admissionLength = 0,
+      admissionBytes = 0,
       live = false,
       cacheSize = 0,
       mirrorSize = 0,
@@ -570,6 +597,9 @@ export function useSceneSync(
     };
     return {
       mySeq,
+      receivedSeq,
+      admissionLength,
+      admissionBytes,
       live,
       cacheSize,
       cacheBytes,
@@ -983,6 +1013,8 @@ export function useSceneSync(
     endCameraInteraction,
     onSceneApplied,
     onPaintCompleted,
+    registerSceneAdmission,
+    retrySceneAdmission,
     getAppliedCommand: (name) => appliedCommands.get(name),
     onCommand,
     getInstance,

@@ -34,7 +34,7 @@ const noopReconciler = {
 };
 const noopMirror = { gcBlobCache() {}, size: () => 0 };
 
-async function makeEngine(snapshot, callbacks = {}) {
+async function makeEngine(snapshot, callbacks = {}, options = {}) {
   const { createSceneEngine } = await loadModule(
     "/src/components/engine/sceneEngine.js",
   );
@@ -46,6 +46,7 @@ async function makeEngine(snapshot, callbacks = {}) {
     mirror: noopMirror,
     cache: new Map(),
     callbacks,
+    ...options,
   });
   return { engine, session };
 }
@@ -70,7 +71,7 @@ test("getSeq tracks the applied cursor through snapshot and ops", async () => {
   engine.stop();
 });
 
-test("retained snapshot commands dispatch once after snapshot application", async () => {
+test("snapshot completion observes retained commands before requesting a render", async () => {
   const order = [];
   const snapshot = {
     v: 2,
@@ -98,7 +99,7 @@ test("retained snapshot commands dispatch once after snapshot application", asyn
   engine.start();
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(order, ["snapshot", "camera:5", "render"]);
+  assert.deepEqual(order, ["camera:5", "snapshot", "render"]);
   engine.stop();
 });
 

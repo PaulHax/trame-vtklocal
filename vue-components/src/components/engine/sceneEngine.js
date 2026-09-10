@@ -12,9 +12,9 @@
 //     baseSeq == mySeq        -> apply, mySeq = seq
 //     otherwise               -> resync(knownRefs = blob-cache keys)
 //
-// State applies IN the websocket handler (hidden tabs keep receiving
-// messages); only rendering defers to the host's rAF/repaint callbacks, so a
-// paused tab stays current with O(1) memory.
+// Admission holds ordered messages until external resources are ready.
+// Receipt and application use separate cursors; presentation callbacks
+// observe only complete admitted prefixes.
 
 import { base64ToArrayBuffer } from "../sync/base64";
 
@@ -44,6 +44,7 @@ export function createSceneEngine({
   mirror,
   cache,
   callbacks = {},
+  prepareAdmission = () => () => {},
 }) {
   const session = client.getConnection().getSession();
   const commandHandlers = new Map(); // name -> Set(callback)
@@ -56,6 +57,108 @@ export function createSceneEngine({
   let resyncInFlight = false;
   let stopped = false;
   let lastAppliedOp = null;
+  let receivedSeq = -1;
+  let pending = [];
+  let pendingBytes = 0;
+  let appliedCommands = new Map();
+  let flushing = false;
+
+  function commandsAfter(commands, message) {
+    const next = new Map(commands);
+    for (const { name, payload } of message.commands || []) {
+      if (payload == null) next.delete(name);
+      else next.set(name, payload);
+    }
+    return next;
+  }
+
+  function messageBytes(value) {
+    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value))
+      return value.byteLength;
+    if (typeof value === "string") return value.length * 2;
+    if (value && typeof value === "object") {
+      return Object.entries(value).reduce(
+        (sum, [key, item]) => sum + key.length * 2 + messageBytes(item),
+        0,
+      );
+    }
+    return 8;
+  }
+
+  function enqueue(message, snapshot = false) {
+    const bytes = messageBytes(message);
+    pending.push({ message, snapshot, bytes });
+    pendingBytes += bytes;
+    receivedSeq = message.seq;
+    flushAdmission();
+    // Never discard individual deltas: recover through an authoritative snapshot.
+    if (
+      !snapshot &&
+      (pending.length > 128 || pendingBytes > 64 * 1024 * 1024)
+    ) {
+      resync("admission-overflow");
+    }
+  }
+
+  function flushAdmission() {
+    if (flushing || stopped || !pending.length) return;
+    flushing = true;
+    try {
+      let candidateCommands = appliedCommands;
+      let admitted = null;
+      for (let index = 0; index < pending.length; index += 1) {
+        const entry = pending[index];
+        candidateCommands = commandsAfter(
+          entry.snapshot ? new Map() : candidateCommands,
+          entry.message,
+        );
+        const commit = prepareAdmission(candidateCommands);
+        if (commit) admitted = { index, commit, commands: candidateCommands };
+      }
+      if (!admitted) return;
+      const batch = pending.splice(0, admitted.index + 1);
+      for (const entry of batch) pendingBytes -= entry.bytes;
+      // No asynchronous work between staging pixels and applying the full prefix.
+      admitted.commit();
+      let renderRequested = false;
+      let snapshotApplied = false;
+      for (const { message, snapshot } of batch) {
+        if (snapshot) {
+          callbacks.beforeSnapshot?.();
+          let applied = false;
+          try {
+            ingestBlobs(message.blobs);
+            reconciler.applySnapshot(message.nodes || {}, mirror, cache);
+            mirror.gcBlobCache(cache);
+            mySeq = message.seq;
+            lastAppliedOp = { kind: "snapshot" };
+            applied = true;
+            snapshotApplied = true;
+          } finally {
+            callbacks.afterSnapshot?.(applied);
+          }
+          renderRequested =
+            dispatchCommands(message.commands) || renderRequested;
+        } else {
+          renderRequested = applyOpsMessage(message) || renderRequested;
+        }
+      }
+      appliedCommands = admitted.commands;
+      const last = batch.at(-1).message;
+      if (snapshotApplied) callbacks.onSnapshotApplied?.(last);
+      else
+        callbacks.onApplied?.({
+          ...last,
+          ops: batch.flatMap(({ message }) => message.ops || []),
+        });
+      if (renderRequested) callbacks.onRenderRequested?.(last);
+    } catch (error) {
+      console.warn(`[sceneEngine] admission apply failed: ${error.message}`);
+      resync("apply-failed", { reset: true });
+    } finally {
+      flushing = false;
+    }
+  }
 
   // Blobs ride broadcasts for every ref entering the live set (the message
   // is shared across clients), so a ref this client already holds — and may
@@ -114,22 +217,19 @@ export function createSceneEngine({
     mySeq = message.seq;
     recordLastOp(ops);
     const renderRequested = dispatchCommands(message.commands);
-    callbacks.onApplied?.(message);
-    if (renderRequested) {
-      callbacks.onRenderRequested?.(message);
-    }
+    return renderRequested;
   }
 
   function routeMessage(message) {
-    if (message.seq <= mySeq) {
+    if (message.seq <= receivedSeq) {
       return;
     }
-    if (message.baseSeq !== mySeq) {
+    if (message.baseSeq !== receivedSeq) {
       resync("seq-gap");
       return;
     }
     try {
-      applyOpsMessage(message);
+      enqueue(message);
     } catch (error) {
       console.warn(`[sceneEngine] apply failed: ${error.message}`);
       resync("apply-failed", { reset: true });
@@ -170,6 +270,9 @@ export function createSceneEngine({
     resyncInFlight = true;
     live = false;
     buffer = [];
+    pending = [];
+    pendingBytes = 0;
+    receivedSeq = mySeq;
     try {
       if (reset) {
         // Instances and mirror may have diverged mid-message; rebuild from
@@ -192,30 +295,8 @@ export function createSceneEngine({
         return false;
       }
 
-      callbacks.beforeSnapshot?.();
-      let applied = false;
-      try {
-        ingestBlobs(snapshot.blobs);
-        reconciler.applySnapshot(snapshot.nodes || {}, mirror, cache);
-        mirror.gcBlobCache(cache);
-        mySeq = snapshot.seq;
-        lastAppliedOp = { kind: "snapshot" };
-        applied = true;
-      } catch (error) {
-        console.warn(`[sceneEngine] snapshot apply failed: ${error.message}`);
-      } finally {
-        callbacks.afterSnapshot?.(applied);
-      }
-      if (!applied) {
-        return false;
-      }
-
-      callbacks.onSnapshotApplied?.(snapshot);
-      // Retained commands describe client-owned state layered on top of the
-      // snapshot, so dispatch only after the scene and cursor are current.
-      if (dispatchCommands(snapshot.commands)) {
-        callbacks.onRenderRequested?.(snapshot);
-      }
+      enqueue(snapshot, true);
+      if (version !== resyncVersion || stopped) return false;
       live = true;
       const pending = buffer;
       buffer = [];
@@ -253,6 +334,9 @@ export function createSceneEngine({
     resyncInFlight = false;
     live = false;
     buffer = [];
+    pending = [];
+    pendingBytes = 0;
+    appliedCommands.clear();
     if (subscription) {
       session.unsubscribe(subscription);
       subscription = null;
@@ -287,6 +371,9 @@ export function createSceneEngine({
   function getDiagnostics() {
     return {
       mySeq,
+      receivedSeq,
+      admissionLength: pending.length,
+      admissionBytes: pendingBytes,
       live,
       cacheSize: cache.size,
       mirrorSize: mirror.size(),
@@ -300,6 +387,7 @@ export function createSceneEngine({
     stop,
     resync,
     onCommand,
+    flushAdmission,
     getSeq,
     getDiagnostics,
   };

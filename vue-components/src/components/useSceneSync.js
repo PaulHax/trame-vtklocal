@@ -27,6 +27,7 @@ import {
   PICKABLE_BLOCK_KEY,
 } from "./pickables";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
+import { createRegistrationGesture } from "./registrationGesture";
 import {
   createStreamedSceneHost,
   enrichGestureWithCloudSolve,
@@ -97,7 +98,7 @@ export function useSceneSync(
   // depth against this asset id instead of the picked glyph's tag. View
   // state, not scene-sync state: the server owns it and only its pushes may
   // change it, so a scene re-initialization must not silently disarm.
-  let armedCloudPickAssetId = null;
+  const registrationGesture = createRegistrationGesture();
   // Once the host reports whole-frame metrics, the view's own presentation
   // measurement stops being fed to the budget loop so the same frame is never
   // counted twice.
@@ -111,6 +112,8 @@ export function useSceneSync(
   // that prepared state from pixels which have actually reached the canvas.
   let preparedFrameSerial = 0;
   let completedFrameSerial = 0;
+  const paintCompletedCallbacks = new Set();
+  const appliedCommands = new Map();
   let completedPreparedFrameSerial = 0;
   let sceneSeqAtLastPaint = -1;
   // Unlike the transport cursor, this advances only for a message that can
@@ -194,6 +197,11 @@ export function useSceneSync(
     };
   }
 
+  function onPaintCompleted(callback) {
+    paintCompletedCallbacks.add(callback);
+    return () => paintCompletedCallbacks.delete(callback);
+  }
+
   // Register a handler for server commands riding scene.ops broadcasts.
   // Registrations survive re-initialization of the underlying engine.
   function onCommand(name, callback) {
@@ -242,6 +250,18 @@ export function useSceneSync(
       return false;
     }
     registry.setSource(key, source, options);
+    return true;
+  }
+
+  // Release one caller-owned external texture without disturbing any other
+  // texture in this render window.  This is the lifetime twin of
+  // uploadTexture: closing one video consumer must not clear a sibling source.
+  function removeTexture(key) {
+    const registry = getExternalTextures(getRenderWindow?.() || null);
+    if (!registry || key == null) {
+      return false;
+    }
+    registry.removeKey(key);
     return true;
   }
 
@@ -345,6 +365,7 @@ export function useSceneSync(
   }
 
   function cleanupSyncContext() {
+    appliedCommands.clear();
     engine?.stop?.();
     engine = null;
     reconciler?.teardown?.();
@@ -458,6 +479,7 @@ export function useSceneSync(
       cache: blobCache,
       callbacks: {
         beforeSnapshot() {
+          appliedCommands.clear();
           dragPreview.end();
           if (!disposed) emit?.("beforeSceneLoaded");
         },
@@ -490,7 +512,11 @@ export function useSceneSync(
           }
         },
         onCommand(name, payload) {
-          if (!disposed) emit?.("command", { name, payload });
+          if (!disposed) {
+            if (payload == null) appliedCommands.delete(name);
+            else appliedCommands.set(name, payload);
+            emit?.("command", { name, payload });
+          }
         },
       },
     });
@@ -518,6 +544,7 @@ export function useSceneSync(
     peekExternalTextures(getRenderWindow?.() || null)?.clear();
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
+    paintCompletedCallbacks.clear();
   }
 
   function getSyncDiagnostics() {
@@ -640,6 +667,7 @@ export function useSceneSync(
     // admission drain idempotent.
     if (preparedFrameSerial === completedPreparedFrameSerial) {
       preparedFrameSerial += 1;
+      peekExternalTextures(getRenderWindow?.())?.beginPaint();
     }
     updateDistanceToCameraGlyphsForRender();
     updateStreamedSceneForRender(preparedFrameSerial);
@@ -649,6 +677,13 @@ export function useSceneSync(
     completedFrameSerial += 1;
     completedPreparedFrameSerial = preparedFrameSerial;
     sceneSeqAtLastPaint = engine?.getDiagnostics?.()?.mySeq ?? -1;
+    const event = {
+      frameSerial: completedFrameSerial,
+      sceneSeq: sceneSeqAtLastPaint,
+      textures:
+        peekExternalTextures(getRenderWindow?.())?.paintedTextures() || [],
+    };
+    paintCompletedCallbacks.forEach((callback) => callback(event));
   }
 
   // The post-apply pass every applied message runs, snapshot or ops. Applying
@@ -762,9 +797,8 @@ export function useSceneSync(
   // armed, the id is authoritative for target/background clicks — the app
   // has explicitly named which cloud a click means, so no glyph tag under
   // the cursor may redirect it. Drags are untouched.
-  function setArmedCloudPick(assetId) {
-    armedCloudPickAssetId =
-      typeof assetId === "string" && assetId.length > 0 ? assetId : null;
+  function setArmedCloudPick(spec) {
+    return registrationGesture.set(spec);
   }
 
   // The camera matrices this view last rendered with, in the flat layout the
@@ -916,12 +950,14 @@ export function useSceneSync(
     // Runs synchronously after rAF coalescing, on the payload's own pointer
     // (grab offset already applied): the solved ray is exactly the one the
     // server would otherwise resolve for this event.
-    enrichPayload: (payload) =>
-      enrichGestureWithCloudSolve(
-        payload,
+    enrichPayload: (payload) => {
+      const captured = registrationGesture.capture();
+      return enrichGestureWithCloudSolve(
+        { ...payload, registration_token: captured.token },
         pickCloudPoint,
-        armedCloudPickAssetId,
-      ),
+        captured.asset_id,
+      );
+    },
     emit: (payload) => emit?.("pointerEvent", payload),
     onDragStart: dragPreview.start,
     onDragMove: dragPreview.move,
@@ -946,10 +982,13 @@ export function useSceneSync(
     cameraInteraction,
     endCameraInteraction,
     onSceneApplied,
+    onPaintCompleted,
+    getAppliedCommand: (name) => appliedCommands.get(name),
     onCommand,
     getInstance,
     getSeq,
     uploadTexture,
+    removeTexture,
     pickAt,
     pickCloudPoint,
     setArmedCloudPick,

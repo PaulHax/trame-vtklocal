@@ -251,16 +251,13 @@ class VtkJsBaseView(HtmlElement):
         """
         self.server.js_call(self._ref, "setPointerContext", context)
 
-    def set_armed_cloud_pick(self, asset_id):
-        """Arm (or disarm with ``None``) the view's click-time cloud target.
+    def set_armed_cloud_pick(self, spec):
+        """Send ordered runtime arm state (generation, token, asset_id).
 
-        While armed, click gestures solve their ``cloud_solve`` against this
-        streamed-cloud asset id — background clicks included, and overriding
-        any glyph's ``depth_asset_id`` tag under the cursor. ``None`` restores
-        tag-based enrichment. The solve arrives synchronously in the gesture
-        payload.
+        A null token disarms; a null asset uses normal server-side depth. Every
+        pointer event echoes the captured token, including server-depth picks.
         """
-        self.server.js_call(self._ref, "setArmedCloudPick", asset_id)
+        self.server.js_call(self._ref, "setArmedCloudPick", spec)
 
     def cleanup(self):
         if getattr(self, "_closed", True):

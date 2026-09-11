@@ -211,6 +211,7 @@ class Tiles3DSource:
     vertical_exaggeration: float = 1.0
     vertical_pivot_z: float = 0.0
     geometric_error_scale: str = "maximum"
+    adaptive: bool = True
 
     def __post_init__(self):
         object.__setattr__(
@@ -250,6 +251,9 @@ class Tiles3DSource:
                 "tileset_to_scene must have an invertible linear transform"
             )
         object.__setattr__(self, "tileset_to_scene", matrix)
+
+        if not isinstance(self.adaptive, bool):
+            raise ValueError("adaptive must be a boolean")
 
         if self.maximum_screen_space_error_px is not None:
             if isinstance(self.maximum_screen_space_error_px, bool) or not isinstance(
@@ -358,6 +362,7 @@ def source_block(source):
         "verticalExaggeration": source.vertical_exaggeration,
         "verticalPivotZ": source.vertical_pivot_z,
         "geometricErrorScale": source.geometric_error_scale,
+        "adaptive": source.adaptive,
     }
     if source.maximum_screen_space_error_px is not None:
         config["maximumScreenSpaceErrorPx"] = source.maximum_screen_space_error_px

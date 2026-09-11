@@ -260,6 +260,10 @@ function normalizeTiles3d(value) {
   const verticalPivotZ =
     value.verticalPivotZ === undefined ? 0 : value.verticalPivotZ;
   const geometricErrorScale = value.geometricErrorScale ?? "maximum";
+  const adaptive = value.adaptive === undefined ? true : value.adaptive;
+  if (typeof adaptive !== "boolean") {
+    throw new TypeError("adaptive must be a boolean");
+  }
   if (
     !isPositiveFinite(verticalExaggeration) ||
     !Number.isFinite(verticalPivotZ)
@@ -279,6 +283,7 @@ function normalizeTiles3d(value) {
     verticalExaggeration,
     verticalPivotZ,
     geometricErrorScale,
+    adaptive,
     ...(value.maximumScreenSpaceErrorPx === undefined ||
     value.maximumScreenSpaceErrorPx === null
       ? {}
@@ -406,7 +411,9 @@ function rendererDraws(renderer) {
 
 function qualityPolicy(config, tiles3dQualityPolicy) {
   if (config.kind === "tiles3d") {
-    return { managed: tiles3dQualityPolicy !== "fixed" };
+    return {
+      managed: config.kindConfig.adaptive && tiles3dQualityPolicy !== "fixed",
+    };
   }
   if (!config.kindConfig.adaptive) return { managed: false };
   const { interactionTargetMs, stationaryTargetMs } =

@@ -206,6 +206,7 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         endpoint="/tiles/mesh-7/rev-2",
         tileset_to_scene=IDENTITY,
         maximum_screen_space_error_px=12,
+        adaptive=False,
         vertical_exaggeration=2.5,
         vertical_pivot_z=105.25,
     )
@@ -221,6 +222,7 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         "tiles3d": {
             "tilesetToScene": list(IDENTITY),
             "maximumScreenSpaceErrorPx": 12.0,
+            "adaptive": False,
             "verticalExaggeration": 2.5,
             "verticalPivotZ": 105.25,
             "geometricErrorScale": "maximum",
@@ -231,6 +233,7 @@ def test_tiles_actor_translates_with_immutable_geographic_placement():
         Tiles3DSource("model-1", "rev-1", "/tiles/model-1/rev-1", IDENTITY)
     )
     assert defaults["tiles3d"] == {
+        "adaptive": True,
         "tilesetToScene": list(IDENTITY),
         "verticalExaggeration": 1.0,
         "verticalPivotZ": 0.0,
@@ -317,6 +320,7 @@ def test_point_source_rejects_invalid_wire_values(overrides, match):
             "invertible",
         ),
         ({"maximum_screen_space_error_px": 0}, "positive and finite"),
+        ({"adaptive": "false"}, "adaptive must be a boolean"),
         (
             {"maximum_screen_space_error_px": float("nan")},
             "positive and finite",

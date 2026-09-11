@@ -16,6 +16,8 @@
 // Receipt and application use separate cursors; presentation callbacks
 // observe only complete admitted prefixes.
 
+import { textureGraphAfter, requiredTextures } from "./textureRequirements";
+
 import { base64ToArrayBuffer } from "../sync/base64";
 
 const TOPIC = "scene.ops";
@@ -45,13 +47,23 @@ export function createSceneEngine({
   cache,
   callbacks = {},
   prepareAdmission = () => () => {},
+  limits = {},
 }) {
+  const maxMessages = limits.messages ?? 128;
+  const maxBytes = limits.bytes ?? 64 * 1024 * 1024;
+  const maxSnapshotBytes = limits.snapshotBytes ?? 256 * 1024 * 1024;
   const session = client.getConnection().getSession();
   const commandHandlers = new Map(); // name -> Set(callback)
 
   let mySeq = -1;
   let live = false;
   let buffer = [];
+  let bufferBytes = 0;
+  let bufferOverflow = false;
+  let recoveryAttempts = 0;
+  let recoveryTimer = null;
+  let syncFailure = null;
+  let needsReset = false;
   let subscription = null;
   let resyncVersion = 0;
   let resyncInFlight = false;
@@ -61,6 +73,7 @@ export function createSceneEngine({
   let pending = [];
   let pendingBytes = 0;
   let appliedCommands = new Map();
+  let appliedTextureGraph = new Map();
   let flushing = false;
   const admissionWork = { batches: 0, messages: 0, totalMs: 0, maxMs: 0 };
 
@@ -86,8 +99,8 @@ export function createSceneEngine({
     return 8;
   }
 
-  function enqueue(message, snapshot = false) {
-    const entry = { message, snapshot, bytes: 0 };
+  function enqueue(message, snapshot = false, reset = false) {
+    const entry = { message, snapshot, reset, bytes: 0 };
     pending.push(entry);
     receivedSeq = message.seq;
     flushAdmission();
@@ -98,11 +111,20 @@ export function createSceneEngine({
       pendingBytes += entry.bytes;
     }
     // Never discard individual deltas: recover through an authoritative snapshot.
-    if (
+    if (snapshot && pendingBytes > maxSnapshotBytes) {
+      pending = [];
+      pendingBytes = 0;
+      live = false;
+      syncFailure = "snapshot-too-large";
+      console.error(
+        "[sceneEngine] waiting snapshot exceeds admission memory limit",
+      );
+    } else if (
       !snapshot &&
-      (pending.length > 128 || pendingBytes > 64 * 1024 * 1024)
+      (pending.length > maxMessages ||
+        pendingBytes - (pending[0]?.snapshot ? pending[0].bytes : 0) > maxBytes)
     ) {
-      resync("admission-overflow");
+      recover("admission-overflow");
     }
   }
 
@@ -111,6 +133,7 @@ export function createSceneEngine({
     flushing = true;
     try {
       let candidateCommands = appliedCommands;
+      let candidateGraph = appliedTextureGraph;
       let admitted = null;
       for (let index = 0; index < pending.length; index += 1) {
         const entry = pending[index];
@@ -118,24 +141,40 @@ export function createSceneEngine({
           entry.snapshot ? new Map() : candidateCommands,
           entry.message,
         );
-        const commit = prepareAdmission(candidateCommands);
-        if (commit) admitted = { index, commit, commands: candidateCommands };
+        candidateGraph = textureGraphAfter(
+          candidateGraph,
+          entry.message,
+          entry.snapshot,
+        );
+        const commit = prepareAdmission(
+          candidateCommands,
+          requiredTextures(candidateGraph, rwId),
+        );
+        if (commit)
+          admitted = {
+            index,
+            commit,
+            commands: candidateCommands,
+            graph: candidateGraph,
+          };
       }
       if (!admitted) return;
       const batch = pending.splice(0, admitted.index + 1);
       for (const entry of batch) pendingBytes -= entry.bytes;
       // Includes staging, reconciliation and completion callbacks, not the
       // time spent waiting for images or the later GPU upload and paint.
+      const previousSeq = mySeq;
       const applyStarted = performance.now();
       // No asynchronous work between staging pixels and applying the full prefix.
       admitted.commit();
       let renderRequested = false;
       let snapshotApplied = false;
-      for (const { message, snapshot } of batch) {
+      for (const { message, snapshot, reset } of batch) {
         if (snapshot) {
           callbacks.beforeSnapshot?.();
           let applied = false;
           try {
+            if (reset) reconciler.reset(mirror);
             ingestBlobs(message.blobs);
             reconciler.applySnapshot(message.nodes || {}, mirror, cache);
             mirror.gcBlobCache(cache);
@@ -153,6 +192,7 @@ export function createSceneEngine({
         }
       }
       appliedCommands = admitted.commands;
+      appliedTextureGraph = admitted.graph;
       const last = batch.at(-1).message;
       if (snapshotApplied) callbacks.onSnapshotApplied?.(last);
       else
@@ -165,6 +205,9 @@ export function createSceneEngine({
               },
         );
       if (renderRequested) callbacks.onRenderRequested?.(last);
+      needsReset = false;
+      if (mySeq > previousSeq) recoveryAttempts = 0;
+      syncFailure = null;
       const elapsed = performance.now() - applyStarted;
       admissionWork.batches += 1;
       admissionWork.messages += batch.length;
@@ -172,7 +215,7 @@ export function createSceneEngine({
       admissionWork.maxMs = Math.max(admissionWork.maxMs, elapsed);
     } catch (error) {
       console.warn(`[sceneEngine] admission apply failed: ${error.message}`);
-      resync("apply-failed", { reset: true });
+      recover("apply-failed", { reset: true });
     } finally {
       flushing = false;
     }
@@ -243,18 +286,19 @@ export function createSceneEngine({
       return;
     }
     if (message.baseSeq !== receivedSeq) {
-      resync("seq-gap");
+      recover("seq-gap");
       return;
     }
     try {
       enqueue(message);
     } catch (error) {
       console.warn(`[sceneEngine] apply failed: ${error.message}`);
-      resync("apply-failed", { reset: true });
+      recover("apply-failed", { reset: true });
     }
   }
 
   function handleMessage(message) {
+    if (stopped || syncFailure) return;
     if (!message || String(message.rw) !== rwId) {
       return;
     }
@@ -269,34 +313,82 @@ export function createSceneEngine({
       // Not live and nothing in flight means an earlier resync failed;
       // an incoming op is the cue to try again.
       if (!resyncInFlight && !stopped) {
-        resync("ops-before-live");
+        recover("ops-before-live");
       }
-      buffer.push(message);
+      if (!bufferOverflow) {
+        const bytes = messageBytes(message);
+        if (buffer.length >= maxMessages || bufferBytes + bytes > maxBytes) {
+          buffer = [];
+          bufferBytes = 0;
+          bufferOverflow = true;
+        } else {
+          buffer.push(message);
+          bufferBytes += bytes;
+        }
+      }
       return;
     }
     routeMessage(message);
   }
 
-  async function resync(reason = "client-request", { reset = false } = {}) {
+  function recover(reason, options = {}) {
+    needsReset = needsReset || options.reset === true;
+    if (stopped || syncFailure || recoveryTimer !== null) return;
+    live = false;
+    pending = [];
+    pendingBytes = 0;
+    if (resyncInFlight) {
+      bufferOverflow = true;
+      return;
+    }
+    if (recoveryAttempts >= 3) {
+      syncFailure = reason;
+      pending = [];
+      pendingBytes = 0;
+      buffer = [];
+      bufferBytes = 0;
+      console.error(`[sceneEngine] automatic resync exhausted: ${reason}`);
+      return;
+    }
+    const delay =
+      recoveryAttempts === 0 ? 0 : 1000 * 2 ** (recoveryAttempts - 1);
+    recoveryAttempts++;
+    if (!delay) {
+      resync(reason, { ...options, automatic: true });
+    } else {
+      recoveryTimer = setTimeout(() => {
+        recoveryTimer = null;
+        resync(reason, { ...options, automatic: true });
+      }, delay);
+    }
+  }
+
+  async function resync(
+    reason = "client-request",
+    { reset = false, automatic = false } = {},
+  ) {
     if (stopped) {
       return false;
     }
     if (reason !== "initial") {
       console.warn(`[sceneEngine] resync: ${reason}`);
     }
+    clearTimeout(recoveryTimer);
+    recoveryTimer = null;
+    if (!automatic) {
+      recoveryAttempts = 0;
+      syncFailure = null;
+    }
     const version = ++resyncVersion;
     resyncInFlight = true;
     live = false;
     buffer = [];
+    bufferBytes = 0;
+    bufferOverflow = false;
     pending = [];
     pendingBytes = 0;
     receivedSeq = mySeq;
     try {
-      if (reset) {
-        // Instances and mirror may have diverged mid-message; rebuild from
-        // scratch. The blob cache stays — its content refs are still valid.
-        reconciler.reset(mirror);
-      }
       const snapshot = await session.call(RESYNC_RPC, [
         rwId,
         [...cache.keys()],
@@ -313,11 +405,14 @@ export function createSceneEngine({
         return false;
       }
 
-      enqueue(snapshot, true);
-      if (version !== resyncVersion || stopped) return false;
+      if (bufferOverflow) return false;
+      enqueue(snapshot, true, reset || needsReset);
+      if (version !== resyncVersion || stopped || syncFailure || bufferOverflow)
+        return false;
       live = true;
       const pending = buffer;
       buffer = [];
+      bufferBytes = 0;
       for (const message of pending) {
         routeMessage(message);
         if (!live) {
@@ -335,6 +430,8 @@ export function createSceneEngine({
     } finally {
       if (version === resyncVersion) {
         resyncInFlight = false;
+        if (!live && !stopped && !syncFailure)
+          recover("resync-incomplete", { reset });
       }
     }
   }
@@ -348,6 +445,9 @@ export function createSceneEngine({
 
   function stop() {
     stopped = true;
+    clearTimeout(recoveryTimer);
+    recoveryTimer = null;
+    bufferBytes = 0;
     resyncVersion += 1;
     resyncInFlight = false;
     live = false;
@@ -355,6 +455,7 @@ export function createSceneEngine({
     pending = [];
     pendingBytes = 0;
     appliedCommands.clear();
+    appliedTextureGraph.clear();
     if (subscription) {
       session.unsubscribe(subscription);
       subscription = null;
@@ -393,11 +494,16 @@ export function createSceneEngine({
       admissionLength: pending.length,
       admissionBytes: pendingBytes,
       admissionWork: { ...admissionWork },
+      requiredTextures: [...requiredTextures(appliedTextureGraph, rwId)],
       live,
       cacheSize: cache.size,
       mirrorSize: mirror.size(),
       lastAppliedOp,
       bufferLength: buffer.length,
+      bufferBytes,
+      bufferOverflow,
+      syncFailure,
+      recoveryAttempts,
     };
   }
 

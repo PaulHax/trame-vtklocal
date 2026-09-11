@@ -174,3 +174,216 @@ test("queue overflow recovers through one current snapshot", async () => {
   assert.equal(engine.getDiagnostics().admissionBytes, 0);
   engine.stop();
 });
+
+test("resync bounds messages while its RPC is outstanding and coalesces recovery", async () => {
+  const { engine, session, snapshot } = await fixture();
+  let finish;
+  let calls = 0;
+  session.call = () => {
+    calls++;
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  };
+  const resync = engine.resync();
+  for (let seq = 1; seq <= 500; seq++)
+    session.push(message(seq - 1, seq, "missing"));
+  assert.equal(calls, 1);
+  assert.equal(engine.getDiagnostics().bufferLength, 0);
+  assert.equal(engine.getDiagnostics().bufferBytes, 0);
+  assert.equal(engine.getDiagnostics().bufferOverflow, true);
+  finish(snapshot);
+  await resync;
+  assert.equal(
+    calls,
+    2,
+    "one replacement RPC after the incomplete buffer is discarded",
+  );
+  snapshot.seq = 500;
+  finish(snapshot);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(engine.getSeq(), 500);
+  engine.stop();
+});
+
+test("oversized waiting snapshots release memory and preserve the old scene", async () => {
+  const { createSceneEngine } = await loadModule(
+    "/src/components/engine/sceneEngine.js",
+  );
+  let snapshot = { v: 2, rw: "1", seq: 0, nodes: {} };
+  let resets = 0,
+    applied = 0;
+  const session = {
+    subscribe() {},
+    unsubscribe() {},
+    async call() {
+      return snapshot;
+    },
+  };
+  const engine = createSceneEngine({
+    client: { getConnection: () => ({ getSession: () => session }) },
+    rwId: "1",
+    mirror: { size: () => 0, gcBlobCache() {} },
+    cache: new Map(),
+    reconciler: {
+      applySnapshot() {
+        applied++;
+      },
+      reset() {
+        resets++;
+      },
+    },
+    prepareAdmission: () => (snapshot.seq === 0 ? () => {} : null),
+    limits: { snapshotBytes: 100 },
+  });
+  engine.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  snapshot = { ...snapshot, seq: 1, blobs: { huge: new Uint8Array(1024) } };
+  await engine.resync("test", { reset: true });
+  assert.equal(engine.getDiagnostics().syncFailure, "snapshot-too-large");
+  assert.equal(engine.getDiagnostics().admissionBytes, 0);
+  assert.equal(engine.getDiagnostics().admissionLength, 0);
+  assert.equal(engine.getSeq(), 0);
+  assert.equal(applied, 1);
+  assert.equal(
+    resets,
+    0,
+    "reset must wait until the replacement can be admitted",
+  );
+  engine.stop();
+});
+
+test("failed resync retries are finite and stop cancels scheduled recovery", async () => {
+  const { engine, session } = await fixture();
+  const originalSet = globalThis.setTimeout,
+    originalClear = globalThis.clearTimeout;
+  let nextId = 0,
+    calls = 0;
+  const timers = new Map();
+  globalThis.setTimeout = (callback) => {
+    timers.set(++nextId, callback);
+    return nextId;
+  };
+  globalThis.clearTimeout = (id) => timers.delete(id);
+  session.call = async () => {
+    calls++;
+    throw Error("disconnected");
+  };
+  try {
+    await engine.resync();
+    await new Promise((resolve) => setImmediate(resolve));
+    while (timers.size) {
+      const [id, callback] = timers.entries().next().value;
+      timers.delete(id);
+      callback();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(calls, 4, "one explicit request and three automatic attempts");
+    assert.equal(engine.getDiagnostics().syncFailure, "resync-incomplete");
+    session.push(message(0, 1, "ignored"));
+    assert.equal(engine.getDiagnostics().bufferLength, 0);
+    await engine.resync();
+    await new Promise((resolve) => setImmediate(resolve));
+    engine.stop();
+    assert.equal(timers.size, 0);
+  } finally {
+    engine.stop();
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+  }
+});
+
+test("snapshot application failure cannot mark the discarded snapshot live", async () => {
+  const { createSceneEngine } = await loadModule(
+    "/src/components/engine/sceneEngine.js",
+  );
+  let applies = 0,
+    calls = 0,
+    resets = 0;
+  const snapshot = { v: 2, rw: "1", seq: 0, nodes: {} };
+  const session = {
+    subscribe() {},
+    unsubscribe() {},
+    async call() {
+      calls++;
+      return snapshot;
+    },
+  };
+  const engine = createSceneEngine({
+    client: { getConnection: () => ({ getSession: () => session }) },
+    rwId: "1",
+    mirror: { size: () => 0, gcBlobCache() {} },
+    cache: new Map(),
+    reconciler: {
+      applySnapshot() {
+        if (++applies === 1) throw Error("bad first snapshot");
+      },
+      reset() {
+        resets++;
+      },
+    },
+  });
+  engine.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2);
+  assert.equal(applies, 2);
+  assert.equal(resets, 1);
+  assert.equal(engine.getSeq(), 0);
+  assert.equal(engine.getDiagnostics().live, true);
+  assert.equal(engine.getDiagnostics().bufferOverflow, false);
+  engine.stop();
+});
+
+test("advancing snapshots cannot reset retry allowance when completion keeps failing", async () => {
+  const { createSceneEngine } = await loadModule(
+    "/src/components/engine/sceneEngine.js",
+  );
+  const originalSet = globalThis.setTimeout,
+    originalClear = globalThis.clearTimeout;
+  const timers = new Map();
+  let nextId = 0,
+    calls = 0;
+  globalThis.setTimeout = (callback) => {
+    timers.set(++nextId, callback);
+    return nextId;
+  };
+  globalThis.clearTimeout = (id) => timers.delete(id);
+  const session = {
+    subscribe() {},
+    unsubscribe() {},
+    async call() {
+      return { v: 2, rw: "1", seq: ++calls, nodes: {} };
+    },
+  };
+  const engine = createSceneEngine({
+    client: { getConnection: () => ({ getSession: () => session }) },
+    rwId: "1",
+    mirror: { size: () => 0, gcBlobCache() {} },
+    cache: new Map(),
+    reconciler: { applySnapshot() {}, reset() {} },
+    callbacks: {
+      onSnapshotApplied() {
+        throw Error("completion failure");
+      },
+    },
+  });
+  try {
+    engine.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    while (timers.size) {
+      assert.ok(calls <= 4);
+      const [id, callback] = timers.entries().next().value;
+      timers.delete(id);
+      callback();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(calls, 4);
+    assert.equal(engine.getDiagnostics().admissionWork.batches, 0);
+    assert.ok(engine.getDiagnostics().syncFailure);
+    assert.equal(engine.getDiagnostics().live, false);
+  } finally {
+    engine.stop();
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+  }
+});

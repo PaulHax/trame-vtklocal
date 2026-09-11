@@ -278,3 +278,35 @@ Professional Support
 * `Training <https://www.kitware.com/courses/trame/>`_: Learn how to confidently use trame from the expert developers at Kitware.
 * `Support <https://www.kitware.com/trame/support/>`_: Our experts can assist your team as you build your web application and establish in-house expertise.
 * `Custom Development <https://www.kitware.com/trame/support/>`_: Leverage Kitware’s 25+ years of experience to quickly build your web application.
+
+Scene admission for external images
+-----------------------------------
+
+``VtkJsSharedView`` exposes ``registerSceneAdmission(prepare)`` and
+``retrySceneAdmission()``. A preparation callback receives the candidate
+retained-command map and a set of projected texture keys required by that
+candidate scene. The set follows renderer membership, actor visibility and
+property opacity, including changes that have not yet been applied. It is not
+an occlusion or view-frustum test.
+
+Return ``null`` to wait for an external resource, or a synchronous function
+that stages the resources for that candidate. Preparation can run for several
+ordered prefixes; only the newest admissible prefix is committed. Do not render
+or mutate the live scene during preparation. Commit functions must not await.
+The returned registration disposer releases that dependency; call it when a
+consumer closes. Call ``retrySceneAdmission()`` when an awaited image arrives.
+
+The engine preserves ordered scene operations and publishes completion/render
+callbacks after the admitted batch. The receive cursor may lead the applied
+cursor; upstream gestures continue to use the applied cursor. Actual texture
+paint notifications remain the authority for a presented-image acknowledgement.
+
+Waiting deltas and messages received during resync are bounded to 128 messages
+and 64 MiB of estimated payload each. One waiting authoritative snapshot has a
+separate 256 MiB limit. Overflow requests an authoritative replacement rather
+than dropping arbitrary deltas. Failed automatic resync has at most three
+attempts with backoff until the applied sequence advances; explicit
+``requestResync()`` starts a new recovery attempt. ``getSyncDiagnostics()``
+reports ``syncFailure``, queue sizes and required texture keys. Stop cancels
+pending retries. A replacement scene is reset only when its snapshot is ready
+for admission.

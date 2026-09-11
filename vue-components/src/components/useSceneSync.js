@@ -494,10 +494,10 @@ export function useSceneSync(
       reconciler,
       mirror,
       cache: blobCache,
-      prepareAdmission(commands) {
+      prepareAdmission(commands, requiredTextures) {
         const commits = [];
         for (const prepare of admissionPredicates) {
-          const commit = prepare(commands);
+          const commit = prepare(commands, requiredTextures);
           if (!commit) return null;
           commits.push(commit);
         }
@@ -581,11 +581,15 @@ export function useSceneSync(
       admissionLength = 0,
       admissionBytes = 0,
       admissionWork = null,
+      requiredTextures = [],
       live = false,
       cacheSize = 0,
       mirrorSize = 0,
       lastAppliedOp = null,
       bufferLength = 0,
+      bufferBytes = 0,
+      syncFailure = null,
+      recoveryAttempts = 0,
     } = engine?.getDiagnostics?.() ?? {};
     let cacheBytes = 0;
     if (blobCache) {
@@ -605,12 +609,16 @@ export function useSceneSync(
       admissionLength,
       admissionBytes,
       admissionWork,
+      requiredTextures,
       live,
       cacheSize,
       cacheBytes,
       mirrorSize,
       lastAppliedOp,
       queueLength: bufferLength,
+      bufferBytes,
+      syncFailure,
+      recoveryAttempts,
       syncedRootId,
       rendering: {
         preparedFrameSerial,

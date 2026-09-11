@@ -671,6 +671,7 @@ export function createStreamedSceneHost(options = {}) {
   });
   const entries = new Map();
   let disposed = false;
+  let viewVisible = true;
   let lastContext = null;
   let fallbackFrameSerial = 0;
 
@@ -815,6 +816,11 @@ export function createStreamedSceneHost(options = {}) {
       releaseEntry(entry);
       entry.hostRenderer = renderer;
     }
+    if (!viewVisible) {
+      entry.active = false;
+      entry.registration?.setActive(false);
+      return;
+    }
     const active = actorIsVisible(entry.actor) && rendererDraws(renderer);
     if (!entry.member && !active) {
       entry.active = false;
@@ -897,7 +903,8 @@ export function createStreamedSceneHost(options = {}) {
   // `resolved` lets a caller that has already resolved this entry's renderer
   // skip a second referrer scan over the whole mirror.
   function queryState(entry, cssX, cssY, resolved = null) {
-    if (!lastContext || !entry.member || !entry.registration) return null;
+    if (!viewVisible || !lastContext || !entry.member || !entry.registration)
+      return null;
     const renderer = resolved ?? resolveRenderer(entry, lastContext, true);
     if (
       !renderer ||
@@ -1043,6 +1050,20 @@ export function createStreamedSceneHost(options = {}) {
 
   return {
     applyBlock,
+    setViewVisible(visible) {
+      if (disposed || viewVisible === visible) return;
+      viewVisible = visible;
+      if (!visible) {
+        for (const entry of entries.values()) {
+          entry.active = false;
+          entry.registration?.setActive(false);
+        }
+      } else {
+        // The next pre-render pass resolves current anchors/configuration;
+        // hidden messages have continued to update the scene normally.
+        scheduleRender();
+      }
+    },
     beforeRender,
     beginInteraction: () => !disposed && coordinator.beginInteraction(),
     endInteraction: () => !disposed && coordinator.endInteraction(),
@@ -1054,6 +1075,7 @@ export function createStreamedSceneHost(options = {}) {
     describe() {
       const coordinatorStats = coordinator.stats();
       return {
+        viewVisible,
         members: [...entries.values()].map((entry) => ({
           nodeId: entry.id,
           kind: entry.config.kind,

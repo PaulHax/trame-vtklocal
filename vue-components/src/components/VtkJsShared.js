@@ -11,6 +11,7 @@ import { useSceneSync } from "./useSceneSync";
 import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
 import { createViewApi, VIEW_EMITS, VIEW_PROPS } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
+import { observeElementVisibility } from "./elementVisibility";
 
 export default {
   emits: VIEW_EMITS,
@@ -23,6 +24,7 @@ export default {
     let renderWindow = null;
     let renderRequestedCallbackWithDistanceToCamera = null;
     let repaintCallback = null;
+    let visibilityObserver = null;
 
     // Measure only the paint's wall-time (not the pre-render camera/LOD update
     // pass) and report it to the adaptive-quality budget loop. Callers that
@@ -99,6 +101,11 @@ export default {
           emit("messageApplied", message);
         },
       });
+      visibilityObserver?.dispose();
+      visibilityObserver = observeElementVisibility(
+        canvas,
+        scene.setViewVisible,
+      );
     }
 
     // options:
@@ -162,6 +169,7 @@ export default {
     });
 
     onBeforeUnmount(() => {
+      visibilityObserver?.dispose();
       unregisterView(registryKeys, viewApi);
       // A rAF render scheduled before unmount must not reach the host.
       renderRequestedCallbackWithDistanceToCamera = null;

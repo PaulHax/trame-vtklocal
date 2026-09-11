@@ -14,6 +14,7 @@ import { bindDistanceToCameraInteractorRenderEvent } from "./distanceToCameraGly
 import { createViewApi, VIEW_EMITS, VIEW_PROPS } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
 import { getDevicePixelRatio } from "./viewportMetrics";
+import { observeElementVisibility } from "./elementVisibility";
 
 export default {
   emits: VIEW_EMITS,
@@ -27,6 +28,7 @@ export default {
     let renderWindow = null;
     let interactor = null;
     let resizeObserver = null;
+    let visibilityObserver = null;
     let interactorRenderSubscription = null;
     let cameraSubscriptions = [];
 
@@ -119,6 +121,10 @@ export default {
 
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(container.value);
+      visibilityObserver = observeElementVisibility(
+        container.value,
+        scene.setViewVisible,
+      );
 
       resize();
       registerView(registryKeys, viewApi);
@@ -126,6 +132,7 @@ export default {
     });
 
     onBeforeUnmount(() => {
+      visibilityObserver?.dispose();
       unregisterView(registryKeys, viewApi);
       scene.cleanup();
 

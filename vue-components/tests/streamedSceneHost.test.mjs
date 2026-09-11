@@ -745,6 +745,63 @@ test("default pointCloud factory streams through the extracted member API", asyn
   assert.ok(removed.length > 0, "host disposal retires streamed VTK actors");
 });
 
+test("hidden views defer realization and resume with current configuration", async () => {
+  const { createStreamedSceneHost } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
+  const log = coordinatorLog();
+  const member = fakeMember();
+  const anchor = actor();
+  const hostRenderer = renderer();
+  const context = sceneContext(
+    new Map([["7", { actor: anchor, renderer: hostRenderer }]]),
+  );
+  const host = createStreamedSceneHost({
+    factories: factoriesFor(new Map([["pointCloud", [member]]])),
+    createCoordinator: fakeCoordinatorFactory(log),
+  });
+  host.setViewVisible(false);
+  host.applyBlock("7", pointBlock(), anchor);
+  host.beforeRender(context);
+  assert.equal(log.contexts.length, 0);
+  host.setViewVisible(true);
+  host.beforeRender(context);
+  assert.equal(log.contexts.length, 1);
+  host.setViewVisible(false);
+  assert.equal(host.describe().viewVisible, false);
+  assert.equal(host.describe().members[0].active, false);
+  assert.deepEqual(member.calls.filter(([name]) => name === "active").at(-1), [
+    "active",
+    false,
+  ]);
+  member.calls.length = 0;
+  const changed = pointBlock({
+    pointCloud: { ...pointBlock().pointCloud, pointBudget: 500 },
+  });
+  host.applyBlock("7", changed, anchor);
+  host.beforeRender(context);
+  assert.equal(
+    member.calls.some(([name]) => name === "config"),
+    false,
+  );
+  assert.equal(host.pickAsset("asset-1", 10, 10), null);
+  host.setViewVisible(true);
+  host.beforeRender(context);
+  assert.equal(log.contexts.length, 1, "resumes the retained member");
+  assert.equal(host.describe().members[0].active, true);
+  assert.equal(
+    member.calls.filter(([name]) => name === "config").at(-1)[1].pointBudget,
+    500,
+  );
+  assert.equal(anchor.getVisibility(), true);
+  assert.equal(
+    hostRenderer.getDraw(),
+    true,
+    "host visibility does not overwrite scene-owned draw state",
+  );
+  host.dispose();
+});
+
 test("initial visibility gates creation and actor removal tears down realization", async () => {
   const { createStreamedSceneHost } = await loadModule(
     "/src/components/streamedSceneHost.js",

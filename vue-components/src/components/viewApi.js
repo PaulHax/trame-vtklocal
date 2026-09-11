@@ -62,6 +62,7 @@ export const COMMON_VIEW_API_KEYS = Object.freeze([
   "cameraInteraction",
   "endCameraInteraction",
   "recordHostFrame",
+  "requestFrameIfNeeded",
   "onSceneApplied",
   "onCommand",
   "getInstance",

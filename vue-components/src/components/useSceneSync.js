@@ -963,6 +963,7 @@ export function useSceneSync(
     recordFrameDuration,
     recordPaintDuration,
     recordHostFrame,
+    requestFrameIfNeeded: requestFrameWhileBudgetWorks,
     getSyncDiagnostics,
     getAppliedSceneState,
   };

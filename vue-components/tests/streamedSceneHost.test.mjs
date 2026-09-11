@@ -1530,8 +1530,8 @@ test("host motion, governor targets, frame feedback, and nested interactions sha
       lastHostFrameMs: 10,
     },
   );
-  assert.equal(publicFrameMetrics.peakObservedFrameMs, 8 / 0.7);
-  assert.equal(publicFrameMetrics.lastObservedFrameMs, 8 / 0.7);
+  assert.equal(publicFrameMetrics.peakObservedFrameMs, 10);
+  assert.equal(publicFrameMetrics.lastObservedFrameMs, 10);
   assert.equal(typeof host.needsFrame(), "boolean");
   host.dispose();
 });

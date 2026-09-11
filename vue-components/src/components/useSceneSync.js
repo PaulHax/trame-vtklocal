@@ -93,6 +93,7 @@ export function useSceneSync(
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
   let streamedSceneHost = null;
+  let viewVisible = true;
   const pointCloudPresentations = new Map();
   // Server-pushed armed pick spec: while set, click gestures solve cloud
   // depth against this asset id instead of the picked glyph's tag. View
@@ -136,6 +137,7 @@ export function useSceneSync(
         tiles3dTexturePolicy,
         tiles3dQualityPolicy,
       });
+      if (!viewVisible) streamedSceneHost.setViewVisible(false);
       if (cameraInteractionStack.length > 0) {
         streamedSceneHost.beginInteraction();
       }
@@ -965,6 +967,10 @@ export function useSceneSync(
   });
 
   return {
+    setViewVisible(visible) {
+      viewVisible = visible;
+      streamedSceneHost?.setViewVisible(visible);
+    },
     initialize,
     cleanup,
     requestResync,

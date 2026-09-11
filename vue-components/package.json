@@ -17,7 +17,7 @@
   "dependencies": {
     "@kitware/vtk-wasm": "^1.5.0",
     "jszip": "3.10.1",
-    "pointcloud-lod": "0.9.2"
+    "pointcloud-lod": "https://github.com/PaulHax/pointcloud-lod/releases/download/revision-f35273aa2e0a6c2537c1e1e11993abee18364d98/pointcloud-lod-f35273aa2e0a6c2537c1e1e11993abee18364d98.tgz"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",

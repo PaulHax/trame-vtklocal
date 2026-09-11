@@ -350,6 +350,7 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
       verticalExaggeration: 1,
       verticalPivotZ: 0,
       geometricErrorScale: "maximum",
+      adaptive: true,
     },
   );
   assert.deepEqual(
@@ -368,9 +369,12 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
       verticalExaggeration: 3.5,
       verticalPivotZ: -12,
       geometricErrorScale: "maximum",
+      adaptive: true,
     },
   );
   for (const tiles3d of [
+    { tilesetToScene: IDENTITY, adaptive: "false" },
+    { tilesetToScene: IDENTITY, adaptive: null },
     { tilesetToScene: IDENTITY, verticalExaggeration: 0 },
     { tilesetToScene: IDENTITY, verticalExaggeration: -1 },
     { tilesetToScene: IDENTITY, verticalExaggeration: Infinity },
@@ -2249,3 +2253,44 @@ test("useSceneSync reports the presentation interval, not the paint duration", a
     else globalThis.window = previousWindow;
   }
 });
+
+for (const adaptive of [true, false]) {
+  test(`tiles source adaptive=${adaptive} controls its own governor registration`, async () => {
+    const { createStreamedSceneHost } = await loadModule(
+      "/src/components/streamedSceneHost.js",
+    );
+    const log = coordinatorLog();
+    const member = fakeMember();
+    const anchor = actor();
+    const hostRenderer = renderer();
+    const host = createStreamedSceneHost({
+      factories: factoriesFor(new Map([["tiles3d", [member]]])),
+      createCoordinator: fakeCoordinatorFactory(log),
+    });
+    const context = sceneContext(
+      new Map([["imagery", { actor: anchor, renderer: hostRenderer }]]),
+    );
+    host.applyBlock(
+      "imagery",
+      tilesBlock({ tiles3d: { tilesetToScene: IDENTITY, adaptive } }),
+      anchor,
+    );
+    host.beforeRender(context);
+    assert.equal(log.registrations[0].qualityManaged, adaptive);
+    host.applyBlock(
+      "imagery",
+      tilesBlock({
+        tiles3d: { tilesetToScene: IDENTITY, adaptive: !adaptive },
+      }),
+      anchor,
+    );
+    host.beforeRender(context);
+    assert.equal(log.quality.at(-1)[0], !adaptive);
+    assert.equal(
+      log.registrations.length,
+      1,
+      "policy changes keep the resident member",
+    );
+    host.dispose();
+  });
+}

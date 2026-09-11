@@ -62,6 +62,7 @@ export function createSceneEngine({
   let pendingBytes = 0;
   let appliedCommands = new Map();
   let flushing = false;
+  const admissionWork = { batches: 0, messages: 0, totalMs: 0, maxMs: 0 };
 
   function commandsAfter(commands, message) {
     const next = new Map(commands);
@@ -123,6 +124,9 @@ export function createSceneEngine({
       if (!admitted) return;
       const batch = pending.splice(0, admitted.index + 1);
       for (const entry of batch) pendingBytes -= entry.bytes;
+      // Includes staging, reconciliation and completion callbacks, not the
+      // time spent waiting for images or the later GPU upload and paint.
+      const applyStarted = performance.now();
       // No asynchronous work between staging pixels and applying the full prefix.
       admitted.commit();
       let renderRequested = false;
@@ -161,6 +165,11 @@ export function createSceneEngine({
               },
         );
       if (renderRequested) callbacks.onRenderRequested?.(last);
+      const elapsed = performance.now() - applyStarted;
+      admissionWork.batches += 1;
+      admissionWork.messages += batch.length;
+      admissionWork.totalMs += elapsed;
+      admissionWork.maxMs = Math.max(admissionWork.maxMs, elapsed);
     } catch (error) {
       console.warn(`[sceneEngine] admission apply failed: ${error.message}`);
       resync("apply-failed", { reset: true });
@@ -383,6 +392,7 @@ export function createSceneEngine({
       receivedSeq,
       admissionLength: pending.length,
       admissionBytes: pendingBytes,
+      admissionWork: { ...admissionWork },
       live,
       cacheSize: cache.size,
       mirrorSize: mirror.size(),

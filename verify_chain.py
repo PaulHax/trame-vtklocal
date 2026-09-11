@@ -124,7 +124,14 @@ def check_pointcloud_lod() -> dict:
     if not entry:
         die("package-lock.json has no node_modules/pointcloud-lod entry")
     resolved, integrity = entry.get("resolved", ""), entry.get("integrity", "")
-    if not resolved.startswith("https://registry.npmjs.org/"):
+    # Development releases use a full source revision in both tag and asset;
+    # the lockfile's digest pins the bytes just as it does for npm releases.
+    commit_tarball = re.fullmatch(
+        r"https://github\.com/PaulHax/pointcloud-lod/releases/download/"
+        r"revision-([0-9a-f]{40})/pointcloud-lod-\1\.tgz",
+        resolved,
+    )
+    if not resolved.startswith("https://registry.npmjs.org/") and not commit_tarball:
         die(f"pointcloud-lod must resolve to a published tarball, got '{resolved}'")
     if not integrity.startswith("sha512-"):
         die(f"pointcloud-lod lock entry carries no sha512 integrity: '{integrity}'")
@@ -133,7 +140,12 @@ def check_pointcloud_lod() -> dict:
             f"installed pointcloud-lod {version} != locked {entry.get('version')} "
             "— run `npm ci` in vue-components"
         )
-    return {"version": version, "resolved": resolved, "integrity": integrity}
+    return {
+        "version": version,
+        "resolved": resolved,
+        "integrity": integrity,
+        **({"sourceRevision": commit_tarball.group(1)} if commit_tarball else {}),
+    }
 
 
 def node_json(source: str, what: str):

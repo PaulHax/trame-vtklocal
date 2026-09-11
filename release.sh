@@ -77,6 +77,23 @@ BASE="$(sed -n 's/^BASE_VERSION *= *"\(.*\)".*/\1/p' hatch_build.py | head -n1)"
 TAG="v${BASE}-shared-context.${SHA}"
 echo "commit=${SHA}  base=${BASE}  tag=${TAG}"
 
+# Same-version development packages cannot be identified by package metadata
+# or npm's hidden lockfile (which --package-lock-only also rewrites). Install
+# the locked bytes before bundling and restore the verified vtk.js build link.
+step "Installing locked vue-components dependencies"
+VTKJS_BUILD="$("$PYTHON" - <<'PYTHON_CODE'
+import verify_chain as chain
+chain.check_vtkjs(chain.read_pin())
+print((chain.VUE / "node_modules" / "@kitware" / "vtk.js").resolve())
+PYTHON_CODE
+)"
+(
+  cd vue-components
+  npm ci &&
+    mkdir -p node_modules/@kitware &&
+    ln -s "$VTKJS_BUILD" node_modules/@kitware/vtk.js
+) || die "locked dependency installation failed"
+
 # --- build the vue components (produces the UMD bundle) --------------------
 step "Building vue-components (npm run build)"
 ( cd vue-components && npm run build ) || die "vue-components build failed"

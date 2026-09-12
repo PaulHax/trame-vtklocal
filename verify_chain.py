@@ -293,7 +293,7 @@ def check_bundle(umd: Path) -> dict:
         # worldSize is the fork's world-space point sizing — the feature the
         # pinned commit adds, so its presence proves the fork build was used.
         "worldSize": re.search(
-            rf"{QUOTE}scaleFactor{QUOTE}\s*,\s*{QUOTE}circle{QUOTE}"
+            rf"{QUOTE}pointSizeScale{QUOTE}\s*,\s*{QUOTE}circle{QUOTE}"
             rf"\s*,\s*{QUOTE}worldSize{QUOTE}",
             text,
         )

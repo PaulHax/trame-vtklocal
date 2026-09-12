@@ -1,9 +1,13 @@
 from pathlib import Path
 from trame_vtklocal.module.protocol import ObjectManagerHelper
 
+# trame's enable_module() reads serve/scripts/styles/vue_use/setup off this
+# module by name, so every one of them is load-bearing despite having no
+# in-tree caller.
 __all__ = [
     "serve",
     "scripts",
+    "styles",
     "vue_use",
     "setup",
     "get_helper",

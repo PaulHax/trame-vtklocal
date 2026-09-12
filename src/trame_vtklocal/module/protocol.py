@@ -7,7 +7,6 @@ from pathlib import Path
 from wslink import register as export_rpc
 from wslink.websocket import LinkProtocol
 
-# from vtkmodules.vtkCommonCore import vtkLogger
 from vtkmodules.vtkSerializationManager import vtkObjectManager
 from vtkmodules.vtkCommonCore import vtkVersion
 
@@ -71,14 +70,6 @@ class ObjectManagerAPI(LinkProtocol):
 
         self._debug_state = False
         self._debug_state_counter = 1
-
-        # Debug - adjust verbosity
-        # self.vtk_object_manager.SetObjectManagerLogVerbosity(
-        #     vtkLogger.VERBOSITY_WARNING
-        # )
-        # self.vtk_object_manager.serializer.SetSerializerLogVerbosity(
-        #     vtkLogger.VERBOSITY_WARNING
-        # )
 
     def register_push_view(self, rw_id, publisher):
         """Register the ScenePublisher serving one render window."""

@@ -21,7 +21,7 @@ from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.module import streamed_scene_registry
 from trame_vtklocal.widgets.publisher import ScenePublisher
 
-import vtkmodules.vtkRenderingOpenGL2  # noqa: F401, E402
+import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 
 
 POINT_SOURCE_ARGS = {

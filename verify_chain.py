@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import hashlib
 import json
 import re
@@ -131,8 +132,24 @@ def check_pointcloud_lod() -> dict:
         r"revision-([0-9a-f]{40})/pointcloud-lod-\1\.tgz",
         resolved,
     )
-    if not resolved.startswith("https://registry.npmjs.org/") and not commit_tarball:
-        die(f"pointcloud-lod must resolve to a published tarball, got '{resolved}'")
+    local_tarball = re.fullmatch(
+        r"file:vendor/pointcloud-lod-([0-9a-f]{40})\.tgz", resolved
+    )
+    if not resolved.startswith("https://registry.npmjs.org/") and not (
+        commit_tarball or local_tarball
+    ):
+        die(
+            f"pointcloud-lod must resolve to a revision-pinned tarball, got '{resolved}'"
+        )
+    if local_tarball:
+        archive = VUE / resolved.removeprefix("file:")
+        if not archive.is_file():
+            die(f"missing local pointcloud-lod archive: {archive}")
+        digest = base64.b64encode(
+            hashlib.sha512(archive.read_bytes()).digest()
+        ).decode()
+        if integrity != f"sha512-{digest}":
+            die("local pointcloud-lod archive does not match the lockfile integrity")
     if not integrity.startswith("sha512-"):
         die(f"pointcloud-lod lock entry carries no sha512 integrity: '{integrity}'")
     if entry.get("version") != version:
@@ -144,7 +161,11 @@ def check_pointcloud_lod() -> dict:
         "version": version,
         "resolved": resolved,
         "integrity": integrity,
-        **({"sourceRevision": commit_tarball.group(1)} if commit_tarball else {}),
+        **(
+            {"sourceRevision": (commit_tarball or local_tarball).group(1)}
+            if commit_tarball or local_tarball
+            else {}
+        ),
     }
 
 

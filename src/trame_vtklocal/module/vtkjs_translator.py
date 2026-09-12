@@ -278,7 +278,7 @@ MAPPER_SKIP_PROPERTIES: set[str] = {
     "resolveCoincidentTopologyPolygonOffsetFaces",
     "resolveCoincidentTopologyPolygonOffsetParameters",
     # vtkPointGaussianMapper fields the client mapper does not implement (it
-    # keeps only scaleFactor + the shared vtkMapper surface). scaleArray and
+    # supports only scaleFactor=0 and the shared vtkMapper surface). scaleArray and
     # opacityArray also exist on vtkGlyph3DMapper, where node_translator
     # re-adds them from mapper introspection after this skip — so skipping
     # here stays a no-op for every other mapper.

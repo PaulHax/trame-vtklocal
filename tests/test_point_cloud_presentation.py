@@ -19,6 +19,7 @@ def _scene():
     renderer = vtkRenderer()
     render_window.AddRenderer(renderer)
     mapper = vtkPointGaussianMapper()
+    mapper.SetScaleFactor(0)
     mapper.SetInputData(vtkPolyData())
     actor = vtkActor()
     actor.SetMapper(mapper)

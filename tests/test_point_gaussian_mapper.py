@@ -11,6 +11,7 @@ positions, full-range Uint8 RGB, and the actor UserMatrix.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData
@@ -71,6 +72,7 @@ def _point_cloud_scene(user_matrix=None, native_array_names=False):
     poly.GetPointData().SetScalars(rgb)
 
     mapper = vtkPointGaussianMapper()
+    mapper.SetScaleFactor(0)
     mapper.SetInputData(poly)
     mapper.SetScalarVisibility(True)
     mapper.SetColorModeToDirectScalars()
@@ -113,7 +115,7 @@ def test_native_mapper_maps_to_the_client_point_gaussian_type():
     props = mapper.get("props", {})
     # Client-supported surface is present...
     assert props["scalarVisibility"] == 1
-    assert props["scaleFactor"] == 1.0
+    assert props["scaleFactor"] == 0.0
     assert props["static"] == 1
     assert props["colorMode"] == 2  # direct scalars
     # ...and no PointGaussian-only field the client mapper cannot set leaks.
@@ -125,12 +127,9 @@ def test_native_mapper_maps_to_the_client_point_gaussian_type():
     )
 
 
-def test_native_scale_and_opacity_array_names_do_not_cross_the_wire():
-    nodes, _ = _point_cloud_scene(native_array_names=True)
-    props = _only(nodes, "vtkPointGaussianMapper").get("props", {})
-
-    assert "scaleArray" not in props
-    assert "opacityArray" not in props
+def test_native_gaussian_array_requests_are_rejected():
+    with pytest.raises(ValueError, match="ScaleArray, OpacityArray"):
+        _point_cloud_scene(native_array_names=True)
 
 
 def test_polydata_is_topology_free():
@@ -183,3 +182,22 @@ def test_actor_carries_the_user_matrix():
     # actor_user_matrix_property emits column-major (col-outer, row-inner).
     expected = [user_matrix[row][col] for col in range(4) for row in range(4)]
     assert actor["props"]["userMatrix"] == expected
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("ScaleFactor", 1),
+        ("Anisotropic", True),
+        ("RotationArray", "rotation"),
+        ("SplatShaderCode", "custom GLSL"),
+    ],
+)
+def test_gaussian_requests_fail_during_scene_translation(setting, value):
+    from trame_vtklocal.module.point_gaussian import validate_simple_points
+
+    _nodes, handles = _point_cloud_scene()
+    mapper = handles["mapper"]
+    getattr(mapper, f"Set{setting}")(value)
+    with pytest.raises(ValueError, match="simple points|unsupported"):
+        validate_simple_points(mapper)

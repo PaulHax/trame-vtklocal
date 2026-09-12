@@ -1,8 +1,6 @@
 .. |pypi_download| image:: https://img.shields.io/pypi/dm/trame-vtklocal
 
-========================================================
 trame-vtklocal  |pypi_download|
-========================================================
 
 Local Rendering using VTK.wasm to match server side rendering pipeline on the client side.
 The current code base is still at its infancy but we aim to make it the default implementation for local rendering using VTK/ParaView with trame.
@@ -295,3 +293,16 @@ view. Ask for the resource again well before that deadline rather than
 relying on it. Snapshots are never held.
 The registration disposer releases anything the gate held.
 
+PointGaussianMapper support
+--------------------------
+
+The vtk.js backend implements only simple points. Python callers must explicitly
+call ``mapper.SetScaleFactor(0)``. Nonzero scale factors, anisotropy, Gaussian
+scale/opacity arrays or functions, rotation arrays, and custom splat shaders
+raise an error during scene translation. Gaussian-only defaults such as
+``Emissive`` and ``BoundScale`` are not forwarded and have no effect in this mode.
+
+Point size comes from the actor property. The direct-cloud presentation block
+converts CSS pixels with the vtk.js ``pointSizeScale`` extension; it does not
+change ``scaleFactor``. Streamed scenes create their simple-point mappers in the
+browser, where the renderer also controls the resident-buffer draw prefix.

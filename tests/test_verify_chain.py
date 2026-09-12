@@ -65,3 +65,22 @@ def test_commit_tarball_still_requires_integrity(install):
     install(integrity="")
     with pytest.raises(SystemExit):
         verify_chain.check_pointcloud_lod()
+
+
+def test_local_revision_tarball_requires_matching_bytes(install, tmp_path):
+    import base64
+    import hashlib
+
+    resolved = f"file:vendor/pointcloud-lod-{REVISION}.tgz"
+    archive = tmp_path / resolved.removeprefix("file:")
+    archive.parent.mkdir()
+    archive.write_bytes(b"immutable package bytes")
+    integrity = (
+        "sha512-"
+        + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode()
+    )
+    install(resolved=resolved, integrity=integrity)
+    assert verify_chain.check_pointcloud_lod()["sourceRevision"] == REVISION
+    archive.write_bytes(b"changed bytes")
+    with pytest.raises(SystemExit, match="integrity"):
+        verify_chain.check_pointcloud_lod()

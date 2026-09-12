@@ -1468,7 +1468,7 @@ test("host motion, governor targets, frame feedback, and nested interactions sha
   const host = createStreamedSceneHost({
     factories,
     coordinatorOptions: {
-      governor: { motionDebounceMs: 0, interactionSettleMs: 0 },
+      governor: { motionDebounceMs: 0, interactionSettleMs: 0, vtkFrameFraction: 1 },
     },
   });
   host.applyBlock(

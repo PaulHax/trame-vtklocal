@@ -19,6 +19,7 @@ from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
+from trame_vtklocal.module.point_gaussian import validate_simple_points
 from trame_vtklocal.module.node_arrays import polydata_array_entries
 from trame_vtklocal.module.camera_authority import CameraAuthority
 from trame_vtklocal.module.state_cache import SceneReader
@@ -312,6 +313,8 @@ def _translate_mapper(
     vtk_mapper = reader.vtk_object(state["Id"])
     if vtk_mapper is None:
         raise RuntimeError(f"mapper state {state['Id']} has no live object")
+    if vtkjs_type == "vtkPointGaussianMapper":
+        validate_simple_points(cast(vtkPointGaussianMapper, vtk_mapper))
     props = _scalar_props(state, vtkjs_type, extra_skips=MAPPER_SKIP_PROPERTIES)
     refs: dict[str, RefSlot] = {}
     blocks: dict[str, Mapping[str, object]] = {}

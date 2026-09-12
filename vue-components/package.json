@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@kitware/vtk-wasm": "^1.5.0",
-    "pointcloud-lod": "0.12.1"
+    "pointcloud-lod": "file:vendor/pointcloud-lod-d9f44f0589b630e20e5e5ec6eb9c0b26c731941d.tgz"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",

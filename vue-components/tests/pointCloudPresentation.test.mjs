@@ -18,7 +18,7 @@ test("direct point-cloud mapper tracks device-pixel ratio for CSS sizing", async
   const values = [];
   const mapper = {
     isDeleted: () => false,
-    setScaleFactor: (value) => values.push(value),
+    setPointSizeScale: (value) => values.push(value),
   };
   const registry = new Map();
   try {
@@ -43,12 +43,12 @@ test("direct point-cloud mapper tracks device-pixel ratio for CSS sizing", async
 function makeMapper() {
   return {
     deleted: false,
-    scaleFactors: [],
+    pointSizeScales: [],
     isDeleted() {
       return this.deleted;
     },
-    setScaleFactor(value) {
-      this.scaleFactors.push(value);
+    setPointSizeScale(value) {
+      this.pointSizeScales.push(value);
     },
   };
 }
@@ -84,7 +84,7 @@ test("a live mapper is registered only for a fixed block with a positive diamete
     const mapper = makeMapper();
     applyPointCloudPresentationBlock(registry, "mapper-1", block, mapper);
     assert.equal(registry.size, 0, `registered for ${JSON.stringify(block)}`);
-    assert.deepEqual(mapper.scaleFactors, []);
+    assert.deepEqual(mapper.pointSizeScales, []);
   }
 
   const mapper = makeMapper();

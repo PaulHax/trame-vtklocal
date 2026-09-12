@@ -21,7 +21,7 @@ export function applyPointCloudPresentationBlock(
     return registry;
   }
   registry.set(id, { mapper: instance });
-  instance.setScaleFactor?.(getDevicePixelRatio());
+  instance.setPointSizeScale?.(getDevicePixelRatio());
   return registry;
 }
 
@@ -32,6 +32,6 @@ export function updatePointCloudPresentations(registry) {
       registry.delete(id);
       continue;
     }
-    entry.mapper.setScaleFactor?.(ratio);
+    entry.mapper.setPointSizeScale?.(ratio);
   }
 }

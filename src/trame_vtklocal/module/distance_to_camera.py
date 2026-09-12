@@ -6,7 +6,6 @@ import weakref
 
 from vtkmodules.vtkCommonDataModel import vtkDataObject
 
-DISTANCE_TO_CAMERA_STATE_KEY = "distanceToCamera"
 DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera"
 _MAPPER_TRANSLATION_SNAPSHOTS = weakref.WeakKeyDictionary()
 _REWIRE_DEPTH = 0

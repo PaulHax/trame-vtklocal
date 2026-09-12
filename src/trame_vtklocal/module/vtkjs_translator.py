@@ -54,48 +54,6 @@ SKIP_TYPES = {
     "vtkOpenGLShaderProperty",
 }
 
-PROPERTY_RELATIONS = {
-    "vtkRenderWindow": {
-        "Renderers": ("addRenderer", "vtkRendererCollection"),
-    },
-    "vtkRenderer": {
-        "ViewProps": ("addViewProp", "vtkPropCollection"),
-        "ActiveCamera": ("setActiveCamera", None),
-        "Lights": ("addLight", "vtkLightCollection"),
-    },
-    "vtkActor": {
-        "Mapper": ("setMapper", None),
-        "Property": ("setProperty", None),
-        "Texture": ("addTexture", None),
-    },
-    "vtkVolume": {
-        "Mapper": ("setMapper", None),
-        "Property": ("setProperty", None),
-    },
-    "vtkImageSlice": {
-        "Mapper": ("setMapper", None),
-        "Property": ("setProperty", None),
-    },
-    "vtkMapper": {
-        "LookupTable": ("setLookupTable", None),
-    },
-    "vtkVolumeMapper": {
-        "LookupTable": ("setLookupTable", None),
-    },
-    "vtkVolumeProperty": {
-        "RGBTransferFunction": {"method": "setRGBTransferFunction", "indexed": True},
-        "GrayTransferFunction": {"method": "setGrayTransferFunction", "indexed": True},
-        "ScalarOpacity": {"method": "setScalarOpacity", "indexed": True},
-    },
-    "vtkImageProperty": {
-        "RGBTransferFunction": {"method": "setRGBTransferFunction", "indexed": True},
-        "ScalarOpacity": {"method": "setScalarOpacity", "indexed": True},
-    },
-    "vtkTexture": {
-        "LookupTable": ("setLookupTable", None),
-    },
-}
-
 ATTRIBUTE_REGISTRATIONS = {
     "Scalars": "setScalars",
     "Vectors": "setVectors",

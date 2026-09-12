@@ -162,10 +162,6 @@ class DirtyTracker:
     def has_pending(self):
         return bool(self._dirty_ids)
 
-    @property
-    def ready(self):
-        return bool(self._observed_objects)
-
     def classes(self):
         return self._classes
 

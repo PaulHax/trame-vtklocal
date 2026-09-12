@@ -7,16 +7,52 @@ verbatim through ``pickAt``. The fork never interprets tag semantics — it only
 answers "what rendered glyph point is under (x, y)".
 """
 
+from __future__ import annotations
+
 import math
 import weakref
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Literal, SupportsFloat, SupportsInt, TypedDict
+
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonCore import vtkObjectBase
+    from vtkmodules.vtkRenderingCore import vtkMapper
 
 PICKABLE_STATE_KEY = "pickable"
 
-_PICKABLE_CONFIGS = weakref.WeakKeyDictionary()
+PickPreview = Literal["screen", "plane", "cloud"]
 
 
-def _copy_config(config):
-    copied = {
+class PickPlane(TypedDict):
+    origin: list[float]
+    normal: list[float]
+
+
+class _PickableFields(TypedDict):
+    tags: dict[str, object]
+    ids: list[object] | None
+    grabPx: float
+    priority: int
+    preview: PickPreview | None
+
+
+class PickableConfig(_PickableFields, total=False):
+    """The ``pickable`` block; ``plane`` is present only when one was given."""
+
+    plane: PickPlane
+
+
+class _StoredPickableConfig(_PickableFields):
+    plane: PickPlane | None
+
+
+_PICKABLE_CONFIGS: weakref.WeakKeyDictionary[vtkObjectBase, _StoredPickableConfig] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _copy_config(config: _StoredPickableConfig) -> PickableConfig:
+    copied: PickableConfig = {
         "tags": dict(config["tags"]),
         "ids": list(config["ids"]) if config["ids"] is not None else None,
         "grabPx": config["grabPx"],
@@ -32,14 +68,14 @@ def _copy_config(config):
 
 
 def make_pickable(
-    mapper,
-    tags=None,
-    ids=None,
-    grab_px=None,
-    priority=0,
-    preview=None,
-    plane=None,
-):
+    mapper: vtkMapper,
+    tags: Mapping[str, object] | None = None,
+    ids: Iterable[object] | None = None,
+    grab_px: SupportsFloat | None = None,
+    priority: SupportsInt = 0,
+    preview: PickPreview | None = None,
+    plane: Mapping[str, Iterable[SupportsFloat]] | None = None,
+) -> PickableConfig:
     """Mark ``mapper`` pickable and stamp its opaque hit-test metadata.
 
     ``tags`` (dict) and ``ids`` (list, one entry per glyph point) are opaque to
@@ -55,7 +91,7 @@ def make_pickable(
         raise ValueError("grab_px must be a positive number")
     if preview not in (None, "screen", "plane", "cloud"):
         raise ValueError("preview must be None, 'screen', 'plane', or 'cloud'")
-    normalized_plane = None
+    normalized_plane: PickPlane | None = None
     if plane is not None:
         if not isinstance(plane, dict):
             raise ValueError("plane must contain origin and normal vectors")
@@ -72,7 +108,7 @@ def make_pickable(
     if preview == "plane" and normalized_plane is None:
         raise ValueError("preview='plane' requires a plane")
 
-    config = {
+    config: _StoredPickableConfig = {
         "tags": dict(tags) if tags else {},
         "ids": list(ids) if ids is not None else None,
         "grabPx": grab,
@@ -86,12 +122,12 @@ def make_pickable(
     return _copy_config(config)
 
 
-def clear_pickable(mapper):
+def clear_pickable(mapper: vtkMapper) -> None:
     if _PICKABLE_CONFIGS.pop(mapper, None) is not None:
         mapper.Modified()
 
 
-def pickable_config(mapper):
+def pickable_config(mapper: vtkObjectBase | None) -> PickableConfig | None:
     if mapper is None:
         return None
     config = _PICKABLE_CONFIGS.get(mapper)

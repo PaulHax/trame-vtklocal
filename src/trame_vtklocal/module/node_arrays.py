@@ -10,22 +10,38 @@ from __future__ import annotations
 
 import hashlib
 import weakref
+from typing import TYPE_CHECKING
 
 import numpy as np
 from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+from vtkmodules.vtkCommonCore import vtkBitArray
 
 from trame_vtklocal.module.vtkjs_translator import (
     ATTRIBUTE_REGISTRATIONS,
     FIELD_DATA_GETTERS,
     POLYDATA_ARRAYS,
+    TopologySpec,
     get_ref_id,
     to_camel_case,
 )
 from trame_vtklocal.module.array_datatypes import js_datatype
-from trame_vtklocal.store import REF_CELLS_PREFIX, REF_CONTENT_PREFIX
+from trame_vtklocal.store import (
+    REF_CELLS_PREFIX,
+    REF_CONTENT_PREFIX,
+    ArrayEntry,
+    SceneNode,
+)
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
+    from typing_extensions import Buffer
+    from vtkmodules.vtkCommonCore import vtkDataArray, vtkObjectBase
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+    from trame_vtklocal.module.state_cache import SceneReader, VtkState
 
 
-def _data_array_entry(data_state):
+def _data_array_entry(data_state: VtkState) -> ArrayEntry | None:
     hash_value = data_state.get("Hash")
     if not hash_value:
         return None
@@ -36,7 +52,7 @@ def _data_array_entry(data_state):
         missing_default="Float32Array",
     )
     components = data_state.get("NumberOfComponents", 1)
-    entry = {
+    entry: ArrayEntry = {
         "ref": REF_CONTENT_PREFIX + hash_value,
         "dataType": js_type,
         "size": data_state.get("NumberOfTuples", 0) * components,
@@ -48,7 +64,9 @@ def _data_array_entry(data_state):
     return entry
 
 
-def _cell_array_entry(reader, container_state):
+def _cell_array_entry(
+    reader: SceneReader, container_state: VtkState
+) -> ArrayEntry | None:
     number_of_cells = container_state.get("NumberOfCells", 0)
     if number_of_cells <= 0:
         return None
@@ -71,7 +89,9 @@ def _cell_array_entry(reader, container_state):
     }
 
 
-def _topology_entry(reader, ref_value, spec):
+def _topology_entry(
+    reader: SceneReader, ref_value: object, spec: TopologySpec
+) -> ArrayEntry | None:
     ref_id = get_ref_id(ref_value)
     if not ref_id:
         return None
@@ -93,17 +113,19 @@ def _topology_entry(reader, ref_value, spec):
 # array -> (mtime, entry). MTime covers content and name; a changed array
 # always lands on a new MTime, so a hit means the md5 and the registered
 # blob are both still valid for these bytes.
-_FIELD_BLOB_CACHE = weakref.WeakKeyDictionary()
+_FIELD_BLOB_CACHE: weakref.WeakKeyDictionary[vtkDataArray, tuple[int, ArrayEntry]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
-def registered_blob(object_manager, hash_value):
+def registered_blob(object_manager: vtkObjectManager, hash_value: str) -> Buffer | None:
     """The blob registered at ``hash_value``, or None when it is missing.
 
     VTK >= 9.6 answers an unknown hash with an empty array instead of None,
     so emptiness -- not identity -- is the liveness test.
     """
     try:
-        blob = object_manager.GetBlob(hash_value)
+        blob: Buffer | None = object_manager.GetBlob(hash_value)
     except (RuntimeError, TypeError, ValueError):
         return None
     if blob is None:
@@ -114,9 +136,9 @@ def registered_blob(object_manager, hash_value):
         return blob
 
 
-def _flat_array_bytes(array):
+def _flat_array_bytes(array: vtkDataArray) -> npt.NDArray[np.uint8]:
     """Return one VTK data array's logical values as contiguous bytes."""
-    if array.GetClassName() == "vtkBitArray":
+    if isinstance(array, vtkBitArray):
         flat = np.fromiter(
             (array.GetValue(index) for index in range(array.GetNumberOfValues())),
             dtype=np.uint8,
@@ -127,7 +149,7 @@ def _flat_array_bytes(array):
     return np.ascontiguousarray(flat).reshape(-1).view(np.uint8)
 
 
-def _live_arrays_for_key(dataset, key):
+def _live_arrays_for_key(dataset: vtkObjectBase, key: str) -> list[vtkDataArray]:
     if key == "points":
         points = dataset.GetPoints() if hasattr(dataset, "GetPoints") else None
         data = points.GetData() if points is not None else None
@@ -164,7 +186,9 @@ def _live_arrays_for_key(dataset, key):
     return [] if array is None else [array]
 
 
-def restore_dataset_blobs(object_manager, node_id, node):
+def restore_dataset_blobs(
+    object_manager: vtkObjectManager, node_id: str | int, node: SceneNode
+) -> set[str]:
     """Re-register missing blobs for one translated live dataset node.
 
     VTK 9.6.2 can retain a cached array state after ``UnRegisterBlob`` without
@@ -176,7 +200,7 @@ def restore_dataset_blobs(object_manager, node_id, node):
     if dataset is None:
         return set()
 
-    restored = set()
+    restored: set[str] = set()
     for key, entry in (node.get("arrays") or {}).items():
         ref = entry.get("ref") if isinstance(entry, dict) else None
         if not ref:
@@ -202,7 +226,9 @@ def restore_dataset_blobs(object_manager, node_id, node):
     return restored
 
 
-def _register_field_array_blob(object_manager, array, location):
+def _register_field_array_blob(
+    object_manager: vtkObjectManager, array: vtkDataArray, location: str
+) -> ArrayEntry:
     # vtkObjectManager doesn't serialize vtkDataSetAttributes arrays, so
     # bridge them by hand: md5-address the raw bytes and register the blob
     # under that hash. Re-hashing + re-registering
@@ -212,7 +238,7 @@ def _register_field_array_blob(object_manager, array, location):
     cached = _FIELD_BLOB_CACHE.get(array)
     mtime = array.GetMTime()
     if cached is not None and cached[0] == mtime:
-        entry = dict(cached[1])
+        entry = cached[1].copy()
         entry["location"] = location
         hash_value = entry["ref"][len(REF_CONTENT_PREFIX) :]
         if registered_blob(object_manager, hash_value) is not None:
@@ -224,7 +250,7 @@ def _register_field_array_blob(object_manager, array, location):
     # packed payload.  ``vtk_to_numpy`` correctly exposes all other numeric
     # VTK arrays without relying on the Python array protocol.
     raw_bytes = _flat_array_bytes(array)
-    content_hash = hashlib.md5(raw_bytes).hexdigest()
+    content_hash = hashlib.md5(raw_bytes.data).hexdigest()
     # RegisterBlob requires a vtkTypeUInt8Array (= vtkUnsignedCharArray).
     object_manager.RegisterBlob(content_hash, numpy_to_vtk(raw_bytes, deep=True))
 
@@ -239,16 +265,16 @@ def _register_field_array_blob(object_manager, array, location):
     }
     # Cache a private copy: callers stamp "registration" onto the returned
     # entry, which must not leak into the cache.
-    _FIELD_BLOB_CACHE[array] = (mtime, dict(entry))
+    _FIELD_BLOB_CACHE[array] = (mtime, entry.copy())
     return entry
 
 
-def _field_data_arrays(reader, dataset_id):
+def _field_data_arrays(reader: SceneReader, dataset_id: int) -> dict[str, ArrayEntry]:
     vtk_dataset = reader.vtk_object(dataset_id)
     if vtk_dataset is None:
         return {}
 
-    arrays = {}
+    arrays: dict[str, ArrayEntry] = {}
     for field_key, getter_name in FIELD_DATA_GETTERS.items():
         getter = getattr(vtk_dataset, getter_name, None)
         field_data = getter() if getter is not None else None
@@ -256,7 +282,8 @@ def _field_data_arrays(reader, dataset_id):
             continue
 
         location = to_camel_case(field_key)
-        attribute_registrations = {}
+        attribute_registrations: dict[str, str] = {}
+        registration: str | None
         for vtk_attribute, registration in ATTRIBUTE_REGISTRATIONS.items():
             get_attribute = getattr(field_data, f"Get{vtk_attribute}", None)
             attribute_array = get_attribute() if get_attribute is not None else None
@@ -275,9 +302,11 @@ def _field_data_arrays(reader, dataset_id):
     return arrays
 
 
-def polydata_array_entries(reader, state):
+def polydata_array_entries(
+    reader: SceneReader, state: VtkState
+) -> dict[str, ArrayEntry]:
     """The full ``arrays`` section for a polydata node."""
-    arrays = {}
+    arrays: dict[str, ArrayEntry] = {}
     for state_key, spec in POLYDATA_ARRAYS.items():
         entry = _topology_entry(reader, state.get(state_key), spec)
         if entry:

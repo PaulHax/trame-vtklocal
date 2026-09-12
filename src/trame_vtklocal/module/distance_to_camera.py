@@ -1,18 +1,44 @@
 """vtkDistanceToCamera translation helpers."""
 
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import math
 import weakref
+from typing import TYPE_CHECKING, TypedDict
 
 from vtkmodules.vtkCommonDataModel import vtkDataObject
 
+if TYPE_CHECKING:
+    from typing_extensions import TypeGuard
+    from vtkmodules.vtkCommonCore import vtkCollection, vtkObject, vtkObjectBase
+    from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
+    from vtkmodules.vtkRenderingCore import vtkDistanceToCamera
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+
+class DistanceToCameraConfig(TypedDict):
+    arrayName: str
+    screenSize: float
+
+
+class DistanceToCameraTranslation(TypedDict):
+    config: DistanceToCameraConfig
+    inputDataObject: vtkDataObject
+
+
 DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera"
-_MAPPER_TRANSLATION_SNAPSHOTS = weakref.WeakKeyDictionary()
+_MAPPER_TRANSLATION_SNAPSHOTS: weakref.WeakKeyDictionary[
+    vtkObjectBase, DistanceToCameraTranslation
+] = weakref.WeakKeyDictionary()
 _REWIRE_DEPTH = 0
-_POST_REWIRE_MTIMES = weakref.WeakKeyDictionary()
+_POST_REWIRE_MTIMES: weakref.WeakKeyDictionary[vtkObjectBase, int] = (
+    weakref.WeakKeyDictionary()
+)
 
 
-def serialization_rewire_active():
+def serialization_rewire_active() -> bool:
     """True while the bypass is rewiring mapper inputs (enter/exit loops).
 
     The rewires fire ``ModifiedEvent`` on every dtc-fed mapper even though
@@ -23,7 +49,7 @@ def serialization_rewire_active():
     return _REWIRE_DEPTH > 0
 
 
-def mtime_is_rewire_noise(vtk_obj, mtime):
+def mtime_is_rewire_noise(vtk_obj: vtkObjectBase, mtime: int) -> bool:
     """True when ``mtime`` is exactly the bypass's own post-restore bump.
 
     Lets MTime-based change detection (:meth:`DirtyTracker.sweep`) tell "the
@@ -37,7 +63,7 @@ def mtime_is_rewire_noise(vtk_obj, mtime):
 
 
 @contextmanager
-def _rewire_scope():
+def _rewire_scope() -> Iterator[None]:
     global _REWIRE_DEPTH
     _REWIRE_DEPTH += 1
     try:
@@ -46,7 +72,7 @@ def _rewire_scope():
         _REWIRE_DEPTH -= 1
 
 
-def mapper_input_algorithm(vtk_mapper):
+def mapper_input_algorithm(vtk_mapper: vtkObjectBase | None) -> vtkAlgorithm | None:
     if vtk_mapper is None:
         return None
 
@@ -56,17 +82,20 @@ def mapper_input_algorithm(vtk_mapper):
 
     for args in ((0, 0), ()):
         try:
-            return get_input_algorithm(*args)
+            algorithm: vtkAlgorithm | None = get_input_algorithm(*args)
+            return algorithm
         except TypeError:
             continue
     return None
 
 
-def mapper_input_array_name(vtk_mapper, index=0):
+def mapper_input_array_name(
+    vtk_mapper: vtkObjectBase | None, index: int = 0
+) -> str | None:
     if index == 0:
         get_scale_array = getattr(vtk_mapper, "GetScaleArray", None)
         if get_scale_array is not None:
-            scale_array = get_scale_array()
+            scale_array: str | None = get_scale_array()
             if scale_array:
                 return scale_array
 
@@ -82,11 +111,13 @@ def mapper_input_array_name(vtk_mapper, index=0):
     if not info:
         return None
 
-    name = info.Get(vtkDataObject.FIELD_NAME())
+    name: str | None = info.Get(vtkDataObject.FIELD_NAME())
     return name or None
 
 
-def is_distance_to_camera_algorithm(vtk_algorithm):
+def is_distance_to_camera_algorithm(
+    vtk_algorithm: vtkObjectBase | None,
+) -> TypeGuard[vtkDistanceToCamera]:
     if vtk_algorithm is None:
         return False
 
@@ -98,7 +129,9 @@ def is_distance_to_camera_algorithm(vtk_algorithm):
     return get_class_name is not None and get_class_name() == "vtkDistanceToCamera"
 
 
-def distance_to_camera_input_data_object(vtk_algorithm):
+def distance_to_camera_input_data_object(
+    vtk_algorithm: vtkObjectBase | None,
+) -> vtkDataObject | None:
     if not is_distance_to_camera_algorithm(vtk_algorithm):
         return None
 
@@ -107,12 +140,15 @@ def distance_to_camera_input_data_object(vtk_algorithm):
         return None
 
     try:
-        return get_input_data_object(0, 0)
+        data_object: vtkDataObject | None = get_input_data_object(0, 0)
+        return data_object
     except TypeError:
         return None
 
 
-def mapper_distance_to_camera_input(vtk_mapper):
+def mapper_distance_to_camera_input(
+    vtk_mapper: vtkObjectBase | None,
+) -> tuple[vtkAlgorithm | None, vtkDataObject | None]:
     input_algorithm = mapper_input_algorithm(vtk_mapper)
     return (
         input_algorithm,
@@ -120,7 +156,9 @@ def mapper_distance_to_camera_input(vtk_mapper):
     )
 
 
-def _distance_to_camera_mapper_config(vtk_mapper):
+def _distance_to_camera_mapper_config(
+    vtk_mapper: vtkObjectBase | None,
+) -> DistanceToCameraConfig | None:
     input_algorithm = mapper_input_algorithm(vtk_mapper)
     if not is_distance_to_camera_algorithm(input_algorithm):
         return None
@@ -142,31 +180,38 @@ def _distance_to_camera_mapper_config(vtk_mapper):
     }
 
 
-def _capture_mapper_translation_snapshot(vtk_mapper, input_data_object):
+def _capture_mapper_translation_snapshot(
+    vtk_mapper: vtkObjectBase, input_data_object: vtkDataObject | None
+) -> None:
     config = _distance_to_camera_mapper_config(vtk_mapper)
     if not config or input_data_object is None:
         return
 
     _MAPPER_TRANSLATION_SNAPSHOTS[vtk_mapper] = {
-        "config": dict(config),
+        "config": config.copy(),
         "inputDataObject": input_data_object,
     }
 
 
-def _current_primary_input_data_object(vtk_mapper):
+def _current_primary_input_data_object(
+    vtk_mapper: vtkObjectBase,
+) -> vtkDataObject | None:
     get_input_data_object = getattr(vtk_mapper, "GetInputDataObject", None)
     if get_input_data_object is None:
         return None
 
     for args in ((0, 0), (0,), ()):
         try:
-            return get_input_data_object(*args)
+            data_object: vtkDataObject | None = get_input_data_object(*args)
+            return data_object
         except TypeError:
             continue
     return None
 
 
-def distance_to_camera_mapper_translation(vtk_mapper):
+def distance_to_camera_mapper_translation(
+    vtk_mapper: vtkObjectBase,
+) -> DistanceToCameraTranslation | None:
     config = _distance_to_camera_mapper_config(vtk_mapper)
     if config:
         input_data_object = distance_to_camera_input_data_object(
@@ -187,19 +232,23 @@ def distance_to_camera_mapper_translation(vtk_mapper):
         return None
 
     return {
-        "config": dict(snapshot["config"]),
+        "config": snapshot["config"].copy(),
         "inputDataObject": input_data_object,
     }
 
 
-def state_available(object_manager, obj_id):
+def state_available(object_manager: vtkObjectManager, obj_id: int) -> bool:
     try:
         return bool(object_manager.GetState(obj_id))
     except Exception:
         return False
 
 
-def refresh_object_manager_states(object_manager, clear_state_cache, obj_id=None):
+def refresh_object_manager_states(
+    object_manager: vtkObjectManager,
+    clear_state_cache: Callable[[], None],
+    obj_id: int | None = None,
+) -> None:
     update_state = getattr(object_manager, "UpdateStateFromObject", None)
     if obj_id is not None and update_state is not None:
         update_state(int(obj_id))
@@ -212,12 +261,16 @@ def refresh_object_manager_states(object_manager, clear_state_cache, obj_id=None
         clear_state_cache()
 
 
-def ensure_registered_vtk_object(object_manager, vtk_obj, clear_state_cache):
+def ensure_registered_vtk_object(
+    object_manager: vtkObjectManager,
+    vtk_obj: vtkObjectBase | None,
+    clear_state_cache: Callable[[], None],
+) -> int | None:
     if vtk_obj is None:
         return None
 
     get_id = getattr(object_manager, "GetId", None)
-    obj_id = get_id(vtk_obj) if get_id is not None else 0
+    obj_id: int = get_id(vtk_obj) if get_id is not None else 0
     if obj_id and obj_id > 0:
         if not state_available(object_manager, obj_id):
             refresh_object_manager_states(
@@ -229,8 +282,8 @@ def ensure_registered_vtk_object(object_manager, vtk_obj, clear_state_cache):
     if register_object is None:
         return None
 
-    registered_id = register_object(vtk_obj)
-    resolved_id = get_id(vtk_obj) if get_id is not None else registered_id
+    registered_id: int = register_object(vtk_obj)
+    resolved_id: int = get_id(vtk_obj) if get_id is not None else registered_id
     obj_id = resolved_id if resolved_id and resolved_id > 0 else registered_id
     if not obj_id or obj_id <= 0:
         return None
@@ -239,7 +292,7 @@ def ensure_registered_vtk_object(object_manager, vtk_obj, clear_state_cache):
     return obj_id
 
 
-def _iter_collection_items(collection):
+def _iter_collection_items(collection: vtkCollection | None) -> Iterator[vtkObject]:
     if collection is None:
         return
 
@@ -265,7 +318,7 @@ def _iter_collection_items(collection):
         yield item
 
 
-def _iter_prop_tree(prop, seen):
+def _iter_prop_tree(prop: vtkObject | None, seen: set[int]) -> Iterator[vtkObject]:
     if prop is None:
         return
     prop_key = id(prop)
@@ -281,7 +334,7 @@ def _iter_prop_tree(prop, seen):
         yield from _iter_prop_tree(child, seen)
 
 
-def iter_scene_mappers(vtk_root):
+def iter_scene_mappers(vtk_root: vtkObjectBase | None) -> Iterator[vtkObjectBase]:
     if vtk_root is None:
         return
 
@@ -291,15 +344,15 @@ def iter_scene_mappers(vtk_root):
         yield vtk_root
         return
 
-    renderers = []
+    renderers: list[vtkObjectBase] = []
     get_renderers = getattr(vtk_root, "GetRenderers", None)
     if get_renderers is not None:
         renderers.extend(_iter_collection_items(get_renderers()))
     elif class_name and "Renderer" in class_name:
         renderers.append(vtk_root)
 
-    seen_props = set()
-    seen_mappers = set()
+    seen_props: set[int] = set()
+    seen_mappers: set[int] = set()
     for renderer in renderers:
         get_view_props = getattr(renderer, "GetViewProps", None)
         if get_view_props is None:
@@ -316,7 +369,9 @@ def iter_scene_mappers(vtk_root):
                 yield mapper
 
 
-def _set_mapper_primary_input_data(mapper, input_data):
+def _set_mapper_primary_input_data(
+    mapper: vtkObjectBase, input_data: vtkDataObject
+) -> bool:
     set_input_data = getattr(mapper, "SetInputData", None)
     if set_input_data is not None:
         set_input_data(input_data)
@@ -335,7 +390,9 @@ def _set_mapper_primary_input_data(mapper, input_data):
     return False
 
 
-def _restore_mapper_primary_input_connection(mapper, input_algorithm):
+def _restore_mapper_primary_input_connection(
+    mapper: vtkObjectBase, input_algorithm: vtkAlgorithm
+) -> None:
     get_output_port = getattr(input_algorithm, "GetOutputPort", None)
     set_input_connection = getattr(mapper, "SetInputConnection", None)
     if get_output_port is None or set_input_connection is None:
@@ -351,8 +408,10 @@ def _restore_mapper_primary_input_connection(mapper, input_algorithm):
 
 
 @contextmanager
-def bypass_distance_to_camera_for_serialization(vtk_root):
-    rewired = []
+def bypass_distance_to_camera_for_serialization(
+    vtk_root: vtkObjectBase | None,
+) -> Iterator[None]:
+    rewired: list[tuple[vtkObjectBase, vtkAlgorithm]] = []
     with _rewire_scope():
         for mapper in iter_scene_mappers(vtk_root):
             input_algorithm, input_data = mapper_distance_to_camera_input(mapper)

@@ -13,7 +13,11 @@ Plus the wslink attachment encoding for payloads riding a message.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Union
+
 import numpy as np
+from vtkmodules.util.numpy_support import vtk_to_numpy
 
 from trame_vtklocal.module.node_arrays import registered_blob
 from trame_vtklocal.store import (
@@ -23,22 +27,31 @@ from trame_vtklocal.store import (
     ref_manager_hashes,
 )
 
-try:
-    from vtkmodules.util.numpy_support import vtk_to_numpy
-except ImportError:  # pragma: no cover - VTK is an optional dependency
-    vtk_to_numpy = None
+if TYPE_CHECKING:
+    import numpy.typing as npt
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+    from trame_vtklocal.store import SceneNode
+    from trame_vtklocal.wire import OpsMessage, ResyncPayload
+
+    # A dataset array of any numeric VTK scalar type, viewed through numpy.
+    NumericArray = npt.NDArray[np.generic[Union[int, float]]]
+    LiveHotArray = Callable[[str, str], Union[NumericArray, None]]
 
 
-def numpy_array_from_vtk_data(data):
-    if vtk_to_numpy is not None and hasattr(data, "GetDataType"):
+def numpy_array_from_vtk_data(data: object) -> NumericArray:
+    if hasattr(data, "GetDataType"):
         try:
-            return vtk_to_numpy(data)
+            array: NumericArray = vtk_to_numpy(data)
+            return array
         except Exception:
             pass
     return np.asarray(data)
 
 
-def pack_cell_array_payload(vtk_object_manager, cells_ref):
+def pack_cell_array_payload(
+    vtk_object_manager: vtkObjectManager, cells_ref: str
+) -> bytes:
     """Packed vtk.js Uint32 cell-array bytes for a ``c2:<conn>:<off>`` ref."""
     parts = cells_ref.split(":")
     conn_hash = parts[1]
@@ -61,7 +74,9 @@ def pack_cell_array_payload(vtk_object_manager, cells_ref):
     return result.tobytes()
 
 
-def resolve_ref_payload(object_manager, ref, live_hot_array):
+def resolve_ref_payload(
+    object_manager: vtkObjectManager, ref: str, live_hot_array: LiveHotArray
+) -> bytes:
     """Wire bytes for one array ref (``live_hot_array(node_id, key)`` -> flat
     numpy view or None, for ``v:`` refs)."""
     if ref.startswith(REF_CONTENT_PREFIX):
@@ -81,7 +96,9 @@ def resolve_ref_payload(object_manager, ref, live_hot_array):
     raise RuntimeError(f"unresolvable array ref {ref!r}")
 
 
-def nodes_reference_missing_blob(object_manager, nodes):
+def nodes_reference_missing_blob(
+    object_manager: vtkObjectManager, nodes: Iterable[SceneNode]
+) -> bool:
     """Whether non-empty content arrays cite a missing manager blob."""
     for node in nodes:
         for entry in (node.get("arrays") or {}).values():
@@ -96,14 +113,15 @@ def nodes_reference_missing_blob(object_manager, nodes):
     return False
 
 
-def attach_binary(api, message):
+def attach_binary(api: object, message: OpsMessage | ResyncPayload) -> None:
     """Replace binary payloads in ``message`` with wslink attachments."""
     attach = getattr(api, "addAttachment", None)
     if attach is None:
         return
-    for op in message.get("ops", ()):
-        if op.get("op") == "patchArray":
-            op["data"] = attach(memoryview(op["data"]))
+    if "ops" in message:
+        for op in message["ops"]:
+            if op["op"] == "patchArray":
+                op["data"] = attach(memoryview(op["data"]))
     blobs = message.get("blobs")
     if blobs:
         for ref, payload in blobs.items():

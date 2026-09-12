@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Tuple, Union
 
 import numpy as np
 
 from trame_vtklocal.widgets.blob_payloads import numpy_array_from_vtk_data
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
+    from vtkmodules.vtkCommonCore import vtkObject
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+    from trame_vtklocal.store import (
+        ArrayEntry,
+        CommitResult,
+        SceneNode,
+        SceneStore,
+        SceneTransaction,
+    )
+    from trame_vtklocal.widgets.blob_payloads import LiveHotArray, NumericArray
+    from trame_vtklocal.widgets.dirty_batch import DirtyBatch
+
+# (element offset, element count) of one changed region
+Span = Tuple[int, int]
+# Points arrays keep the bare node id; other hot arrays add their key.
+_CacheKey = Union[str, Tuple[str, str]]
 
 HOT_ARRAY_KEY = "points"
 DEFAULT_HOT_ARRAY_KEYS = frozenset({HOT_ARRAY_KEY})
@@ -14,7 +36,7 @@ RETENTION_CAP_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_SPANS = 8
 DEFAULT_GAP_ELEMENTS = 3
 
-JS_ARRAY_DTYPE_MAP = {
+JS_ARRAY_DTYPE_MAP: dict[str, type[np.generic[int | float]]] = {
     "Int8Array": np.int8,
     "Uint8Array": np.uint8,
     "Int16Array": np.int16,
@@ -28,7 +50,9 @@ JS_ARRAY_DTYPE_MAP = {
 }
 
 
-def live_dataset_array_sources(object_manager, node_id, key):
+def live_dataset_array_sources(
+    object_manager: vtkObjectManager, node_id: str | int, key: str
+) -> tuple[vtkObject, ...]:
     """VTK objects whose modification can change a supported dataset array."""
     vtk_object = object_manager.GetObjectAtId(int(node_id))
     if vtk_object is None:
@@ -36,7 +60,7 @@ def live_dataset_array_sources(object_manager, node_id, key):
     if key == HOT_ARRAY_KEY:
         points = vtk_object.GetPoints() if hasattr(vtk_object, "GetPoints") else None
         data = points.GetData() if points is not None else None
-        sources = (points, data)
+        sources: tuple[vtkObject | None, ...] = (points, data)
     elif key.startswith("field:pointData:"):
         name = key.split(":", 2)[2]
         point_data = (
@@ -49,7 +73,9 @@ def live_dataset_array_sources(object_manager, node_id, key):
     return tuple(source for source in sources if source is not None)
 
 
-def live_dataset_array_containers(object_manager, node_id, key):
+def live_dataset_array_containers(
+    object_manager: vtkObjectManager, node_id: str | int, key: str
+) -> tuple[vtkObject, ...]:
     """Objects that only aggregate a supported dataset array's MTime.
 
     ``vtkFieldData.GetMTime()`` is the maximum over the arrays it owns, so
@@ -73,7 +99,9 @@ def live_dataset_array_containers(object_manager, node_id, key):
     return () if point_data is None else (point_data,)
 
 
-def live_dataset_array(object_manager, node_id, key):
+def live_dataset_array(
+    object_manager: vtkObjectManager, node_id: str | int, key: str
+) -> NumericArray | None:
     """Flat numpy view for a supported dataset array key, or ``None``."""
     sources = live_dataset_array_sources(object_manager, node_id, key)
     data = sources[-1] if sources else None
@@ -82,7 +110,7 @@ def live_dataset_array(object_manager, node_id, key):
     return np.asarray(numpy_array_from_vtk_data(data)).reshape(-1)
 
 
-def _changed_spans(changed, gap_elements):
+def _changed_spans(changed: npt.NDArray[np.intp], gap_elements: int) -> list[Span]:
     """Inclusive changed-index groups separated by more than ``gap_elements``."""
     if changed.size == 0:
         return []
@@ -110,7 +138,7 @@ NO_OP = Verdict("no-op")  # unchanged: reuse the client's stored content
 class Patch:
     """Changed regions small enough to send as ``patchArray`` ops."""
 
-    spans: tuple
+    spans: tuple[Span, ...]
 
 
 @dataclass(frozen=True)
@@ -118,8 +146,8 @@ class HotArrayPatchPlan:
     node_id: str
     key: str
     data_type: str
-    current: np.ndarray
-    spans: tuple
+    current: NumericArray
+    spans: tuple[Span, ...]
 
 
 class HotArrayDiffer:
@@ -127,43 +155,45 @@ class HotArrayDiffer:
 
     def __init__(
         self,
-        live_array_getter,
-        hot_keys=DEFAULT_HOT_ARRAY_KEYS,
-        cap_bytes=RETENTION_CAP_BYTES,
-        max_spans=DEFAULT_MAX_SPANS,
-        gap_elements=DEFAULT_GAP_ELEMENTS,
-    ):
+        live_array_getter: LiveHotArray,
+        hot_keys: Iterable[str] = DEFAULT_HOT_ARRAY_KEYS,
+        cap_bytes: int = RETENTION_CAP_BYTES,
+        max_spans: int = DEFAULT_MAX_SPANS,
+        gap_elements: int = DEFAULT_GAP_ELEMENTS,
+    ) -> None:
         self._live_array = live_array_getter
         self._hot_keys = frozenset(str(key) for key in hot_keys)
         self._cap_bytes = cap_bytes
         self._max_spans = max_spans
         self._gap_elements = gap_elements
-        self._retained = {}  # (node_id, key) -> last-sent flat numpy copy
-        self._orphaned_refs = {}  # (node_id, key) -> unused fresh content ref
-        self._released_refs = set()
+        # (node_id, key) -> last-sent flat numpy copy
+        self._retained: dict[_CacheKey, NumericArray] = {}
+        # (node_id, key) -> unused fresh content ref
+        self._orphaned_refs: dict[_CacheKey, str] = {}
+        self._released_refs: set[str] = set()
 
     @property
-    def hot_keys(self):
+    def hot_keys(self) -> frozenset[str]:
         return self._hot_keys
 
-    def take_released_refs(self):
+    def take_released_refs(self) -> set[str]:
         released = self._released_refs
         self._released_refs = set()
         return released
 
     @staticmethod
-    def _cache_key(node_id, key):
+    def _cache_key(node_id: str, key: str) -> _CacheKey:
         # Keep the long-standing points-only inspection shape while namespacing
         # additional configured arrays by key.
         return str(node_id) if key == HOT_ARRAY_KEY else (str(node_id), key)
 
     @staticmethod
-    def _belongs_to(cache_key, node_id):
+    def _belongs_to(cache_key: _CacheKey, node_id: str) -> bool:
         return cache_key == node_id or (
             isinstance(cache_key, tuple) and cache_key[0] == node_id
         )
 
-    def drop(self, node_id, key=None):
+    def drop(self, node_id: str | int, key: str | None = None) -> None:
         node_id = str(node_id)
         cache_keys = (
             [self._cache_key(node_id, str(key))]
@@ -181,19 +211,24 @@ class HotArrayDiffer:
             if orphan:
                 self._released_refs.add(orphan)
 
-    def clear(self):
+    def clear(self) -> None:
         self._retained.clear()
         self._orphaned_refs.clear()
         self._released_refs.clear()
 
-    def _note_orphan(self, cache_key, fresh_ref, used_ref):
+    def _note_orphan(self, cache_key: _CacheKey, fresh_ref: str, used_ref: str) -> None:
         previous = self._orphaned_refs.pop(cache_key, None)
         if previous and previous not in (fresh_ref, used_ref):
             self._released_refs.add(previous)
         if fresh_ref != used_ref:
             self._orphaned_refs[cache_key] = fresh_ref
 
-    def classify_change(self, current, retained, data_type):
+    def classify_change(
+        self,
+        current: NumericArray | None,
+        retained: NumericArray | None,
+        data_type: str | None,
+    ) -> Verdict | Patch:
         """Decide what one configured array's tick needs, in cascade order.
 
         ``retained`` is ``None`` whenever no comparable client-side content
@@ -204,7 +239,9 @@ class HotArrayDiffer:
         if current is None or current.nbytes > self._cap_bytes:
             return DROP
 
-        expected_dtype = JS_ARRAY_DTYPE_MAP.get(data_type)
+        expected_dtype = (
+            None if data_type is None else JS_ARRAY_DTYPE_MAP.get(data_type)
+        )
         if (
             retained is None
             or expected_dtype is None
@@ -228,7 +265,9 @@ class HotArrayDiffer:
             return RESET
         return Patch(spans)
 
-    def plan_retained_patch(self, node_id, key, stored_entry):
+    def plan_retained_patch(
+        self, node_id: str | int, key: str, stored_entry: ArrayEntry | None
+    ) -> HotArrayPatchPlan | None:
         """Plan a patch without serializing a fresh object-manager state.
 
         ``None`` means the caller must use the full translation path. An empty
@@ -242,13 +281,23 @@ class HotArrayDiffer:
         data_type = None if stored_entry is None else stored_entry.get("dataType")
 
         verdict = self.classify_change(current, retained, data_type)
+        if current is None or data_type is None:
+            return None
         if verdict is NO_OP:
             return HotArrayPatchPlan(node_id, key, data_type, current, ())
         if isinstance(verdict, Patch):
             return HotArrayPatchPlan(node_id, key, data_type, current, verdict.spans)
         return None
 
-    def _write_spans(self, node_id, key, current, spans, data_type, tx):
+    def _write_spans(
+        self,
+        node_id: str,
+        key: str,
+        current: NumericArray,
+        spans: Iterable[Span],
+        data_type: str,
+        tx: SceneTransaction,
+    ) -> None:
         """Queue each span and advance the retained copy over the same bytes."""
         retained = self._retained[self._cache_key(node_id, key)]
         for offset, length in spans:
@@ -259,24 +308,33 @@ class HotArrayDiffer:
             tx.patch_array(node_id, key, offset, values.tobytes(), data_type)
             retained[offset : offset + length] = values
 
-    def apply_retained_patch(self, plan, tx):
+    def apply_retained_patch(
+        self, plan: HotArrayPatchPlan, tx: SceneTransaction
+    ) -> None:
         """Queue a retained patch plan and advance only its changed spans."""
         self._write_spans(
             plan.node_id, plan.key, plan.current, plan.spans, plan.data_type, tx
         )
 
-    def _apply_key(self, node_id, key, entry, stored_entry, tx):
+    def _apply_key(
+        self,
+        node_id: str,
+        key: str,
+        entry: ArrayEntry,
+        stored_entry: ArrayEntry | None,
+        tx: SceneTransaction,
+    ) -> None:
         cache_key = self._cache_key(node_id, key)
         current = self._live_array(node_id, key)
         retained = None if stored_entry is None else self._retained.get(cache_key)
         verdict = self.classify_change(current, retained, entry.get("dataType"))
 
-        if verdict is DROP:
+        if verdict is DROP or current is None:
             self.drop(node_id, key)
             return
 
         fresh_ref = entry["ref"]
-        if verdict is RESET:
+        if verdict is RESET or stored_entry is None:
             self._retained[cache_key] = current.copy()
             self._note_orphan(cache_key, fresh_ref, fresh_ref)
             return
@@ -288,10 +346,16 @@ class HotArrayDiffer:
             )
         self._note_orphan(cache_key, fresh_ref, stored_entry["ref"])
 
-    def apply(self, node_id, node, stored_node, tx):
+    def apply(
+        self,
+        node_id: str,
+        node: SceneNode,
+        stored_node: SceneNode | None,
+        tx: SceneTransaction,
+    ) -> None:
         """Rewrite selected array refs and/or queue one or more patches."""
         arrays = node.get("arrays") or {}
-        stored_arrays = (stored_node or {}).get("arrays") or {}
+        stored_arrays = (stored_node.get("arrays") if stored_node else None) or {}
         for key in self._hot_keys:
             entry = arrays.get(key)
             if entry is None:
@@ -300,7 +364,12 @@ class HotArrayDiffer:
             self._apply_key(node_id, key, entry, stored_arrays.get(key), tx)
 
 
-def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
+def commit_hot_array_batch(
+    batch: DirtyBatch,
+    object_manager: vtkObjectManager,
+    store: SceneStore,
+    hot_arrays: HotArrayDiffer,
+) -> CommitResult | None:
     """Commit an array-only tick before VTK serializes the whole payload.
 
     Any structural, pipeline, node, or unsupported-array dirtiness returns
@@ -328,11 +397,11 @@ def commit_hot_array_batch(batch, object_manager, store, hot_arrays):
     allowed_dirty_ids = {
         str(node_id) for node_id in batch.candidates if str(node_id) in swept_ids
     }
-    plans = []
+    plans: list[HotArrayPatchPlan] = []
     for node_id in batch.candidates:
         node_id = str(node_id)
         stored = store.get(node_id)
-        arrays = (stored or {}).get("arrays") or {}
+        arrays = (stored.get("arrays") if stored else None) or {}
         node_has_dirty_hot_array = False
         for key in hot_arrays.hot_keys:
             entry = arrays.get(key)

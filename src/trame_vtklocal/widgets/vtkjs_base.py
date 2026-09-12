@@ -1,23 +1,61 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar, Union
+
 from trame_client.widgets.core import AbstractElement
+from vtkmodules.vtkRenderingCore import vtkRenderer
+
 from trame_vtklocal import module
 from trame_vtklocal.module.distance_to_camera import (
     bypass_distance_to_camera_for_serialization,
 )
-from trame_vtklocal.module.camera_authority import validate_camera_authority
+from trame_vtklocal.module.camera_authority import (
+    CameraAuthority,
+    validate_camera_authority,
+)
+
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonCore import vtkObjectBase
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+    from trame_vtklocal.module.protocol import ObjectManagerAPI
+    from trame_vtklocal.widgets.publisher import ScenePublisher
+    from trame_vtklocal.wire import ResyncCallbackT
 
 
-TILES3D_TEXTURE_POLICIES = frozenset({"auto", "native", "rgba"})
-TILES3D_QUALITY_POLICIES = frozenset({"adaptive", "fixed"})
+Tiles3DTexturePolicy = Literal["auto", "native", "rgba"]
+Tiles3DQualityPolicy = Literal["adaptive", "fixed"]
+
+TILES3D_TEXTURE_POLICIES: frozenset[str] = frozenset({"auto", "native", "rgba"})
+TILES3D_QUALITY_POLICIES: frozenset[str] = frozenset({"adaptive", "fixed"})
+
+_PolicyT = TypeVar("_PolicyT", bound=str)
 
 
-def _validate_policy(name, value, choices):
+class CameraParams(TypedDict):
+    position: list[float]
+    focalPoint: list[float]
+    viewUp: list[float]
+    viewAngle: float
+    parallelProjection: bool
+    parallelScale: float
+    clippingRange: list[float]
+
+
+def _validate_policy(name: str, value: _PolicyT, choices: frozenset[str]) -> _PolicyT:
     if value not in choices:
         raise ValueError(f"{name} must be one of {sorted(choices)}, got {value!r}")
     return value
 
 
-class HtmlElement(AbstractElement):
-    def __init__(self, _elem_name, children=None, **kwargs):
+# trame_client ships no type information, so its base class is untyped here.
+class HtmlElement(AbstractElement):  # type: ignore[misc, no-any-unimported]
+    def __init__(
+        self, _elem_name: str, children: object = None, **kwargs: object
+    ) -> None:
         super().__init__(_elem_name, children, **kwargs)
         if self.server:
             kwargs.pop("trame_server", None)
@@ -27,7 +65,7 @@ class HtmlElement(AbstractElement):
 class VtkJsBaseView(HtmlElement):
     _next_id = 0
     _ref_prefix = "_vtkjsview"
-    _scene_event_names = [
+    _scene_event_names: list[Union[str, tuple[str, str]]] = [
         "updated",
         "camera",
         ("on_ready", "onReady"),
@@ -38,13 +76,13 @@ class VtkJsBaseView(HtmlElement):
 
     def __init__(
         self,
-        _elem_name,
-        render_window,
-        camera_authority="server",
-        tiles3d_texture_policy="auto",
-        tiles3d_quality_policy="adaptive",
-        **kwargs,
-    ):
+        _elem_name: str,
+        render_window: vtkRenderWindow,
+        camera_authority: CameraAuthority = "server",
+        tiles3d_texture_policy: Tiles3DTexturePolicy = "auto",
+        tiles3d_quality_policy: Tiles3DQualityPolicy = "adaptive",
+        **kwargs: object,
+    ) -> None:
         self._tiles3d_texture_policy = _validate_policy(
             "tiles3d_texture_policy",
             tiles3d_texture_policy,
@@ -72,10 +110,11 @@ class VtkJsBaseView(HtmlElement):
             f'tiles3d-quality-policy="{self._tiles3d_quality_policy}"'
         )
 
-        self._ref = kwargs.get("ref")
-        if self._ref is None:
+        ref = kwargs.get("ref")
+        if ref is None:
             VtkJsBaseView._next_id += 1
-            self._ref = f"{self._ref_prefix}_{VtkJsBaseView._next_id}"
+            ref = f"{self._ref_prefix}_{VtkJsBaseView._next_id}"
+        self._ref = str(ref)
 
         self._render_window = render_window
         with bypass_distance_to_camera_for_serialization(render_window):
@@ -87,48 +126,51 @@ class VtkJsBaseView(HtmlElement):
             # not bypassed here (they execute renderer-less and error out).
             self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
 
-        self._publisher = None
+        self._publisher: ScenePublisher | None = None
         self._closed = False
 
         self._attributes["rw_id"] = f':render-window="{self._window_id}"'
         self._attributes["ref"] = f'ref="{self._ref}"'
         self._attributes["view_key"] = f'view-key="{self._ref}"'
 
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             self.cleanup()
         except Exception:
             pass
 
     @property
-    def api(self):
-        return module.get_helper(self.server).api
+    def api(self) -> ObjectManagerAPI:
+        helper = module.get_helper(self.server)
+        if helper is None:
+            raise RuntimeError("trame_vtklocal is not enabled on this view's server")
+        return helper.api
 
     @property
-    def object_manager(self):
+    def object_manager(self) -> vtkObjectManager:
         return self.api.vtk_object_manager
 
     @property
-    def ref_name(self):
+    def ref_name(self) -> str:
         return self._ref
 
-    def get_instance_id(self, vtk_object):
+    def get_instance_id(self, vtk_object: vtkObjectBase) -> str:
         vtk_id = self.object_manager.GetId(vtk_object)
         return str(vtk_id)
 
     @property
-    def camera_authority(self):
+    def camera_authority(self) -> CameraAuthority:
         return self._camera_authority
 
     @property
-    def tiles3d_texture_policy(self):
+    def tiles3d_texture_policy(self) -> Tiles3DTexturePolicy:
         return self._tiles3d_texture_policy
 
     @property
-    def tiles3d_quality_policy(self):
+    def tiles3d_quality_policy(self) -> Tiles3DQualityPolicy:
         return self._tiles3d_quality_policy
 
-    def _init_publisher(self):
+    def _init_publisher(self) -> None:
         from trame_vtklocal.widgets.publisher import ScenePublisher
 
         if self._publisher:
@@ -141,7 +183,7 @@ class VtkJsBaseView(HtmlElement):
             camera_authority=self._camera_authority,
         )
 
-    def _configure_push(self):
+    def _configure_push(self) -> None:
         self._event_names += self._scene_event_names
         self._init_publisher()
 
@@ -149,21 +191,28 @@ class VtkJsBaseView(HtmlElement):
     # Push sync v2 view API
     # ------------------------------------------------------------------
 
-    def sync(self):
+    def sync(self) -> None:
         """Publish pending scene changes now."""
         if self._publisher:
             self._publisher.sync()
 
-    async def settled(self):
+    async def settled(self) -> None:
         """Wait until every pending scene change has been published."""
         if self._publisher:
             await self._publisher.settled()
 
-    def transaction(self):
+    def transaction(self) -> AbstractContextManager[ScenePublisher]:
         """Batch mutations (and commands) into one commit + broadcast."""
-        return self._publisher.transaction()
+        return self._open_publisher().transaction()
 
-    def send_command(self, name, payload=None, *, retain=False, render=True):
+    def send_command(
+        self,
+        name: str,
+        payload: object = None,
+        *,
+        retain: bool = False,
+        render: bool = True,
+    ) -> None:
         """Send a named command ordered atomically with pending scene ops.
 
         ``render=False`` skips the client repaint after the command's
@@ -172,16 +221,23 @@ class VtkJsBaseView(HtmlElement):
         if self._publisher:
             self._publisher.send_command(name, payload, retain=retain, render=render)
 
-    def on_client_resync(self, callback):
+    def on_client_resync(self, callback: ResyncCallbackT) -> ResyncCallbackT:
         """Call ``callback(client_id)`` whenever a client pulls a snapshot."""
-        return self._publisher.on_client_resync(callback)
+        return self._open_publisher().on_client_resync(callback)
 
-    def request_resync(self):
+    def _open_publisher(self) -> ScenePublisher:
+        if self._publisher is None:
+            raise RuntimeError("view is closed")
+        return self._publisher
+
+    def request_resync(self) -> None:
         """Server-forced resync: every client re-pulls the full snapshot."""
         if self._publisher:
             self._publisher.request_resync()
 
-    def event_is_current(self, event, node_id, strict=True):
+    def event_is_current(
+        self, event: object, node_id: str | int | None, strict: bool = True
+    ) -> bool:
         """Whether a seq-stamped client event is current for one scene node.
 
         Array patches count by default (they move the picked points);
@@ -198,13 +254,14 @@ class VtkJsBaseView(HtmlElement):
     # Client-side camera / pointer seams
     # ------------------------------------------------------------------
 
-    def get_renderer(self):
+    def get_renderer(self) -> vtkRenderer | None:
         renderers = self._render_window.GetRenderers()
         if renderers.GetNumberOfItems() > 0:
-            return renderers.GetItemAsObject(0)
+            renderer = renderers.GetItemAsObject(0)
+            return renderer if isinstance(renderer, vtkRenderer) else None
         return None
 
-    def _camera_params(self):
+    def _camera_params(self) -> CameraParams | None:
         renderer = self.get_renderer()
         if not renderer:
             return None
@@ -221,20 +278,22 @@ class VtkJsBaseView(HtmlElement):
             "clippingRange": list(cam.GetClippingRange()),
         }
 
-    def _retain_camera_commands(self):
+    def _retain_camera_commands(self) -> bool:
         # Retention exists for camera_authority="client", where commands are
         # the only camera a resyncing client gets. In "server" mode the camera
         # is a synced node — the snapshot already carries the current pose, and
         # a retained command would replay a stale one on top of it.
         return self._camera_authority == "client"
 
-    def reset_camera(self, *, retain=None):
+    def reset_camera(self, *, retain: bool | None = None) -> None:
         retain = self._retain_camera_commands() if retain is None else retain
         if retain and self._publisher:
             self._publisher.clear_retained_command("camera.set")
         self.send_command("camera.reset", {}, retain=retain, render=True)
 
-    def set_camera(self, params=None, *, retain=None):
+    def set_camera(
+        self, params: Mapping[str, object] | None = None, *, retain: bool | None = None
+    ) -> None:
         retain = self._retain_camera_commands() if retain is None else retain
         params = self._camera_params() if params is None else params
         if params is not None:
@@ -242,7 +301,7 @@ class VtkJsBaseView(HtmlElement):
                 self._publisher.clear_retained_command("camera.reset")
             self.send_command("camera.set", params, retain=retain, render=True)
 
-    def set_pointer_context(self, context):
+    def set_pointer_context(self, context: object) -> None:
         """Store an opaque blob echoed verbatim in every ``pointer_event``.
 
         The gesture seam round-trips this back on each emitted event so the
@@ -251,7 +310,7 @@ class VtkJsBaseView(HtmlElement):
         """
         self.server.js_call(self._ref, "setPointerContext", context)
 
-    def set_armed_cloud_pick(self, spec):
+    def set_armed_cloud_pick(self, spec: object) -> None:
         """Send ordered runtime arm state (generation, token, asset_id).
 
         A null token disarms; a null asset uses normal server-side depth. Every
@@ -259,7 +318,7 @@ class VtkJsBaseView(HtmlElement):
         """
         self.server.js_call(self._ref, "setArmedCloudPick", spec)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         if getattr(self, "_closed", True):
             return
         publisher = self._publisher
@@ -283,5 +342,5 @@ class VtkJsBaseView(HtmlElement):
             flush_blobs()
         self._closed = True
 
-    def close(self):
+    def close(self) -> None:
         self.cleanup()

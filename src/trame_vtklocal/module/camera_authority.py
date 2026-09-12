@@ -14,10 +14,16 @@ The option threads from the view constructor through the publisher into node
 translation, which is the single place the node shape changes.
 """
 
-CAMERA_AUTHORITIES = frozenset({"server", "client"})
+from __future__ import annotations
+
+from typing import Literal
+
+CameraAuthority = Literal["server", "client"]
+
+CAMERA_AUTHORITIES: frozenset[str] = frozenset({"server", "client"})
 
 
-def validate_camera_authority(camera_authority):
+def validate_camera_authority(camera_authority: CameraAuthority) -> CameraAuthority:
     if camera_authority not in CAMERA_AUTHORITIES:
         raise ValueError(
             f"camera_authority must be one of {sorted(CAMERA_AUTHORITIES)}, "

@@ -1,5 +1,17 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 from trame_vtklocal.module.protocol import ObjectManagerHelper
+
+if TYPE_CHECKING:
+    from trame_vtklocal.module.protocol import (
+        ModuleHostServer,
+        NamedServer,
+        ProtocolHostServer,
+    )
 
 # trame's enable_module() reads serve/scripts/styles/vue_use/setup off this
 # module by name, so every one of them is load-bearing despite having no
@@ -18,7 +30,7 @@ serve_root = Path(__file__).with_name("serve").resolve()
 serve_path = str(serve_root)
 
 
-def _versioned_asset(asset_name):
+def _versioned_asset(asset_name: str) -> str:
     asset_path = serve_root / "js" / asset_name
     version = int(asset_path.stat().st_mtime)
     return f"__trame_vtklocal/js/{asset_name}?v={version}"
@@ -33,15 +45,20 @@ vue_use = ["trame_vtklocal"]
 # Module advanced initialization
 # -----------------------------------------------------------------------------
 
-HELPERS_PER_SERVER = {}
-WASM_REGISTERED = set()
+HELPERS_PER_SERVER: dict[str, ObjectManagerHelper] = {}
+WASM_REGISTERED: set[str] = set()
 
 
-def get_helper(server):
+def get_helper(server: NamedServer) -> ObjectManagerHelper | None:
     return HELPERS_PER_SERVER.get(server.name)
 
 
-def setup(trame_server, **kwargs):
+def setup(
+    trame_server: ProtocolHostServer,
+    *,
+    addon_serdes_registrars: Sequence[object] = (),
+    **kwargs: object,
+) -> None:
     global HELPERS_PER_SERVER
     # Pop wasm-specific kwargs so they don't interfere, but ignore them here.
     # WASM registration is deferred to setup_wasm() and only runs when
@@ -50,11 +67,11 @@ def setup(trame_server, **kwargs):
     kwargs.pop("wasm_dir", None)
     kwargs.pop("wasm_base_name", None)
     HELPERS_PER_SERVER[trame_server.name] = ObjectManagerHelper(
-        trame_server, addon_serdes_registrars=kwargs.pop("addon_serdes_registrars", [])
+        trame_server, addon_serdes_registrars=addon_serdes_registrars
     )
 
 
-def setup_wasm(trame_server, **kwargs):
+def setup_wasm(trame_server: ModuleHostServer, **kwargs: object) -> None:
     """Register VTK WASM files. Only called when LocalView is used."""
     if trame_server.name in WASM_REGISTERED:
         return

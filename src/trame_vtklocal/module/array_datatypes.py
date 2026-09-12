@@ -13,7 +13,7 @@ from vtkmodules.util import vtkConstants
 # name*; the numeric GetDataType() ids are resolved from vtkConstants below,
 # never hand-written (VTK 9.x transposes them — UNSIGNED_CHAR=3, SHORT=4,
 # UNSIGNED_SHORT=5, SIGNED_CHAR=15).
-VTK_DATATYPE_JS_BY_NAME = {
+VTK_DATATYPE_JS_BY_NAME: dict[str, str] = {
     "VTK_BIT": "Uint8Array",  # packed bits; unsigned storage on the client
     "VTK_CHAR": "Int8Array",
     "VTK_SIGNED_CHAR": "Int8Array",
@@ -31,7 +31,7 @@ VTK_DATATYPE_JS_BY_NAME = {
     "VTK_UNSIGNED_LONG_LONG": "BigUint64Array",
 }
 
-VTK_DATATYPE_MAP = {
+VTK_DATATYPE_MAP: dict[int, str] = {
     getattr(vtkConstants, name): js_type
     for name, js_type in VTK_DATATYPE_JS_BY_NAME.items()
     if hasattr(vtkConstants, name)
@@ -40,7 +40,7 @@ VTK_DATATYPE_MAP = {
 # Concrete VTK array class -> JS typed array; preferred over the numeric map
 # (unambiguous, version-independent). numpy_to_vtk emits the fixed-width
 # vtkType* classes (uint8 RGB -> vtkTypeUInt8Array), so keep them all present.
-CLASS_TO_DATATYPE = {
+CLASS_TO_DATATYPE: dict[str, str] = {
     "vtkFloatArray": "Float32Array",
     "vtkDoubleArray": "Float64Array",
     "vtkIntArray": "Int32Array",
@@ -68,7 +68,9 @@ CLASS_TO_DATATYPE = {
 }
 
 
-def js_datatype(class_name, data_type, *, missing_default=None):
+def js_datatype(
+    class_name: str, data_type: int | None, *, missing_default: str | None = None
+) -> str:
     """JS typed-array constructor for a VTK array.
 
     A concrete VTK class wins over its numeric id.  Unknown numeric ids must
@@ -79,7 +81,7 @@ def js_datatype(class_name, data_type, *, missing_default=None):
     if class_type is not None:
         return class_type
 
-    numeric_type = VTK_DATATYPE_MAP.get(data_type)
+    numeric_type = None if data_type is None else VTK_DATATYPE_MAP.get(data_type)
     if numeric_type is not None:
         return numeric_type
 
@@ -92,6 +94,5 @@ def js_datatype(class_name, data_type, *, missing_default=None):
             f"for class {class_name!r}; no client typed-array contract is available"
         )
     raise ValueError(
-        "unsupported VTK numeric array datatype "
-        f"{data_type!r} for class {class_name!r}"
+        f"unsupported VTK numeric array datatype {data_type!r} for class {class_name!r}"
     )

@@ -17,8 +17,12 @@ both ``module/`` and ``widgets/`` and unit-tested without VTK installed.
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, NoReturn, Tuple, TypedDict, Union
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 # Array-ref namespaces. ``c:``/``c2:`` refs are content-addressed (stable for
 # identical bytes); ``v:`` refs are monotonically versioned identities minted
@@ -27,14 +31,90 @@ REF_CONTENT_PREFIX = "c:"
 REF_CELLS_PREFIX = "c2:"
 REF_VERSION_PREFIX = "v:"
 
+# A ref slot names one node id or an ordered list of them.
+RefSlot = Union[str, list[str]]
+# Array payload bytes; wslink attachments hand back the buffer they were given.
+WirePayload = Union[bytes, memoryview]
 
-def ref_manager_hashes(refs):
+
+class _ArrayEntryRequired(TypedDict):
+    ref: str
+
+
+class ArrayEntry(_ArrayEntryRequired, total=False):
+    """One dataset array of a node; ``ref`` names its payload."""
+
+    dataType: str
+    size: int
+    numberOfComponents: int
+    name: str
+    location: str
+    registration: str
+    vtkClass: str
+
+
+class _SceneNodeRequired(TypedDict):
+    type: str
+
+
+class SceneNode(_SceneNodeRequired, total=False):
+    """A flat store node. Only ``refs`` and ``arrays`` have enforced shapes."""
+
+    props: dict[str, object]
+    refs: dict[str, RefSlot]
+    arrays: dict[str, ArrayEntry]
+    blocks: dict[str, Mapping[str, object]]
+
+
+class UpsertOp(TypedDict):
+    op: Literal["upsert"]
+    id: str
+    node: SceneNode
+
+
+class PatchArrayOp(TypedDict):
+    op: Literal["patchArray"]
+    id: str
+    key: str
+    offset: int
+    data: WirePayload
+    dataType: str
+    ref: str
+
+
+class RemoveOp(TypedDict):
+    op: Literal["remove"]
+    id: str
+
+
+SceneOp = Union[UpsertOp, PatchArrayOp, RemoveOp]
+
+
+class CommitResult(TypedDict):
+    base_seq: int
+    seq: int
+    ops: list[SceneOp]
+    blob_refs_entering: frozenset[str]
+    refs_leaving: frozenset[str]
+
+
+class StoreSnapshot(TypedDict):
+    seq: int
+    root: str
+    nodes: dict[str, SceneNode]
+
+
+# (node id, array key, element offset, element bytes, JS typed-array name)
+_ArrayPatch = Tuple[str, str, int, bytes, str]
+
+
+def ref_manager_hashes(refs: Iterable[str] | None) -> set[str]:
     """Raw object-manager blob hashes behind ``c:``/``c2:`` refs.
 
     ``v:`` refs are versioned identities resolved from live VTK arrays — they
     have no object-manager blob, so they contribute nothing here.
     """
-    hashes = set()
+    hashes: set[str] = set()
     for ref in refs or ():
         if ref.startswith(REF_CONTENT_PREFIX):
             hashes.add(ref[len(REF_CONTENT_PREFIX) :])
@@ -45,11 +125,11 @@ def ref_manager_hashes(refs):
     return hashes
 
 
-def _canonical_refs(node_id, refs):
+def _canonical_refs(node_id: str, refs: object) -> dict[str, RefSlot]:
     if not isinstance(refs, Mapping):
         raise ValueError(f"node {node_id!r}: 'refs' must be a mapping")
 
-    result = {}
+    result: dict[str, RefSlot] = {}
     for slot, value in refs.items():
         if isinstance(value, (str, int)):
             result[slot] = str(value)
@@ -65,28 +145,31 @@ def _canonical_refs(node_id, refs):
     return result
 
 
-def _bad_ref(node_id, slot, value):
+def _bad_ref(node_id: str, slot: str, value: object) -> NoReturn:
     raise ValueError(
         f"node {node_id!r}: ref slot {slot!r} must hold an id or list of ids, "
         f"got {value!r}"
     )
 
 
-def _canonical_arrays(node_id, arrays):
+def _canonical_arrays(
+    node_id: str, arrays: Mapping[str, ArrayEntry]
+) -> dict[str, ArrayEntry]:
     if not isinstance(arrays, Mapping):
         raise ValueError(f"node {node_id!r}: 'arrays' must be a mapping")
 
-    result = {}
+    result: dict[str, ArrayEntry] = {}
     for key, entry in arrays.items():
         if not isinstance(entry, Mapping) or not isinstance(entry.get("ref"), str):
             raise ValueError(
                 f"node {node_id!r}: array {key!r} must be a mapping with a string 'ref'"
             )
-        result[key] = copy.deepcopy(dict(entry))
+        entry_copy: ArrayEntry = {**entry}
+        result[key] = copy.deepcopy(entry_copy)
     return result
 
 
-def _canonical_node(node_id, node):
+def _canonical_node(node_id: str, node: SceneNode) -> SceneNode:
     """Validate and deep-copy a node into its stored canonical form.
 
     Unknown top-level keys are allowed and preserved — they diff like any
@@ -99,18 +182,16 @@ def _canonical_node(node_id, node):
     if not isinstance(node_type, str) or not node_type:
         raise ValueError(f"node {node_id!r} needs a non-empty string 'type'")
 
-    result = {}
-    for key, value in node.items():
-        if key == "refs":
-            result[key] = _canonical_refs(node_id, value)
-        elif key == "arrays":
-            result[key] = _canonical_arrays(node_id, value)
-        else:
-            result[key] = copy.deepcopy(value)
+    shallow: SceneNode = {**node}
+    result = copy.deepcopy(shallow)
+    if "refs" in node:
+        result["refs"] = _canonical_refs(node_id, node["refs"])
+    if "arrays" in node:
+        result["arrays"] = _canonical_arrays(node_id, node["arrays"])
     return result
 
 
-def _iter_ref_ids(node):
+def _iter_ref_ids(node: SceneNode) -> Iterator[str]:
     for value in (node.get("refs") or {}).values():
         if isinstance(value, str):
             yield value
@@ -118,23 +199,25 @@ def _iter_ref_ids(node):
             yield from value
 
 
-def _iter_array_refs(node):
+def _iter_array_refs(node: SceneNode) -> Iterator[str]:
     for entry in (node.get("arrays") or {}).values():
         yield entry["ref"]
 
 
-def _live_refs(nodes):
-    refs = set()
+def _live_refs(nodes: Mapping[str, SceneNode]) -> set[str]:
+    refs: set[str] = set()
     for node in nodes.values():
         refs.update(_iter_array_refs(node))
     return refs
 
 
-def _reachability(nodes, root_id):
+def _reachability(
+    nodes: Mapping[str, SceneNode], root_id: str
+) -> tuple[set[str], dict[str, set[str | None]]]:
     """Return (reachable ids, dangling id -> referrer ids) walking ``refs``."""
-    reachable = set()
-    dangling = {}
-    stack = [(root_id, None)]
+    reachable: set[str] = set()
+    dangling: dict[str, set[str | None]] = {}
+    stack: list[tuple[str, str | None]] = [(root_id, None)]
     while stack:
         node_id, referrer = stack.pop()
         if node_id in reachable:
@@ -150,24 +233,30 @@ def _reachability(nodes, root_id):
     return reachable, dangling
 
 
-def _sorted_ids(ids):
+def _sorted_ids(ids: Iterable[str]) -> list[str]:
     return sorted(ids, key=lambda i: (0, int(i)) if i.isdigit() else (1, i))
 
 
-def _version_ref(node_id, key, version):
+def _version_ref(node_id: str, key: str, version: int) -> str:
     return f"{REF_VERSION_PREFIX}{node_id}:{key}:{version}"
 
 
 @dataclass(frozen=True)
 class _StoreState:
-    nodes: dict  # id -> canonical node (exactly the reachable set)
+    nodes: dict[str, SceneNode]  # id -> canonical node (exactly the reachable set)
     seq: int
-    array_versions: dict  # (id, key) -> int; survives node removal (id reuse)
-    touched_structural: dict  # id -> seq of last upsert touching a live node
-    touched_array: dict  # id -> seq of last patchArray touching a live node
+    # (id, key) -> int; survives node removal (id reuse)
+    array_versions: dict[tuple[str, str], int]
+    touched_structural: dict[str, int]  # id -> seq of last upsert touching a live node
+    touched_array: dict[str, int]  # id -> seq of last patchArray touching a live node
 
 
-def _plan_commit(state, root_id, upserts, patches):
+def _plan_commit(
+    state: _StoreState,
+    root_id: str,
+    upserts: Mapping[str, SceneNode],
+    patches: Iterable[_ArrayPatch],
+) -> tuple[_StoreState, CommitResult]:
     next_nodes = dict(state.nodes)
     next_nodes.update(upserts)
 
@@ -184,8 +273,8 @@ def _plan_commit(state, root_id, upserts, patches):
         reachable = set(state.nodes)
 
     array_versions = dict(state.array_versions)
-    patch_ops = []
-    patched_refs = set()
+    patch_ops: list[PatchArrayOp] = []
+    patched_refs: set[str] = set()
     for node_id, key, offset, data, data_type in patches:
         node = next_nodes.get(node_id)
         if node is None:
@@ -217,19 +306,21 @@ def _plan_commit(state, root_id, upserts, patches):
             }
         )
 
-    upsert_ops = [
+    upsert_ops: list[UpsertOp] = [
         {"op": "upsert", "id": node_id, "node": node}
         for node_id, node in upserts.items()
         if node_id in reachable and node != state.nodes.get(node_id)
     ]
     removed_ids = _sorted_ids(set(state.nodes) - reachable)
-    remove_ops = [{"op": "remove", "id": node_id} for node_id in removed_ids]
+    remove_ops: list[RemoveOp] = [
+        {"op": "remove", "id": node_id} for node_id in removed_ids
+    ]
 
     # Upserts first (clients instantiate/rewire), then in-place array patches,
     # then removals of anything the rewiring disconnected.
-    ops = [*upsert_ops, *patch_ops, *remove_ops]
+    ops: list[SceneOp] = [*upsert_ops, *patch_ops, *remove_ops]
     if not ops:
-        result = {
+        result: CommitResult = {
             "base_seq": state.seq,
             "seq": state.seq,
             "ops": [],
@@ -276,28 +367,35 @@ def _plan_commit(state, root_id, upserts, patches):
 class SceneTransaction:
     """Accumulates upserts and array patches; ``commit()`` applies atomically."""
 
-    def __init__(self, store):
+    def __init__(self, store: SceneStore) -> None:
         self._store = store
-        self._upserts = {}
-        self._patches = []
+        self._upserts: dict[str, SceneNode] = {}
+        self._patches: list[_ArrayPatch] = []
         self._committed = False
 
-    def _guard(self):
+    def _guard(self) -> None:
         if self._committed:
             raise RuntimeError("transaction already committed")
 
-    def upsert(self, node_id, node):
+    def upsert(self, node_id: str | int, node: SceneNode) -> SceneTransaction:
         self._guard()
         node_id = str(node_id)
         self._upserts[node_id] = _canonical_node(node_id, node)
         return self
 
-    def upsert_nodes(self, nodes):
+    def upsert_nodes(self, nodes: Mapping[str, SceneNode]) -> SceneTransaction:
         for node_id, node in nodes.items():
             self.upsert(node_id, node)
         return self
 
-    def patch_array(self, node_id, key, offset, data, data_type):
+    def patch_array(
+        self,
+        node_id: str | int,
+        key: str,
+        offset: int,
+        data: Buffer,
+        data_type: str,
+    ) -> SceneTransaction:
         """Queue an in-place region update of ``node.arrays[key]``.
 
         ``offset`` is the flat element offset in the target typed array;
@@ -312,7 +410,7 @@ class SceneTransaction:
         self._patches.append((str(node_id), str(key), offset, bytes(data), data_type))
         return self
 
-    def commit(self):
+    def commit(self) -> CommitResult:
         self._guard()
         self._committed = True
         return self._store._commit(self._upserts, self._patches)
@@ -321,7 +419,7 @@ class SceneTransaction:
 class SceneStore:
     """Authoritative flat node store for one render window."""
 
-    def __init__(self, root_id):
+    def __init__(self, root_id: str | int) -> None:
         self._root_id = str(root_id)
         self._state = _StoreState(
             nodes={},
@@ -332,24 +430,24 @@ class SceneStore:
         )
 
     @property
-    def root_id(self):
+    def root_id(self) -> str:
         return self._root_id
 
     @property
-    def seq(self):
+    def seq(self) -> int:
         return self._state.seq
 
-    def get(self, node_id):
+    def get(self, node_id: str | int) -> SceneNode | None:
         node = self._state.nodes.get(str(node_id))
         return copy.deepcopy(node) if node is not None else None
 
-    def node_ids(self):
+    def node_ids(self) -> frozenset[str]:
         return frozenset(self._state.nodes)
 
-    def live_refs(self):
+    def live_refs(self) -> frozenset[str]:
         return frozenset(_live_refs(self._state.nodes))
 
-    def last_seq_touching(self, node_id, strict=True):
+    def last_seq_touching(self, node_id: str | int, strict: bool = True) -> int | None:
         """Seq relevant to event staleness for a live node.
 
         By default every touch counts — array patches move points, so a pick
@@ -369,7 +467,7 @@ class SceneStore:
             return structural
         return max(structural, array)
 
-    def snapshot(self):
+    def snapshot(self) -> StoreSnapshot:
         """Wire-ready full state: ``{seq, root, nodes}`` (deep copy)."""
         return {
             "seq": self._state.seq,
@@ -377,7 +475,7 @@ class SceneStore:
             "nodes": copy.deepcopy(self._state.nodes),
         }
 
-    def advance(self):
+    def advance(self) -> tuple[int, int]:
         """Mint a seq with no ops (for command-only broadcasts)."""
         state = self._state
         self._state = _StoreState(
@@ -389,10 +487,12 @@ class SceneStore:
         )
         return state.seq, self._state.seq
 
-    def transact(self):
+    def transact(self) -> SceneTransaction:
         return SceneTransaction(self)
 
-    def _commit(self, upserts, patches):
+    def _commit(
+        self, upserts: Mapping[str, SceneNode], patches: Iterable[_ArrayPatch]
+    ) -> CommitResult:
         new_state, result = _plan_commit(self._state, self._root_id, upserts, patches)
         self._state = new_state
         return result

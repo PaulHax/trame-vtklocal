@@ -13,12 +13,23 @@ live ``GetMTime`` values against the last snapshot.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
+
+from vtkmodules.vtkCommonCore import vtkCommand
+from vtkmodules.vtkCommonDataModel import vtkFieldData
+from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
+
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.node_translator import is_node_class
 from trame_vtklocal.widgets.dirty_batch import DirtyBatch
 
-DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonCore import vtkObject, vtkObjectBase
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+DATASET_PATCH_TYPES: set[str] = {"vtkPolyData", "vtkImageData"}
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +37,7 @@ DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
 # ---------------------------------------------------------------------------
 
 
-def _iter_via_getters(obj, names):
+def _iter_via_getters(obj: object, names: Iterable[str]) -> Iterator[vtkObject]:
     """Yield each non-None result of calling obj.<name>() for each name."""
     if obj is None:
         return
@@ -39,27 +50,24 @@ def _iter_via_getters(obj, names):
             yield result
 
 
-def _iter_field_data_arrays(field_data):
+def _iter_field_data_arrays(field_data: vtkObject | None) -> Iterator[vtkObject]:
     if field_data is None:
         return
 
     yield field_data
 
-    try:
-        count = field_data.GetNumberOfArrays()
-    except AttributeError:
-        count = 0
-    for index in range(count):
-        array = field_data.GetArray(index)
-        if array is not None:
-            yield array
+    if isinstance(field_data, vtkFieldData):
+        for index in range(field_data.GetNumberOfArrays()):
+            array = field_data.GetArray(index)
+            if array is not None:
+                yield array
 
     yield from _iter_via_getters(
         field_data, ("GetScalars", "GetTCoords", "GetNormals", "GetVectors")
     )
 
 
-def _iter_cell_array_children(cell_array):
+def _iter_cell_array_children(cell_array: vtkObject | None) -> Iterator[vtkObject]:
     if cell_array is None:
         return
 
@@ -69,7 +77,7 @@ def _iter_cell_array_children(cell_array):
     )
 
 
-def _iter_dataset_dirty_children(dataset):
+def _iter_dataset_dirty_children(dataset: vtkObjectBase | None) -> Iterator[vtkObject]:
     if dataset is None:
         return
 
@@ -91,7 +99,7 @@ def _iter_dataset_dirty_children(dataset):
         yield from _iter_field_data_arrays(field_data)
 
 
-def _owned_collections(vtk_obj):
+def _owned_collections(vtk_obj: vtkObjectBase | None) -> Iterator[vtkObject]:
     """Structural collections owned by a node-worthy object.
 
     ``AddActor``/``RemoveActor``/``AddRenderer`` fire ``ModifiedEvent`` on the
@@ -109,25 +117,30 @@ def _owned_collections(vtk_obj):
 class DirtyTracker:
     """Observes a render window's dependency graph for dirty candidates."""
 
-    def __init__(self, object_manager, rw_id, on_dirty=None):
+    def __init__(
+        self,
+        object_manager: vtkObjectManager,
+        rw_id: int | str,
+        on_dirty: Callable[[], None] | None = None,
+    ) -> None:
         self._object_manager = object_manager
         self._rw_id = int(rw_id)
         self._on_dirty = on_dirty
-        self._dirty_ids = set()
-        self._swept_ids = set()
-        self._owner_ids = {}
-        self._pipeline_updates = {}
-        self._structural_ids = set()
-        self._observed_objects = {}
-        self._classes = {}
-        self._mtimes = {}
+        self._dirty_ids: set[str] = set()
+        self._swept_ids: set[str] = set()
+        self._owner_ids: dict[str, set[str]] = {}
+        self._pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
+        self._structural_ids: set[str] = set()
+        self._observed_objects: dict[str, tuple[vtkObject, int]] = {}
+        self._classes: dict[str, str] = {}
+        self._mtimes: dict[str, int] = {}
         self._suppressed = False
         self._disposed = False
 
     # -- dirty marks ---------------------------------------------------
 
     @contextmanager
-    def suppress(self):
+    def suppress(self) -> Iterator[None]:
         """Ignore ModifiedEvents fired by our own serialization/translation."""
         previous = self._suppressed
         self._suppressed = True
@@ -136,7 +149,7 @@ class DirtyTracker:
         finally:
             self._suppressed = previous
 
-    def _mark_dirty(self, object_id):
+    def _mark_dirty(self, object_id: str | int) -> None:
         # Observers can fire during interpreter teardown when self.__dict__ is
         # already cleared; default-True _disposed makes that a silent no-op.
         # The dtc rewire check drops the bypass's semantic-no-op input swaps,
@@ -153,21 +166,23 @@ class DirtyTracker:
         if self._on_dirty is not None:
             self._on_dirty()
 
-    def _make_dirty_callback(self, object_id):
-        def on_modified(_vtk_obj, _event, object_id=object_id):
+    def _make_dirty_callback(self, object_id: str) -> Callable[[vtkObject, str], None]:
+        def on_modified(
+            _vtk_obj: vtkObject, _event: str, object_id: str = object_id
+        ) -> None:
             self._mark_dirty(object_id)
 
         return on_modified
 
-    def has_pending(self):
+    def has_pending(self) -> bool:
         return bool(self._dirty_ids)
 
-    def classes(self):
+    def classes(self) -> dict[str, str]:
         return self._classes
 
     # -- observer graph ------------------------------------------------
 
-    def _clear_observers(self):
+    def _clear_observers(self) -> None:
         for vtk_obj, observer_tag in self._observed_objects.values():
             try:
                 vtk_obj.RemoveObserver(observer_tag)
@@ -175,7 +190,7 @@ class DirtyTracker:
                 pass
         self._observed_objects.clear()
 
-    def _observe(self, object_id, vtk_obj):
+    def _observe(self, object_id: str | int, vtk_obj: vtkObject | None) -> None:
         if vtk_obj is None or not hasattr(vtk_obj, "AddObserver"):
             return
 
@@ -189,10 +204,12 @@ class DirtyTracker:
             except (AttributeError, RuntimeError, ValueError):
                 pass
 
-        tag = vtk_obj.AddObserver("ModifiedEvent", self._make_dirty_callback(object_id))
+        tag = vtk_obj.AddObserver(
+            vtkCommand.ModifiedEvent, self._make_dirty_callback(object_id)
+        )
         self._observed_objects[object_id] = (vtk_obj, tag)
 
-    def sync_observers(self):
+    def sync_observers(self) -> None:
         """Rebuild the observer graph from the current dependency set."""
         object_manager = self._object_manager
         render_window = object_manager.GetObjectAtId(self._rw_id)
@@ -205,9 +222,9 @@ class DirtyTracker:
         self._clear_observers()
         live_ids = {str(object_id) for object_id in ids}
 
-        classes = {}
-        mtimes = {}
-        live_objects = {}
+        classes: dict[str, str] = {}
+        mtimes: dict[str, int] = {}
+        live_objects: dict[str, vtkObject] = {}
         for object_id in live_ids:
             vtk_obj = object_manager.GetObjectAtId(int(object_id))
             if vtk_obj is None:
@@ -223,9 +240,9 @@ class DirtyTracker:
         self._classes = classes
         self._mtimes = mtimes
 
-        owner_ids = {}
-        pipeline_updates = {}
-        structural_ids = set()
+        owner_ids: dict[str, set[str]] = {}
+        pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
+        structural_ids: set[str] = set()
         for object_id, vtk_obj in live_objects.items():
             class_name = classes.get(object_id, "")
             if class_name in DATASET_PATCH_TYPES:
@@ -252,7 +269,13 @@ class DirtyTracker:
         }
         self._swept_ids = pending_swept_ids & self._dirty_ids
 
-    def _sync_dataset_children(self, dataset_id, dataset, live_ids, owner_ids=None):
+    def _sync_dataset_children(
+        self,
+        dataset_id: str,
+        dataset: vtkObjectBase | None,
+        live_ids: Iterable[str] | None,
+        owner_ids: dict[str, set[str]] | None = None,
+    ) -> None:
         if owner_ids is None:
             owner_ids = self._owner_ids
         live_ids = set(live_ids or ())
@@ -270,7 +293,7 @@ class DirtyTracker:
             owner_ids.setdefault(child_id, set()).add(str(dataset_id))
             self._observe(child_id, child)
 
-    def refresh_dataset_children(self, dataset_ids):
+    def refresh_dataset_children(self, dataset_ids: Iterable[str | int]) -> None:
         """Re-observe children of just-published datasets (arrays get swapped)."""
         object_manager = self._object_manager
         live_ids = set(self._classes)
@@ -282,9 +305,14 @@ class DirtyTracker:
             self._sync_dataset_children(object_id, dataset, live_ids)
 
     def _sync_mapper_pipeline(
-        self, mapper_id, mapper, live_ids, owner_ids, pipeline_updates
-    ):
-        if mapper is None or not hasattr(mapper, "GetInputConnection"):
+        self,
+        mapper_id: str,
+        mapper: vtkObject | None,
+        live_ids: set[str],
+        owner_ids: dict[str, set[str]],
+        pipeline_updates: dict[str, dict[int, vtkAlgorithm]],
+    ) -> None:
+        if not isinstance(mapper, vtkAlgorithm):
             return
 
         try:
@@ -326,7 +354,13 @@ class DirtyTracker:
                     set(),
                 )
 
-    def _mapper_input_dataset_id(self, mapper, port_index, connection_index, live_ids):
+    def _mapper_input_dataset_id(
+        self,
+        mapper: vtkAlgorithm,
+        port_index: int,
+        connection_index: int,
+        live_ids: set[str],
+    ) -> str | None:
         data_object = None
         if port_index == 0 and connection_index == 0:
             _input_algorithm, data_object = dtc.mapper_distance_to_camera_input(mapper)
@@ -362,14 +396,14 @@ class DirtyTracker:
 
     def _observe_pipeline_producer(
         self,
-        mapper_id,
-        producer,
-        owner_id,
-        terminal_producer,
-        owner_ids,
-        pipeline_updates,
-        seen,
-    ):
+        mapper_id: str,
+        producer: vtkAlgorithm,
+        owner_id: str,
+        terminal_producer: vtkAlgorithm,
+        owner_ids: dict[str, set[str]],
+        pipeline_updates: dict[str, dict[int, vtkAlgorithm]],
+        seen: set[int],
+    ) -> None:
         producer_key = id(producer)
         if producer_key in seen:
             return
@@ -420,7 +454,9 @@ class DirtyTracker:
 
     # -- consuming -----------------------------------------------------
 
-    def _map_dirty(self, dirty_ids, swept_ids=()):
+    def _map_dirty(
+        self, dirty_ids: Iterable[str], swept_ids: Iterable[str] = ()
+    ) -> DirtyBatch:
         batch = DirtyBatch(
             dirty_ids=set(dirty_ids),
             swept_ids=set(swept_ids),
@@ -442,7 +478,7 @@ class DirtyTracker:
                 batch.refresh_ids.add(object_id)
         return batch
 
-    def consume(self):
+    def consume(self) -> DirtyBatch:
         """Take the pending dirty marks as a :class:`DirtyBatch`."""
         dirty_ids = self._dirty_ids
         swept_ids = self._swept_ids
@@ -450,7 +486,7 @@ class DirtyTracker:
         self._swept_ids = set()
         return self._map_dirty(dirty_ids, swept_ids)
 
-    def sweep(self):
+    def sweep(self) -> None:
         """Fold ids whose live mtime moved since the last snapshot into the
         pending dirty set — heals observer false negatives."""
         object_manager = self._object_manager
@@ -470,7 +506,7 @@ class DirtyTracker:
                     self._swept_ids.add(object_id)
                 self._dirty_ids.add(object_id)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         self._clear_observers()
         self._dirty_ids.clear()
         self._swept_ids.clear()

@@ -1,6 +1,12 @@
 """One publish tick's dirty-candidate record."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
 
 @dataclass
@@ -15,14 +21,14 @@ class DirtyBatch:
     child rather than describing a change to the container itself.
     """
 
-    candidates: set = field(default_factory=set)
-    refresh_ids: set = field(default_factory=set)
-    producers: dict = field(default_factory=dict)
+    candidates: set[str] = field(default_factory=set)
+    refresh_ids: set[str] = field(default_factory=set)
+    producers: dict[int, vtkAlgorithm] = field(default_factory=dict)
     structural: bool = False
-    dirty_ids: set = field(default_factory=set)
-    swept_ids: set = field(default_factory=set)
+    dirty_ids: set[str] = field(default_factory=set)
+    swept_ids: set[str] = field(default_factory=set)
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return bool(
             self.candidates or self.refresh_ids or self.producers or self.structural
         )

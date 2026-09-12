@@ -37,6 +37,7 @@ vtk = [
     "vtk>=9.6,<9.7",
 ]
 dev = [
+    "mypy",
     "pre-commit",
     "ruff",
     "pytest",
@@ -54,6 +55,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
   "/src/trame_vtklocal/**/*.py",
+  "/src/trame_vtklocal/py.typed",
   # Ship the vtk.js bundle plus the offline 3D Tiles decode runtime.
   "/src/trame_vtklocal/module/serve/js/**",
   "/src/trame_vtklocal/module/serve/wasm/tiles3d/**",
@@ -126,3 +128,32 @@ max-line-length = 120
 
 [lint.pydocstyle]
 convention = "google"
+
+[tool.mypy]
+# mypy no longer accepts a 3.9 target; every module uses postponed annotation
+# evaluation, so annotations stay valid on the 3.9 runtime floor.
+python_version = "3.10"
+files = ["src"]
+mypy_path = "src"
+explicit_package_bases = true
+strict = true
+disallow_any_explicit = true
+disallow_any_unimported = true
+# VTK's pure-Python numpy bridge carries no annotations inside its typed package.
+untyped_calls_exclude = ["vtkmodules.util.numpy_support"]
+
+# These trame and wslink distributions ship no PEP 561 marker.
+[[tool.mypy.overrides]]
+module = [
+    "trame",
+    "trame.*",
+    "trame_client",
+    "trame_client.*",
+    "trame_common",
+    "trame_common.*",
+    "trame_server",
+    "trame_server.*",
+    "wslink",
+    "wslink.*",
+]
+ignore_missing_imports = true

@@ -74,13 +74,27 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
+    # getattr-probed mapper/pipeline helpers; strict annotations wrap most
+    # of their signatures
+    "module/distance_to_camera.py": 431,
     # one translator for every node kind, plus the shared-reader seam
-    "module/node_translator.py": 415,
+    # Raised for strict annotations: wrapped signatures and the dtc block shape.
+    "module/node_translator.py": 460,
     # wslink RPC surface + push-view blob registry with debounced GC
-    "module/protocol.py": 450,
+    # Raised for strict annotations: the trame server Protocols it accepts.
+    "module/protocol.py": 515,
+    # the store has to declare the node, op and commit shapes it validates
+    # itself, since it may import nothing else from the package
+    "store.py": 498,
+    # validated source dataclasses plus the typed presentation and block shapes
+    "streamed_scene.py": 447,
     # one concern (dirty candidates) but three observer graphs: objects,
     # dataset children, pipeline producers — plus the dtc rewire-noise filter
-    "widgets/dirty_tracker.py": 510,
+    # Raised for strict annotations on the observer-graph signatures.
+    "widgets/dirty_tracker.py": 518,
+    # retained-copy differ plus the fast-path guard; strict annotations wrap
+    # most signatures
+    "widgets/hot_arrays.py": 438,
     # publish tick + wire encoding + resync + dropped-blob re-entry guard
     # Raised at the streamed-scene merge: the blob-restore path and the
     # streamed publisher additions landed independently, each under budget.
@@ -89,7 +103,10 @@ SIZE_BUDGETS = {
     # needs the guard call plus the suppress() scope it runs under) fits.
     # Next reduction: event_is_current() is a VTK-free, store-only predicate
     # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 557,
+    # Raised for strict annotations on the publisher signatures.
+    "widgets/publisher.py": 619,
+    # legacy WASM LocalView; strict annotations and its update-throttle Protocol
+    "widgets/vtklocal.py": 404,
 }
 
 

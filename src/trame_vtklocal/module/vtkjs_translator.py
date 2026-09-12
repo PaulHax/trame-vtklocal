@@ -6,7 +6,27 @@ plus a few tiny stateless helpers. The flat-node translator
 these; array scalar types live in ``array_datatypes``.
 """
 
-CLASS_NAME_MAP = {
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import TypeGuard
+    from vtkmodules.vtkRenderingCore import vtkProp3D
+
+
+class VtkRef(TypedDict):
+    """A reference to another object inside a serialized VTK state."""
+
+    Id: int
+
+
+class TopologySpec(TypedDict):
+    registration: str
+    vtkClass: str
+
+
+CLASS_NAME_MAP: dict[str, str] = {
     "vtkXOpenGLRenderWindow": "vtkRenderWindow",
     "vtkEGLRenderWindow": "vtkRenderWindow",
     "vtkOSOpenGLRenderWindow": "vtkRenderWindow",
@@ -33,7 +53,7 @@ CLASS_NAME_MAP = {
     "vtkFixedPointVolumeRayCastMapper": "vtkVolumeMapper",
 }
 
-COLLECTION_TYPES = {
+COLLECTION_TYPES: set[str] = {
     "vtkRendererCollection",
     "vtkPropCollection",
     "vtkLightCollection",
@@ -42,7 +62,7 @@ COLLECTION_TYPES = {
     "vtkVolumeCollection",
 }
 
-SKIP_TYPES = {
+SKIP_TYPES: set[str] = {
     "vtkInformation",
     "vtkFXAAOptions",
     "vtkCullerCollection",
@@ -54,7 +74,7 @@ SKIP_TYPES = {
     "vtkOpenGLShaderProperty",
 }
 
-ATTRIBUTE_REGISTRATIONS = {
+ATTRIBUTE_REGISTRATIONS: dict[str, str] = {
     "Scalars": "setScalars",
     "Vectors": "setVectors",
     "Normals": "setNormals",
@@ -64,13 +84,13 @@ ATTRIBUTE_REGISTRATIONS = {
     "PedigreeIds": "setPedigreeIds",
 }
 
-FIELD_DATA_GETTERS = {
+FIELD_DATA_GETTERS: dict[str, str] = {
     "PointData": "GetPointData",
     "CellData": "GetCellData",
     "FieldData": "GetFieldData",
 }
 
-POLYDATA_ARRAYS = {
+POLYDATA_ARRAYS: dict[str, TopologySpec] = {
     "Points": {"registration": "setPoints", "vtkClass": "vtkPoints"},
     "Verts": {"registration": "setVerts", "vtkClass": "vtkCellArray"},
     "Lines": {"registration": "setLines", "vtkClass": "vtkCellArray"},
@@ -78,7 +98,7 @@ POLYDATA_ARRAYS = {
     "Strips": {"registration": "setStrips", "vtkClass": "vtkCellArray"},
 }
 
-SKIP_PROPERTIES = {
+SKIP_PROPERTIES: set[str] = {
     # Core VTK object properties not needed in vtk.js
     "Id",
     "ClassName",
@@ -215,12 +235,12 @@ SKIP_PROPERTIES = {
     "enableTranslucentSurface",
 }
 
-RENDERWINDOW_SKIP_PROPERTIES = {
+RENDERWINDOW_SKIP_PROPERTIES: set[str] = {
     "position",
     "size",
 }
 
-RENDERER_SKIP_PROPERTIES = {
+RENDERER_SKIP_PROPERTIES: set[str] = {
     "ambient",
     "backgroundAlpha",
     "texturedBackground",
@@ -230,7 +250,7 @@ RENDERER_SKIP_PROPERTIES = {
     "useSphericalHarmonics",
 }
 
-LOOKUPTABLE_SKIP_PROPERTIES = {
+LOOKUPTABLE_SKIP_PROPERTIES: set[str] = {
     "scale",
     "tableValue",
     # Property name mismatch between Python VTK and vtk.js
@@ -239,7 +259,7 @@ LOOKUPTABLE_SKIP_PROPERTIES = {
     "range",
 }
 
-MAPPER_SKIP_PROPERTIES = {
+MAPPER_SKIP_PROPERTIES: set[str] = {
     "numberOfPieces",
     "clamping",
     "cullingAndLOD",
@@ -274,7 +294,7 @@ MAPPER_SKIP_PROPERTIES = {
     "scaleTableSize",
 }
 
-PROPERTY_SKIP_PROPERTIES = {
+PROPERTY_SKIP_PROPERTIES: set[str] = {
     "lineJoin",
     # vtk.js's ``setSpecularPower`` recomputes ``roughness = 1/max(1,p)`` and
     # overwrites whatever value ``setRoughness`` just applied — see
@@ -284,7 +304,7 @@ PROPERTY_SKIP_PROPERTIES = {
 }
 
 # Properties vtk.js Camera expects
-CAMERA_PROPERTIES = {
+CAMERA_PROPERTIES: set[str] = {
     "position",
     "focalPoint",
     "viewUp",
@@ -298,35 +318,36 @@ CAMERA_PROPERTIES = {
     "physicalViewUp",
 }
 
-VTK_LIGHT_TYPE_MAP = {
+# Keyed by VTK's integer light type; looked up with whatever the state holds.
+VTK_LIGHT_TYPE_MAP: dict[object, str] = {
     1: "HeadLight",
     2: "CameraLight",
     3: "SceneLight",
 }
 
 
-def map_class_name(class_name):
+def map_class_name(class_name: str) -> str:
     return CLASS_NAME_MAP.get(class_name, class_name)
 
 
-def to_camel_case(name):
+def to_camel_case(name: str) -> str:
     """Convert PascalCase to camelCase for vtk.js property names."""
     if not name:
         return name
     return name[0].lower() + name[1:]
 
 
-def is_ref(value):
+def is_ref(value: object) -> TypeGuard[VtkRef]:
     return isinstance(value, dict) and "Id" in value and len(value) == 1
 
 
-def get_ref_id(value):
+def get_ref_id(value: object) -> int | None:
     if is_ref(value):
         return value["Id"]
     return None
 
 
-def actor_user_matrix_property(vtk_obj):
+def actor_user_matrix_property(vtk_obj: vtkProp3D | None) -> list[float] | None:
     matrix = vtk_obj.GetUserMatrix() if vtk_obj is not None else None
     if matrix is None:
         return None

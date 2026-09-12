@@ -1,10 +1,16 @@
+from __future__ import annotations
+
 import asyncio
+import sys
 import zipfile
 import json
 import logging
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from wslink import register as export_rpc
+from types import ModuleType
+from typing import TYPE_CHECKING, Protocol, TypedDict, TypeVar
+from wslink import register as _wslink_register
 from wslink.websocket import LinkProtocol
 
 from vtkmodules.vtkSerializationManager import vtkObjectManager
@@ -12,6 +18,11 @@ from vtkmodules.vtkCommonCore import vtkVersion
 
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.store import ref_manager_hashes
+
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonCore import vtkObjectBase
+
+    from trame_vtklocal.wire import ResyncPayload
 
 try:
     import zlib  # noqa
@@ -34,55 +45,127 @@ API_NO_IDS_UPDATE = (
     and VTK_VERSION.GetVTKBuildVersion() < 20250509
 )  # mr90034
 
+_RpcT = TypeVar("_RpcT")
 
-def map_id_mtime(object_manager, vtk_id):
+
+def export_rpc(name: str) -> Callable[[_RpcT], _RpcT]:
+    """``wslink.register``, which marks and returns the decorated function."""
+    decorate: Callable[[_RpcT], _RpcT] = _wslink_register(name)
+    return decorate
+
+
+class NamedServer(Protocol):
+    """A trame server as far as per-server module state needs it."""
+
+    @property
+    def name(self) -> str: ...
+
+
+class LinkProtocolRoot(Protocol):
+    """The wslink server protocol handed to protocol configuration callbacks."""
+
+    def registerLinkProtocol(self, protocol: ObjectManagerAPI, /) -> object: ...
+
+
+class ProtocolHostServer(NamedServer, Protocol):
+    """A trame server that registers wslink protocols once it starts."""
+
+    def add_protocol_to_configure(
+        self, configure_protocol_fn: Callable[[LinkProtocolRoot], None], /
+    ) -> object: ...
+
+
+class ModuleHostServer(NamedServer, Protocol):
+    """A trame server that can enable a module definition."""
+
+    def enable_module(
+        self, module: ModuleType | dict[str, object], /, **kwargs: object
+    ) -> object: ...
+
+
+class PushView(Protocol):
+    """The publisher serving one render window's ``scene.resync``."""
+
+    def resync(
+        self, known_refs: Iterable[str] | None = None, client_id: str | None = None
+    ) -> ResyncPayload: ...
+
+
+class ObjectStatus(TypedDict):
+    """The ``vtklocal.get.status`` reply for one root object."""
+
+    ids: list[tuple[int, int]]
+    hashes: Sequence[str]
+    ignore_ids: list[int]
+    cameras: list[int]
+    force_push: list[int]
+    interactor: int | None
+
+
+def map_id_mtime(object_manager: vtkObjectManager, vtk_id: int) -> tuple[int, int]:
     vtk_obj = object_manager.GetObjectAtId(vtk_id)
     if vtk_obj is None:
         return (vtk_id, 0)
     return (vtk_id, vtk_obj.GetMTime())
 
 
-def object_for_id(object_manager, obj_id):
+def object_for_id(
+    object_manager: vtkObjectManager, obj_id: int | str
+) -> vtkObjectBase | None:
     try:
-        return object_manager.GetObjectAtId(int(obj_id))
+        vtk_object: vtkObjectBase | None = object_manager.GetObjectAtId(int(obj_id))
+        return vtk_object
     except (RuntimeError, TypeError, ValueError):
         return None
 
 
-class ObjectManagerAPI(LinkProtocol):
-    def __init__(self, *args, **kwargs):
-        addon_serdes_registrars = kwargs.pop("addon_serdes_registrars", [])
+# wslink ships no type information, so its base class is untyped here.
+class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
+    def __init__(
+        self,
+        *args: object,
+        addon_serdes_registrars: Sequence[object] = (),
+        **kwargs: object,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.vtk_object_manager = vtkObjectManager()
         self.vtk_object_manager.Initialize()
-        for registrar in addon_serdes_registrars:
-            self.vtk_object_manager.InitializeExtensionModuleHandler(registrar)
-        self._subscriptions = {}
-        self._widgets = {}
-        self._last_publish_states = {}
-        self._last_publish_hash = set()
+        if addon_serdes_registrars:
+            # VTK 9.6 exposes only the C registrar-array overload, which Python
+            # cannot call.
+            raise RuntimeError(
+                "addon_serdes_registrars needs "
+                "vtkObjectManager.InitializeExtensionModuleHandler, "
+                "which this VTK does not provide"
+            )
+        self._subscriptions: dict[int, int] = {}
+        self._widgets: dict[int, set[int]] = {}
+        self._last_publish_states: dict[int, int] = {}
+        self._last_publish_hash: set[str] = set()
         self._push_camera = False
-        self._push_views = {}
-        self._push_view_blob_hashes = {}
-        self._pending_stale_blob_hashes = set()
-        self._blob_gc_handle = None
+        self._push_views: dict[int, PushView] = {}
+        self._push_view_blob_hashes: dict[int, set[str]] = {}
+        self._pending_stale_blob_hashes: set[str] = set()
+        self._blob_gc_handle: asyncio.TimerHandle | None = None
         self._warned_missing_client_id = False
 
         self._debug_state = False
         self._debug_state_counter = 1
 
-    def register_push_view(self, rw_id, publisher):
+    def register_push_view(self, rw_id: int | str, publisher: PushView) -> None:
         """Register the ScenePublisher serving one render window."""
         rw_id = int(rw_id)
         self._push_views[rw_id] = publisher
         self._push_view_blob_hashes.setdefault(rw_id, set())
 
-    def unregister_push_view(self, rw_id):
+    def unregister_push_view(self, rw_id: int | str) -> None:
         rw_id = int(rw_id)
         self._push_views.pop(rw_id, None)
         self._push_view_blob_hashes.pop(rw_id, None)
 
-    def update_push_view_refs(self, rw_id, live_refs, refs_leaving):
+    def update_push_view_refs(
+        self, rw_id: int | str, live_refs: Iterable[str], refs_leaving: Iterable[str]
+    ) -> None:
         """Queue retirement of vtkObjectManager blobs behind refs that left.
 
         The publisher hands the store's live ref set plus the exact refs that
@@ -101,7 +184,7 @@ class ObjectManagerAPI(LinkProtocol):
         self._pending_stale_blob_hashes |= stale
         self._schedule_blob_gc()
 
-    def _schedule_blob_gc(self):
+    def _schedule_blob_gc(self) -> None:
         if self._blob_gc_handle is not None:
             return
         try:
@@ -114,11 +197,11 @@ class ObjectManagerAPI(LinkProtocol):
             BLOB_GC_DEBOUNCE_SECONDS, self._run_scheduled_blob_gc
         )
 
-    def _run_scheduled_blob_gc(self):
+    def _run_scheduled_blob_gc(self) -> None:
         self._blob_gc_handle = None
         self.flush_stale_blobs()
 
-    def flush_stale_blobs(self):
+    def flush_stale_blobs(self) -> int:
         """UnRegister pending stale blobs not protected at flush time.
 
         Hashes still tracked by any push view or referenced by any live
@@ -157,13 +240,13 @@ class ObjectManagerAPI(LinkProtocol):
                 pass
         return count
 
-    def _all_tracked_push_blob_hashes(self):
-        hashes = set()
+    def _all_tracked_push_blob_hashes(self) -> set[str]:
+        hashes: set[str] = set()
         for live_hashes in self._push_view_blob_hashes.values():
             hashes.update(live_hashes)
         return hashes
 
-    def _active_object_blob_hashes(self):
+    def _active_object_blob_hashes(self) -> set[str]:
         with self._bypass_distance_to_camera_for_push_views():
             try:
                 active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
@@ -177,7 +260,7 @@ class ObjectManagerAPI(LinkProtocol):
             except (RuntimeError, TypeError, ValueError):
                 return set()
 
-    def _bypass_distance_to_camera_for_push_views(self):
+    def _bypass_distance_to_camera_for_push_views(self) -> ExitStack[bool | None]:
         stack = ExitStack()
         try:
             for push_view in self._push_views.values():
@@ -191,7 +274,7 @@ class ObjectManagerAPI(LinkProtocol):
             stack.close()
             raise
 
-    def get_active_client_id(self):
+    def get_active_client_id(self) -> str | None:
         core_server = getattr(self, "coreServer", None)
         trame_server = getattr(core_server, "server", None)
         ws_server = getattr(trame_server, "_server", None)
@@ -200,9 +283,10 @@ class ObjectManagerAPI(LinkProtocol):
                 logger.warning("Unable to resolve active wslink client id")
                 self._warned_missing_client_id = True
             return None
-        return ws_server.last_active_client_id
+        client_id: str | None = ws_server.last_active_client_id
+        return client_id
 
-    def register_widget(self, root_obj, dep_obj):
+    def register_widget(self, root_obj: vtkObjectBase, dep_obj: vtkObjectBase) -> None:
         self.vtk_object_manager.RegisterObject(dep_obj)
         root_id = self.vtk_object_manager.GetId(root_obj)
         dep_id = self.vtk_object_manager.GetId(dep_obj)
@@ -211,19 +295,26 @@ class ObjectManagerAPI(LinkProtocol):
 
         self._widgets[root_id].add(dep_id)
 
-    def unregister_widget(self, root_obj, dep_obj):
-        self.vtk_object_manager.UnRegisterObject(dep_obj)
+    def unregister_widget(
+        self, root_obj: vtkObjectBase, dep_obj: vtkObjectBase
+    ) -> None:
         root_id = self.vtk_object_manager.GetId(root_obj)
         dep_id = self.vtk_object_manager.GetId(dep_obj)
+        self.vtk_object_manager.UnRegisterObject(dep_id)
         if root_id in self._widgets:
             self._widgets[root_id].discard(dep_id)
 
-    def get_all_ids(self, root_id):
+    def get_all_ids(self, root_id: int) -> list[int]:
         if root_id in self._widgets:
             return [root_id, *self._widgets[root_id]]
         return [root_id]
 
-    def update(self, push_camera=False, obj_to_update=None, **_):
+    def update(
+        self,
+        push_camera: bool = False,
+        obj_to_update: Iterable[vtkObjectBase] | None = None,
+        **_: object,
+    ) -> None:
         self._push_camera = push_camera
 
         with self._bypass_distance_to_camera_for_push_views():
@@ -244,7 +335,7 @@ class ObjectManagerAPI(LinkProtocol):
             self._debug_state_counter += 1
 
         # Handle subscription push
-        remove_from_subscriptions = []
+        remove_from_subscriptions: list[int] = []
         for obj_id, count in self._subscriptions.items():
             if count == 0:
                 remove_from_subscriptions.append(obj_id)
@@ -274,12 +365,12 @@ class ObjectManagerAPI(LinkProtocol):
             self._subscriptions.pop(id_to_gc)
 
     @property
-    def active_ids(self):
+    def active_ids(self) -> Sequence[int]:
         with self._bypass_distance_to_camera_for_push_views():
             return self.vtk_object_manager.GetAllDependencies(0)
 
     @export_rpc("vtklocal.subscribe.update")
-    def update_subscription(self, obj_id, delta):
+    def update_subscription(self, obj_id: int, delta: int) -> None:
         if obj_id in self._subscriptions:
             self._subscriptions[obj_id] += delta
         elif delta > 0:
@@ -295,15 +386,17 @@ class ObjectManagerAPI(LinkProtocol):
                 self.update_subscription(w_id, delta)
 
     @export_rpc("vtklocal.get.state")
-    def get_state(self, obj_id):
+    def get_state(self, obj_id: int) -> str:
         return self.vtk_object_manager.GetState(obj_id)
 
     @export_rpc("vtklocal.get.hash")
-    def get_hash(self, hash):
+    def get_hash(self, hash: str) -> object:
         return self.addAttachment(memoryview(self.vtk_object_manager.GetBlob(hash)))
 
     @export_rpc("scene.resync")
-    def scene_resync(self, rw_id, known_refs=None):
+    def scene_resync(
+        self, rw_id: int | str, known_refs: Iterable[str] | None = None
+    ) -> ResyncPayload:
         """Full scene snapshot for the requesting client (push sync v2).
 
         Returns ``{"v": 2, "rw", "seq", "root", "nodes", "blobs"}`` where
@@ -318,10 +411,10 @@ class ObjectManagerAPI(LinkProtocol):
         return publisher.resync(known_refs, client_id=self.get_active_client_id())
 
     @export_rpc("vtklocal.get.status")
-    def get_status(self, obj_id):
+    def get_status(self, obj_id: int) -> ObjectStatus:
         root_object = object_for_id(self.vtk_object_manager, obj_id)
         with dtc.bypass_distance_to_camera_for_serialization(root_object):
-            ids = self.vtk_object_manager.GetAllDependencies(obj_id)
+            ids: Sequence[int] = self.vtk_object_manager.GetAllDependencies(obj_id)
 
             # Add widgets ids without duplicate
             ids_width_deps = list(ids)
@@ -335,12 +428,12 @@ class ObjectManagerAPI(LinkProtocol):
             hashes = self.vtk_object_manager.GetBlobHashes(ids)
         renderWindow = self.vtk_object_manager.GetObjectAtId(obj_id)
         ids_mtime = [map_id_mtime(self.vtk_object_manager, v) for v in ids]
-        ignore_ids = []
-        cameras = []
-        force_push = []
+        ignore_ids: list[int] = []
+        cameras: list[int] = []
+        force_push: list[int] = []
         # An id that is not a live render window still answers, with no
         # interactor and no cameras.
-        interactor = None
+        interactor: int | None = None
         if renderWindow:
             interactor = self.vtk_object_manager.GetId(renderWindow.interactor)
             renderers = renderWindow.GetRenderers()
@@ -352,16 +445,16 @@ class ObjectManagerAPI(LinkProtocol):
                 else:
                     force_push.append(cid)
                 cameras.append(cid)
-        return dict(
-            ids=ids_mtime,
-            hashes=hashes,
-            ignore_ids=ignore_ids,
-            cameras=cameras,
-            force_push=force_push,
-            interactor=interactor,
-        )
+        return {
+            "ids": ids_mtime,
+            "hashes": hashes,
+            "ignore_ids": ignore_ids,
+            "cameras": cameras,
+            "force_push": force_push,
+            "interactor": interactor,
+        }
 
-    def dump_data(self, output_file, wasm_ids):
+    def dump_data(self, output_file: str | Path, wasm_ids: Sequence[int]) -> None:
         """
         Create file (zip) with WASM data
         """
@@ -369,7 +462,7 @@ class ObjectManagerAPI(LinkProtocol):
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Extract ids to save
-        all_ids = set()
+        all_ids: set[int] = set()
         for vtk_id in wasm_ids:
             all_ids.update(self.vtk_object_manager.GetAllDependencies(vtk_id))
 
@@ -388,7 +481,8 @@ class ObjectManagerAPI(LinkProtocol):
                 ),
             )
             # Write states
-            zipf.mkdir("states")
+            if sys.version_info >= (3, 11):
+                zipf.mkdir("states")
             for vtk_id in all_ids:
                 zipf.writestr(
                     f"states/{vtk_id}",
@@ -396,7 +490,8 @@ class ObjectManagerAPI(LinkProtocol):
                 )
 
             # Write blobs
-            zipf.mkdir("blobs")
+            if sys.version_info >= (3, 11):
+                zipf.mkdir("blobs")
             for hash in hashes:
                 zipf.writestr(
                     f"blobs/{hash}",
@@ -405,12 +500,16 @@ class ObjectManagerAPI(LinkProtocol):
 
 
 class ObjectManagerHelper:
-    def __init__(self, trame_server, addon_serdes_registrars=None):
+    def __init__(
+        self,
+        trame_server: ProtocolHostServer,
+        addon_serdes_registrars: Sequence[object] = (),
+    ) -> None:
         self.trame_server = trame_server
-        self.root_protocol = None
+        self.root_protocol: LinkProtocolRoot | None = None
         self.api = ObjectManagerAPI(addon_serdes_registrars=addon_serdes_registrars)
         self.trame_server.add_protocol_to_configure(self.configure_protocol)
 
-    def configure_protocol(self, protocol):
+    def configure_protocol(self, protocol: LinkProtocolRoot) -> None:
         self.root_protocol = protocol
         self.root_protocol.registerLinkProtocol(self.api)

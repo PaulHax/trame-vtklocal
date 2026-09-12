@@ -10,11 +10,17 @@ Client-authority cameras never become nodes or refs.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping, Set
+from typing import TYPE_CHECKING
+
+from vtkmodules.vtkCommonCore import vtkCollection
+
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.node_arrays import polydata_array_entries
+from trame_vtklocal.module.camera_authority import CameraAuthority
 from trame_vtklocal.module.state_cache import SceneReader
 from trame_vtklocal.module.streamed_scene_translation import translate_actor
 from trame_vtklocal.module.vtkjs_translator import (
@@ -34,10 +40,23 @@ from trame_vtklocal.module.vtkjs_translator import (
 )
 from trame_vtklocal.streamed_scene import STREAMED_SCENE_TYPE
 
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonCore import vtkObjectBase
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+    from trame_vtklocal.module.state_cache import ParsedStateCache, VtkState
+    from trame_vtklocal.module.streamed_scene_registry import _StreamedSceneRegistry
+    from trame_vtklocal.store import ArrayEntry, RefSlot, SceneNode
+
+
+class DistanceToCameraBlock(dtc.DistanceToCameraConfig):
+    inputDataObjectId: str
+
+
 # The only ref slots a node may carry (state key -> slot name), keyed by
 # vtk.js type. Everything else that looks like a reference stays out of the
 # node entirely: props never hold refs, and unknown relations never dangle.
-SINGLE_REF_SLOTS = {
+SINGLE_REF_SLOTS: dict[str, dict[str, str]] = {
     "vtkRenderer": {"ActiveCamera": "activeCamera"},
     "vtkActor": {"Mapper": "mapper", "Property": "property"},
     "vtkVolume": {"Mapper": "mapper", "Property": "property"},
@@ -45,7 +64,7 @@ SINGLE_REF_SLOTS = {
     "vtkTexture": {"LookupTable": "lookupTable"},
 }
 
-LIST_REF_SLOTS = {
+LIST_REF_SLOTS: dict[str, dict[str, str]] = {
     "vtkRenderWindow": {"Renderers": "renderers"},
     "vtkRenderer": {"ViewProps": "viewProps", "Lights": "lights"},
     "vtkActor": {"Texture": "textures"},
@@ -60,7 +79,7 @@ LIST_REF_SLOTS = {
     },
 }
 
-TYPE_SKIP_PROPERTIES = {
+TYPE_SKIP_PROPERTIES: dict[str, set[str]] = {
     "vtkRenderWindow": RENDERWINDOW_SKIP_PROPERTIES,
     "vtkRenderer": RENDERER_SKIP_PROPERTIES,
     "vtkLookupTable": LOOKUPTABLE_SKIP_PROPERTIES,
@@ -79,7 +98,9 @@ _NON_NODE_CLASS_NAMES = COLLECTION_TYPES | {
 }
 
 
-def is_node_class(class_name, camera_authority="server"):
+def is_node_class(
+    class_name: str, camera_authority: CameraAuthority = "server"
+) -> bool:
     """Whether objects of this VTK class become scene-store nodes."""
     if not class_name:
         return False
@@ -90,14 +111,20 @@ def is_node_class(class_name, camera_authority="server"):
     return "Array" not in class_name
 
 
-def _contains_ref(value):
+def _contains_ref(value: object) -> bool:
     if isinstance(value, list):
         return any(_contains_ref(item) for item in value)
     return get_ref_id(value) is not None
 
 
-def _make_node(node_type, props, refs, arrays, blocks):
-    node = {"type": node_type}
+def _make_node(
+    node_type: str,
+    props: dict[str, object],
+    refs: dict[str, RefSlot],
+    arrays: dict[str, ArrayEntry],
+    blocks: dict[str, Mapping[str, object]],
+) -> SceneNode:
+    node: SceneNode = {"type": node_type}
     if props:
         node["props"] = props
     if refs:
@@ -109,7 +136,7 @@ def _make_node(node_type, props, refs, arrays, blocks):
     return node
 
 
-def node_ref_ids(node):
+def node_ref_ids(node: SceneNode) -> Iterator[str]:
     """Every node id a node's ref slots point at."""
     for value in node.get("refs", {}).values():
         if isinstance(value, str):
@@ -118,10 +145,10 @@ def node_ref_ids(node):
             yield from value
 
 
-def _collection_item_ids(reader, collection_id):
+def _collection_item_ids(reader: SceneReader, collection_id: int) -> list[int]:
     """Item ids of a live VTK collection (state ``Items`` as fallback)."""
     collection = reader.vtk_object(collection_id)
-    if collection is None:
+    if not isinstance(collection, vtkCollection):
         items = reader.state(collection_id).get("Items", [])
         return [ref_id for ref_id in map(get_ref_id, items) if ref_id]
 
@@ -136,7 +163,7 @@ def _collection_item_ids(reader, collection_id):
     return item_ids
 
 
-def _ref_node_ids(reader, value):
+def _ref_node_ids(reader: SceneReader, value: object) -> list[int]:
     """Resolve a state ref (or list of refs) into node ids.
 
     Collections dissolve into their items; SKIP_TYPES and other non-node
@@ -161,8 +188,10 @@ def _ref_node_ids(reader, value):
     return [ref_id]
 
 
-def _slot_refs(reader, state, vtkjs_type):
-    refs = {}
+def _slot_refs(
+    reader: SceneReader, state: Mapping[str, object], vtkjs_type: str
+) -> dict[str, RefSlot]:
+    refs: dict[str, RefSlot] = {}
     for state_key, slot in SINGLE_REF_SLOTS.get(vtkjs_type, {}).items():
         if state_key not in state:
             continue
@@ -178,9 +207,11 @@ def _slot_refs(reader, state, vtkjs_type):
     return refs
 
 
-def _scalar_props(state, vtkjs_type, extra_skips=frozenset()):
-    props = {}
-    type_skips = TYPE_SKIP_PROPERTIES.get(vtkjs_type, frozenset())
+def _scalar_props(
+    state: Mapping[str, object], vtkjs_type: str, extra_skips: Set[str] = frozenset()
+) -> dict[str, object]:
+    props: dict[str, object] = {}
+    type_skips: Set[str] = TYPE_SKIP_PROPERTIES.get(vtkjs_type, frozenset())
     for key, value in state.items():
         camel_key = to_camel_case(key)
         if key in SKIP_PROPERTIES or camel_key in SKIP_PROPERTIES:
@@ -211,7 +242,9 @@ def _scalar_props(state, vtkjs_type, extra_skips=frozenset()):
 # ---------------------------------------------------------------------------
 
 
-def _translate_polydata(reader, state, vtkjs_type):
+def _translate_polydata(
+    reader: SceneReader, state: VtkState, vtkjs_type: str
+) -> SceneNode:
     arrays = polydata_array_entries(reader, state)
     props = _scalar_props(state, vtkjs_type)
     return _make_node(vtkjs_type, props, {}, arrays, {})
@@ -222,7 +255,7 @@ def _translate_polydata(reader, state, vtkjs_type):
 # ---------------------------------------------------------------------------
 
 
-def _mapper_input_port_ids(reader, state):
+def _mapper_input_port_ids(reader: SceneReader, state: VtkState) -> list[int]:
     """Dataset node id per input port.
 
     Stops at the first port with no node-worthy dataset so the list index
@@ -238,7 +271,9 @@ def _mapper_input_port_ids(reader, state):
     return port_ids
 
 
-def _distance_to_camera_block(reader, vtkjs_type, vtk_mapper):
+def _distance_to_camera_block(
+    reader: SceneReader, vtkjs_type: str, vtk_mapper: vtkObjectBase
+) -> DistanceToCameraBlock | None:
     """Distance-to-camera bypass block for a glyph mapper, or None."""
     if vtkjs_type != "vtkGlyph3DMapper":
         return None
@@ -252,14 +287,16 @@ def _distance_to_camera_block(reader, vtkjs_type, vtk_mapper):
     )
     if not input_id:
         return None
-    config = dict(translation["config"])
-    config["inputDataObjectId"] = str(input_id)
+    config: DistanceToCameraBlock = {
+        **translation["config"],
+        "inputDataObjectId": str(input_id),
+    }
     return config
 
 
-def _glyph_mapper_array_props(vtk_mapper):
+def _glyph_mapper_array_props(vtk_mapper: vtkObjectBase) -> dict[str, str]:
     """Recover vtkGlyph3DMapper array-name properties missing from VTK state."""
-    props = {}
+    props: dict[str, str] = {}
     scale_array = dtc.mapper_input_array_name(vtk_mapper, index=0)
     if scale_array:
         props["scaleArray"] = scale_array
@@ -269,11 +306,15 @@ def _glyph_mapper_array_props(vtk_mapper):
     return props
 
 
-def _translate_mapper(reader, state, vtkjs_type):
+def _translate_mapper(
+    reader: SceneReader, state: VtkState, vtkjs_type: str
+) -> SceneNode:
     vtk_mapper = reader.vtk_object(state["Id"])
+    if vtk_mapper is None:
+        raise RuntimeError(f"mapper state {state['Id']} has no live object")
     props = _scalar_props(state, vtkjs_type, extra_skips=MAPPER_SKIP_PROPERTIES)
-    refs = {}
-    blocks = {}
+    refs: dict[str, RefSlot] = {}
+    blocks: dict[str, Mapping[str, object]] = {}
 
     if vtkjs_type == "vtkGlyph3DMapper":
         props.update(_glyph_mapper_array_props(vtk_mapper))
@@ -314,10 +355,12 @@ def _translate_mapper(reader, state, vtkjs_type):
 # ---------------------------------------------------------------------------
 
 
-def _translate_generic(reader, state, vtkjs_type):
+def _translate_generic(
+    reader: SceneReader, state: VtkState, vtkjs_type: str
+) -> SceneNode:
     props = _scalar_props(state, vtkjs_type)
     refs = _slot_refs(reader, state, vtkjs_type)
-    blocks = {}
+    blocks: dict[str, Mapping[str, object]] = {}
 
     if vtkjs_type == "vtkActor":
         vtkjs_type, props, refs, blocks = translate_actor(reader, state, props, refs)
@@ -329,7 +372,7 @@ def _translate_generic(reader, state, vtkjs_type):
     return node
 
 
-def _translate_node(reader, obj_id):
+def _translate_node(reader: SceneReader, obj_id: int) -> SceneNode | None:
     state = reader.state(obj_id)
     class_name = state.get("ClassName", "")
     if not is_node_class(class_name, reader.camera_authority):
@@ -344,12 +387,12 @@ def _translate_node(reader, obj_id):
 
 
 def scene_reader(
-    object_manager,
-    camera_authority="server",
-    state_cache=None,
-    class_names=None,
-    streamed_scene_registry=None,
-):
+    object_manager: vtkObjectManager,
+    camera_authority: CameraAuthority = "server",
+    state_cache: ParsedStateCache | None = None,
+    class_names: Mapping[str, str] | None = None,
+    streamed_scene_registry: _StreamedSceneRegistry | None = None,
+) -> SceneReader:
     """A cached state reader, shareable across several ``translate_object``
     calls in one pass so referenced states are JSON-parsed once."""
     return SceneReader(
@@ -361,7 +404,12 @@ def scene_reader(
     )
 
 
-def translate_object(object_manager, obj_id, camera_authority="server", reader=None):
+def translate_object(
+    object_manager: vtkObjectManager,
+    obj_id: int | str,
+    camera_authority: CameraAuthority = "server",
+    reader: SceneReader | None = None,
+) -> SceneNode | None:
     """Translate one object into its flat node.
 
     Returns ``None`` for objects that never become nodes (SKIP_TYPES,
@@ -375,13 +423,13 @@ def translate_object(object_manager, obj_id, camera_authority="server", reader=N
 
 
 def translate_scene(
-    object_manager,
-    root_id,
-    camera_authority="server",
-    state_cache=None,
-    class_names=None,
-    streamed_scene_registry=None,
-):
+    object_manager: vtkObjectManager,
+    root_id: int | str,
+    camera_authority: CameraAuthority = "server",
+    state_cache: ParsedStateCache | None = None,
+    class_names: Mapping[str, str] | None = None,
+    streamed_scene_registry: _StreamedSceneRegistry | None = None,
+) -> dict[str, SceneNode]:
     """Translate every node reachable from ``root_id`` into ``{id: node}``.
 
     Every id a node's ``refs`` mention is present in the result, so the map
@@ -395,7 +443,7 @@ def translate_scene(
         class_names=class_names,
         streamed_scene_registry=streamed_scene_registry,
     )
-    nodes = {}
+    nodes: dict[str, SceneNode] = {}
     pending = [int(root_id)]
     while pending:
         obj_id = pending.pop()

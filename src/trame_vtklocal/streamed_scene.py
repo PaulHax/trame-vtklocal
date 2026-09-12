@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from numbers import Real
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, NoReturn, TypedDict, Union
 
 from vtkmodules.vtkRenderingCore import vtkActor
 
@@ -19,6 +20,9 @@ from trame_vtklocal.module.streamed_scene_registry import (
     _registration_for_actor,
     _update_registered_source,
 )
+
+if TYPE_CHECKING:
+    from typing_extensions import ReadOnly
 
 STREAMED_SCENE_TYPE = "vtkStreamedSceneActor"
 STREAMED_SCENE_BLOCK = "streamedScene"
@@ -38,14 +42,88 @@ AFFINE_FIXED_ENTRIES = ((3, 0.0), (7, 0.0), (11, 0.0), (15, 1.0))
 # A linear block this close to singular has no usable inverse for picking.
 AFFINE_DETERMINANT_FLOOR = 1e-15
 
+GeometricErrorScale = Literal["maximum", "horizontal"]
 
-class _FrozenDict(dict):
+
+class FixedPresentation(TypedDict):
+    mode: ReadOnly[Literal["fixed"]]
+    diameterCssPx: ReadOnly[float]
+
+
+class AutoPresentation(TypedDict):
+    mode: ReadOnly[Literal["auto"]]
+    userScale: ReadOnly[float]
+    minDiameterCssPx: ReadOnly[float]
+    maxDiameterCssPx: ReadOnly[float]
+
+
+Presentation = Union[FixedPresentation, AutoPresentation]
+
+
+class AdaptiveOptions(TypedDict, total=False):
+    minBudget: ReadOnly[int]
+    maxBudget: ReadOnly[int]
+    interactionTargetMs: ReadOnly[float]
+    stationaryTargetMs: ReadOnly[float]
+
+
+class _AdaptiveOptionsDraft(TypedDict, total=False):
+    minBudget: int
+    maxBudget: int
+    interactionTargetMs: float
+    stationaryTargetMs: float
+
+
+class _SourceBlockCommon(TypedDict):
+    sourceAssetId: str
+    revision: str
+    endpoint: str
+
+
+class _PointCloudBlockRequired(TypedDict):
+    pointCount: int
+    presentation: Presentation
+    adaptive: bool
+
+
+class PointCloudBlock(_PointCloudBlockRequired, total=False):
+    adaptiveOptions: AdaptiveOptions
+    pointBudget: int
+    refinementCutoffPx: float
+
+
+class PointCloudSourceBlock(_SourceBlockCommon):
+    kind: Literal["pointCloud"]
+    pointCloud: PointCloudBlock
+
+
+class _Tiles3DBlockRequired(TypedDict):
+    tilesetToScene: list[float]
+    verticalExaggeration: float
+    verticalPivotZ: float
+    geometricErrorScale: GeometricErrorScale
+
+
+class Tiles3DBlock(_Tiles3DBlockRequired, total=False):
+    maximumScreenSpaceErrorPx: float
+
+
+class Tiles3DSourceBlock(_SourceBlockCommon):
+    kind: Literal["tiles3d"]
+    tiles3d: Tiles3DBlock
+
+
+StreamedSceneBlock = Union[PointCloudSourceBlock, Tiles3DSourceBlock]
+
+
+class _FrozenDict(dict[str, object]):
     """A JSON-compatible mapping whose normalized values cannot be changed."""
 
-    def __hash__(self):
+    # Hashable despite dict's contract so frozen sources holding it stay hashable.
+    def __hash__(self) -> int:  # type: ignore[override]
         return hash(tuple(sorted(self.items())))
 
-    def _immutable(self, *_args, **_kwargs):
+    def _immutable(self, *_args: object, **_kwargs: object) -> NoReturn:
         raise TypeError("source configuration is immutable")
 
     __setitem__ = _immutable
@@ -58,15 +136,15 @@ class _FrozenDict(dict):
     __ior__ = _immutable
 
 
-def _is_positive_finite(value):
+def _is_positive_finite(value: float) -> bool:
     return math.isfinite(value) and value > 0
 
 
-def _is_affine_entry(value, expected):
+def _is_affine_entry(value: float, expected: float) -> bool:
     return abs(value - expected) <= AFFINE_ENTRY_ABS_TOL
 
 
-def _as_presentation(value):
+def _as_presentation(value: object) -> Presentation:
     if not isinstance(value, dict):
         raise ValueError("presentation must be a Fixed or Auto object")
     mode = value.get("mode")
@@ -97,7 +175,7 @@ def _as_presentation(value):
     raise ValueError("presentation mode must be 'fixed' or 'auto'")
 
 
-def _as_adaptive_options(value):
+def _as_adaptive_options(value: object) -> AdaptiveOptions:
     if not isinstance(value, dict):
         raise ValueError("adaptive_options must be an object")
     unknown = set(value) - {
@@ -109,7 +187,7 @@ def _as_adaptive_options(value):
     if unknown:
         raise ValueError(f"unknown adaptive_options: {', '.join(sorted(unknown))}")
 
-    options = {}
+    options: _AdaptiveOptionsDraft = {}
     minimum = DEFAULT_ADAPTIVE_MIN_BUDGET
     if (raw := value.get("minBudget")) is not None:
         minimum = int(raw)
@@ -132,14 +210,14 @@ def _as_adaptive_options(value):
     return options
 
 
-def _as_identity(value, name):
+def _as_identity(value: object, name: str) -> str:
     text = str(value).strip() if value is not None else ""
     if not text:
         raise ValueError(f"{name} is required")
     return text
 
 
-def _as_endpoint(value):
+def _as_endpoint(value: object) -> str:
     if not value or str(value).endswith("/"):
         raise ValueError("endpoint is required and must not end with '/'")
     return str(value)
@@ -153,13 +231,13 @@ class PointCloudSource:
     revision: str
     endpoint: str
     point_count: int
-    presentation: dict
+    presentation: Presentation
     adaptive: bool = True
-    adaptive_options: dict | None = None
+    adaptive_options: AdaptiveOptions | None = None
     point_budget: int | None = None
     refinement_cutoff_px: float | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "source_asset_id",
@@ -210,9 +288,9 @@ class Tiles3DSource:
     maximum_screen_space_error_px: float | None = None
     vertical_exaggeration: float = 1.0
     vertical_pivot_z: float = 0.0
-    geometric_error_scale: str = "maximum"
+    geometric_error_scale: GeometricErrorScale = "maximum"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "source_asset_id",
@@ -289,23 +367,26 @@ class Tiles3DSource:
 
 _SOURCE_TYPES = (PointCloudSource, Tiles3DSource)
 
+StreamedSource = Union[PointCloudSource, Tiles3DSource]
 
-def _validate_source(source):
+
+def _validate_source(source: object) -> StreamedSource:
     if not isinstance(source, _SOURCE_TYPES):
         raise TypeError("source must be a PointCloudSource or Tiles3DSource")
     return source
 
 
-def _is_vtk_reconstitution(value):
+def _is_vtk_reconstitution(value: object) -> bool:
     return isinstance(value, str) and "_p_vtk" in value and value.endswith("Actor")
 
 
 class StreamedSceneActor(vtkActor):
     """A mapper-free VTK actor carrying one immutable streamed source."""
 
-    def __init__(self, source):
+    def __init__(self, source: StreamedSource) -> None:
         if _is_vtk_reconstitution(source):
-            super().__init__(source)
+            # VTK's stub omits the wrapped-pointer constructor argument.
+            super().__init__(source)  # type: ignore[call-arg]
             registration = _registration_for_actor(self)
             if registration is None or not isinstance(
                 registration.source, _SOURCE_TYPES
@@ -321,44 +402,46 @@ class StreamedSceneActor(vtkActor):
         _register_actor(self, self._source)
 
     @property
-    def source(self):
+    def source(self) -> StreamedSource:
         registered = _registered_source(self)
         return self._source if registered is None else registered
 
     @source.setter
-    def source(self, source):
+    def source(self, source: StreamedSource) -> None:
         self._source = _validate_source(source)
         _update_registered_source(self, self._source)
         self.Modified()
 
 
-def source_block(source):
+def source_block(source: StreamedSource) -> StreamedSceneBlock:
     """Create the JSON-ready ``streamedScene`` block for a source."""
-    common = {
+    common: _SourceBlockCommon = {
         "sourceAssetId": source.source_asset_id,
         "revision": source.revision,
         "endpoint": source.endpoint,
     }
     if isinstance(source, PointCloudSource):
-        config = {
+        config: PointCloudBlock = {
             "pointCount": source.point_count,
-            "presentation": dict(source.presentation),
+            "presentation": source.presentation.copy(),
             "adaptive": source.adaptive,
         }
         if source.adaptive_options is not None:
-            config["adaptiveOptions"] = dict(source.adaptive_options)
+            config["adaptiveOptions"] = source.adaptive_options.copy()
         if source.point_budget is not None:
             config["pointBudget"] = source.point_budget
         if source.refinement_cutoff_px is not None:
             config["refinementCutoffPx"] = source.refinement_cutoff_px
         return {"kind": "pointCloud", **common, "pointCloud": config}
 
-    config = {
+    tiles3d_config: Tiles3DBlock = {
         "tilesetToScene": list(source.tileset_to_scene),
         "verticalExaggeration": source.vertical_exaggeration,
         "verticalPivotZ": source.vertical_pivot_z,
         "geometricErrorScale": source.geometric_error_scale,
     }
     if source.maximum_screen_space_error_px is not None:
-        config["maximumScreenSpaceErrorPx"] = source.maximum_screen_space_error_px
-    return {"kind": "tiles3d", **common, "tiles3d": config}
+        tiles3d_config["maximumScreenSpaceErrorPx"] = (
+            source.maximum_screen_space_error_px
+        )
+    return {"kind": "tiles3d", **common, "tiles3d": tiles3d_config}

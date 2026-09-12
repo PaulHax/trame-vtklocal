@@ -1,13 +1,26 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import json
 import zipfile
 import base64
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, overload
 from trame_client.widgets.core import AbstractElement
+from vtkmodules.vtkCommonCore import vtkObjectBase
+from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+
 from trame_vtklocal import module
 
 from trame_common.exec.throttle import Throttle
+
+if TYPE_CHECKING:
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
+    from trame_vtklocal.module.protocol import ObjectManagerAPI
+    from trame_vtklocal.module.vtkjs_translator import VtkRef
 
 try:
     import zlib  # noqa
@@ -17,8 +30,19 @@ except ImportError:
     ZIP_COMPRESSION = zipfile.ZIP_STORED
 
 
-class HtmlElement(AbstractElement):
-    def __init__(self, _elem_name, children=None, **kwargs):
+class UpdateThrottle(Protocol):
+    """trame's ``Throttle`` around :meth:`LocalView.update`."""
+
+    rate: float
+
+    def __call__(self, *args: object, **kwargs: object) -> None: ...
+
+
+# trame_client ships no type information, so its base class is untyped here.
+class HtmlElement(AbstractElement):  # type: ignore[misc, no-any-unimported]
+    def __init__(
+        self, _elem_name: str, children: object = None, **kwargs: object
+    ) -> None:
         super().__init__(_elem_name, children, **kwargs)
         if self.server:
             # Remove the server reference from kwargs to avoid multiple args with same name.
@@ -27,8 +51,8 @@ class HtmlElement(AbstractElement):
             module.setup_wasm(self.server, **kwargs)
 
 
-def encode_blobs(blob_map):
-    result = {}
+def encode_blobs(blob_map: Mapping[str, Mapping[str, Iterable[int]]]) -> dict[str, str]:
+    result: dict[str, str] = {}
     for key in blob_map:
         result[key] = base64.b64encode(bytes(blob_map[key].get("bytes", []))).decode(
             "utf-8"
@@ -37,14 +61,14 @@ def encode_blobs(blob_map):
     return result
 
 
-def get_version():
+def get_version() -> str:
     from vtkmodules.vtkCommonCore import vtkVersion
 
     vtk_version = vtkVersion()
     return vtk_version.GetVTKVersion()
 
 
-def is_vtk_version_newer(major, min, patch):
+def is_vtk_version_newer(major: int, min: int, patch: int) -> bool:
     from vtkmodules.vtkCommonCore import vtkVersion
 
     vtk_version = vtkVersion()
@@ -106,20 +130,26 @@ class LocalView(HtmlElement):
 
     _next_id = 0
 
-    def __init__(self, render_window, throttle_rate=10, **kwargs):
+    def __init__(
+        self,
+        render_window: vtkRenderWindow,
+        throttle_rate: float = 10,
+        **kwargs: object,
+    ) -> None:
         # Register response callback if not overridden
         kwargs.setdefault("invoke_response", (self._on_invoke_response, "[$event]"))
-        self._pending_invoke_result = None
+        self._pending_invoke_result: asyncio.Future[object] | None = None
 
         super().__init__(
             "vtk-local",
             **kwargs,
         )
-        self.__registered_obj = []
-        self.__ref = kwargs.get("ref")
-        if self.__ref is None:
+        self.__registered_obj: list[vtkObjectBase] = []
+        ref = kwargs.get("ref")
+        if ref is None:
             LocalView._next_id += 1
-            self.__ref = f"_vtklocalview_{LocalView._next_id}"
+            ref = f"_vtklocalview_{LocalView._next_id}"
+        self.__ref = str(ref)
 
         # Must trigger update after registration
         self._render_window = render_window
@@ -149,25 +179,28 @@ class LocalView(HtmlElement):
         ]
 
         # Generate throttle update function
-        self._update_throttle = Throttle(self.update)
+        self._update_throttle: UpdateThrottle = Throttle(self.update)
         self._update_throttle.rate = throttle_rate
 
-    def _on_invoke_response(self, response):
+    def _on_invoke_response(self, response: object) -> None:
         if self._pending_invoke_result is None:
             return
         self._pending_invoke_result.set_result(response)
 
     @property
-    def api(self):
+    def api(self) -> ObjectManagerAPI:
         """Return API from helper"""
-        return module.get_helper(self.server).api
+        helper = module.get_helper(self.server)
+        if helper is None:
+            raise RuntimeError("trame_vtklocal is not enabled on this view's server")
+        return helper.api
 
     @property
-    def object_manager(self):
+    def object_manager(self) -> vtkObjectManager:
         """Return object_manager"""
         return self.api.vtk_object_manager
 
-    def eval(self, state_mapping):
+    def eval(self, state_mapping: Mapping[str, object]) -> None:
         """Evaluate WASM state extract and map it onto trame state variables
 
         >>> html_view.eval({
@@ -180,7 +213,7 @@ class LocalView(HtmlElement):
         """
         self.server.js_call(self.__ref, "evalStateExtract", state_mapping)
 
-    def detach_handler(self):
+    def detach_handler(self) -> None:
         """
         When using `use_handler=` property, you may reach a point where you
         want to free the global WASM handler on the client side.
@@ -190,7 +223,7 @@ class LocalView(HtmlElement):
         self.server.js_call(self.__ref, "detachHandler")
 
     @property
-    def update_throttle(self):
+    def update_throttle(self) -> UpdateThrottle:
         """Throttled update method on which you can update its rate by doing
 
         >>> html_view.update_throttle.rate = 15  # time per second
@@ -198,7 +231,7 @@ class LocalView(HtmlElement):
         """
         return self._update_throttle
 
-    def update(self, push_camera=False):
+    def update(self, push_camera: bool = False) -> None:
         """Sync view by pushing updates to client"""
         self.api.update(
             push_camera=push_camera,
@@ -206,7 +239,7 @@ class LocalView(HtmlElement):
         )
         self.server.js_call(self.__ref, "update")
 
-    def register_vtk_object(self, vtk_instance):
+    def register_vtk_object(self, vtk_instance: vtkObjectBase) -> int:
         """Register external element (i.e. widget) into the scene so it can be managed and return its wasm_id"""
         if vtk_instance not in self.__registered_obj:
             self.api.register_widget(self._render_window, vtk_instance)
@@ -215,7 +248,7 @@ class LocalView(HtmlElement):
 
         return self.get_wasm_id(vtk_instance)
 
-    def unregister_vtk_object(self, vtk_instance):
+    def unregister_vtk_object(self, vtk_instance: vtkObjectBase) -> bool:
         """Unregister external element (i.e. widget) from the scene so it can removed from tracking"""
         if vtk_instance in self.__registered_obj:
             self.api.unregister_widget(self._render_window, vtk_instance)
@@ -224,13 +257,13 @@ class LocalView(HtmlElement):
 
         return False
 
-    def unregister_all_vtk_objects(self):
+    def unregister_all_vtk_objects(self) -> None:
         """Unregister all external element (i.e. widget) from the scene"""
         for vtk_instance in list(self.__registered_obj):
             self.api.unregister_widget(self._render_window, vtk_instance)
         self.__registered_obj.clear()
 
-    def export(self, format="zip", **kwargs):
+    def export(self, format: str = "zip", **kwargs: object) -> bytes | None:
         """Export standalone scene for WASMViewer
 
         :param format: Can be either be "zip" or "json".
@@ -240,7 +273,7 @@ class LocalView(HtmlElement):
         states_file = Path(f"{base_name}.states.json")
         blobs_file = Path(f"{base_name}.blobs.json")
 
-        json_structure = {
+        json_structure: dict[str, object] = {
             "version": get_version(),
             "states": json.loads(states_file.read_text()),
             "blobs": encode_blobs(json.loads(blobs_file.read_text())),
@@ -262,66 +295,93 @@ class LocalView(HtmlElement):
                 )
 
             return zip_buffer.getvalue()
+        return None
 
-    def save(self, file_name, wasm_ids=None):
+    def save(
+        self, file_name: str | Path, wasm_ids: Sequence[int] | None = None
+    ) -> None:
         """Save zip file capturing state and blob data for a given render window"""
         if wasm_ids is None:
             wasm_ids = self.api.get_all_ids(self._window_id)
 
         self.api.dump_data(file_name, wasm_ids)
 
-    def reset_camera(self, renderer_or_render_window=None, **kwargs):
+    def reset_camera(
+        self,
+        renderer_or_render_window: vtkRenderer | vtkRenderWindow | None = None,
+        **kwargs: object,
+    ) -> None:
         """Reset camera by making the call on the client side"""
         if renderer_or_render_window is None:
             renderer_or_render_window = self._render_window
 
-        if renderer_or_render_window.IsA("vtkRenderWindow"):
+        if isinstance(renderer_or_render_window, vtkRenderWindow):
             renderer_or_render_window = (
                 renderer_or_render_window.GetRenderers().GetFirstRenderer()
             )
 
-        if renderer_or_render_window.IsA("vtkRenderer"):
+        if isinstance(renderer_or_render_window, vtkRenderer):
             id_to_reset_camera = self.get_wasm_id(renderer_or_render_window)
             self.server.js_call(self.__ref, "resetCamera", id_to_reset_camera)
 
     @property
-    def ref_name(self):
+    def ref_name(self) -> str:
         """Return the assigned name as a vue.js ref"""
         return self.__ref
 
-    def get_wasm_id(self, vtk_object):
+    @overload
+    def get_wasm_id(self, vtk_object: vtkObjectBase) -> int: ...
+
+    @overload
+    def get_wasm_id(self, vtk_object: object) -> object: ...
+
+    def get_wasm_id(self, vtk_object: object) -> object:
         """Return vtkObject id used within WASM scene manager"""
-        if hasattr(vtk_object, "IsA"):  # vtkObject
+        if isinstance(vtk_object, vtkObjectBase):
             return self.object_manager.GetId(vtk_object)
         return vtk_object
 
-    def get_wasm_obj_id(self, vtk_object):
+    @overload
+    def get_wasm_obj_id(self, vtk_object: vtkObjectBase) -> VtkRef: ...
+
+    @overload
+    def get_wasm_obj_id(self, vtk_object: object) -> object: ...
+
+    def get_wasm_obj_id(self, vtk_object: object) -> object:
         """Return vtkObject {Id: id} used within WASM scene manager"""
-        if hasattr(vtk_object, "IsA"):  # vtkObject
+        if isinstance(vtk_object, vtkObjectBase):
             return {"Id": self.object_manager.GetId(vtk_object)}
         return vtk_object
 
-    def get_vtk_obj(self, wasm_id):
+    def get_vtk_obj(self, wasm_id: int) -> vtkObjectBase | None:
         """Return corresponding VTK object"""
-        return self.object_manager.GetObjectAtId(wasm_id)
+        vtk_object: vtkObjectBase | None = self.object_manager.GetObjectAtId(wasm_id)
+        return vtk_object
 
-    def vtk_update_from_state(self, state_obj):
+    def vtk_update_from_state(self, state_obj: str | dict[str, object]) -> None:
         """Use a state from WASM to update a VTK object"""
         if isinstance(state_obj, dict):
             state_obj = json.dumps(state_obj)
 
         self.object_manager.UpdateObjectFromState(state_obj)
 
-    async def invoke(self, vtk_obj, method, *args, unwrap_vtk_object=True):
+    async def invoke(
+        self,
+        vtk_obj: object,
+        method: str,
+        *args: object,
+        unwrap_vtk_object: bool = True,
+    ) -> object:
         wasm_id = self.get_wasm_id(vtk_obj)
 
+        wasm_args: list[object]
         if is_vtk_version_newer(9, 5, 100):
-            args = list(map(self.get_wasm_obj_id, args))
+            wasm_args = list(map(self.get_wasm_obj_id, args))
         else:
-            args = list(map(self.get_wasm_id, args))
+            wasm_args = list(map(self.get_wasm_id, args))
 
         self._pending_invoke_result = asyncio.get_running_loop().create_future()
-        self.server.js_call(self.__ref, "invoke", wasm_id, method, args)
+        self.server.js_call(self.__ref, "invoke", wasm_id, method, wasm_args)
         await self._pending_invoke_result
         result_from_client = self._pending_invoke_result.result()
 
@@ -331,11 +391,11 @@ class LocalView(HtmlElement):
             and isinstance(result_from_client, dict)
             and "Id" in result_from_client
         ):
-            return self.get_vtk_obj(result_from_client.get("Id"))
+            return self.get_vtk_obj(result_from_client["Id"])
 
         return result_from_client
 
-    def print_scene_manager_information(self):
+    def print_scene_manager_information(self) -> None:
         self.server.js_call(self.__ref, "printSceneManagerInformation")
 
 

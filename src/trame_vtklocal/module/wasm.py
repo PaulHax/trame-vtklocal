@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import asyncio
+from collections.abc import Coroutine
 import aiohttp
 from pathlib import Path
 import os
@@ -7,7 +10,7 @@ import tarfile
 from packaging.version import parse
 
 
-def run_async(coroutine):
+def run_async(coroutine: Coroutine[object, object, None]) -> None:
     try:
         loop = asyncio.get_running_loop()
         if loop.is_running():
@@ -19,7 +22,7 @@ def run_async(coroutine):
         loop.run_until_complete(coroutine)
 
 
-async def download_file(url, filename):
+async def download_file(url: str | Path, filename: str) -> None:
     if isinstance(url, Path) or Path(url).exists():
         # just copy the file if it is a local file
         shutil.copyfile(url, filename)
@@ -31,7 +34,7 @@ async def download_file(url, filename):
                     f.write(data)
 
 
-async def setup_wasm_directory(target_directory, wasm_url):
+async def setup_wasm_directory(target_directory: Path, wasm_url: str | Path) -> None:
     # Need to install wasm
     target_directory.mkdir(parents=True, exist_ok=True)
 
@@ -48,7 +51,7 @@ async def setup_wasm_directory(target_directory, wasm_url):
     Path(dest_file).unlink()
 
 
-def get_wasm_info():
+def get_wasm_info() -> tuple[str, str]:
     from vtkmodules.vtkCommonCore import vtkVersion
 
     vtk_version = vtkVersion()
@@ -59,7 +62,7 @@ def get_wasm_info():
     return version, url
 
 
-def register_wasm(serve_path, **kwargs):
+def register_wasm(serve_path: str, **kwargs: object) -> dict[str, object]:
     """Register the VTK WebAssembly files in the given serve path.
     Keywords:
         wasm_url: The URL to the VTK WebAssembly files. It is used if wasm_dir is not provided and VTK_WASM_DIR_OVERRIDE
@@ -75,7 +78,12 @@ def register_wasm(serve_path, **kwargs):
     # get wasm directory from kwargs or environment variable
     wasm_dir = kwargs.get("wasm_dir", os.environ.get("VTK_WASM_DIR_OVERRIDE"))
     # if the wasm directory is provided, we copy the files from there
-    if wasm_dir and Path(wasm_dir).exists() and Path(wasm_dir).is_dir():
+    if (
+        isinstance(wasm_dir, (str, os.PathLike))
+        and wasm_dir
+        and Path(wasm_dir).exists()
+        and Path(wasm_dir).is_dir()
+    ):
         print(f"Using wasm_dir: {wasm_dir}")
         dest_directory.mkdir(parents=True, exist_ok=True)
         for src_file in Path(wasm_dir).rglob(f"{wasm_base_name}WebAssembly*"):
@@ -85,7 +93,9 @@ def register_wasm(serve_path, **kwargs):
             )
     else:
         # get wasm version and url
-        wasm_url = kwargs.get("wasm_url", wasm_url)
+        requested_url = kwargs.get("wasm_url", wasm_url)
+        if not isinstance(requested_url, (str, Path)):
+            raise TypeError("wasm_url must be a str or Path")
 
         # if the required wasm files do not exist, we need to download them
         # Versions before 9.5.20250531 use different WASM file naming conventions.
@@ -96,7 +106,7 @@ def register_wasm(serve_path, **kwargs):
                 not dest_directory.joinpath("vtkWasmSceneManager.mjs").exists()
                 or not dest_directory.joinpath("vtkWasmSceneManager.wasm").exists()
             ):
-                run_async(setup_wasm_directory(dest_directory, wasm_url))
+                run_async(setup_wasm_directory(dest_directory, requested_url))
         else:
             if (
                 not dest_directory.joinpath(f"{wasm_base_name}WebAssembly.mjs").exists()
@@ -110,7 +120,7 @@ def register_wasm(serve_path, **kwargs):
                     f"{wasm_base_name}WebAssemblyAsync.wasm"
                 ).exists()
             ):
-                run_async(setup_wasm_directory(dest_directory, wasm_url))
+                run_async(setup_wasm_directory(dest_directory, requested_url))
 
     return dict(
         state={

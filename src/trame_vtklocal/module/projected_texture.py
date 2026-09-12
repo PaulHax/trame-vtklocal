@@ -8,17 +8,43 @@ uploadTexture(key, source) and the mapper resolves them by textureKey at
 render time.
 """
 
+from __future__ import annotations
+
 import weakref
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Final, Literal, SupportsFloat, TypedDict
 
-PROJECTED_TEXTURE_TYPE = "vtkProjectedTextureMapper"
-MODE_HOMOGRAPHY = "homography"
-MODE_WORLD_TO_CLIP = "worldToClip"
-MODES = (MODE_HOMOGRAPHY, MODE_WORLD_TO_CLIP)
+if TYPE_CHECKING:
+    from vtkmodules.vtkCommonCore import vtkObjectBase
+    from vtkmodules.vtkRenderingCore import vtkMapper
 
-_MAPPER_CONFIGS = weakref.WeakKeyDictionary()
+ProjectedTextureMode = Literal["homography", "worldToClip"]
+
+PROJECTED_TEXTURE_TYPE: Final = "vtkProjectedTextureMapper"
+MODE_HOMOGRAPHY: Final = "homography"
+MODE_WORLD_TO_CLIP: Final = "worldToClip"
+MODES: tuple[ProjectedTextureMode, ...] = (MODE_HOMOGRAPHY, MODE_WORLD_TO_CLIP)
 
 
-def _as_matrix(value, size, name):
+class _ProjectedTextureConfigRequired(TypedDict):
+    textureKey: str
+    mode: ProjectedTextureMode
+
+
+class ProjectedTextureConfig(_ProjectedTextureConfigRequired, total=False):
+    homographyArrayName: str
+    homography: list[float]
+    worldToClip: list[float]
+
+
+_MAPPER_CONFIGS: weakref.WeakKeyDictionary[vtkObjectBase, ProjectedTextureConfig] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _as_matrix(
+    value: Iterable[SupportsFloat] | None, size: int, name: str
+) -> list[float] | None:
     if value is None:
         return None
     matrix = [float(v) for v in value]
@@ -28,11 +54,11 @@ def _as_matrix(value, size, name):
 
 
 def mark_projected_texture(
-    mapper,
-    texture_key,
-    mode=MODE_HOMOGRAPHY,
-    homography_array_name=None,
-):
+    mapper: vtkMapper,
+    texture_key: str,
+    mode: ProjectedTextureMode = MODE_HOMOGRAPHY,
+    homography_array_name: str | None = None,
+) -> ProjectedTextureConfig:
     """Mark a mapper to translate as a projected-texture mapper.
 
     mode "homography" samples through a mat3 on model XY (from the
@@ -45,7 +71,7 @@ def mark_projected_texture(
     if not texture_key:
         raise ValueError("texture_key is required")
 
-    config = {
+    config: ProjectedTextureConfig = {
         "textureKey": str(texture_key),
         "mode": mode,
     }
@@ -63,7 +89,11 @@ def mark_projected_texture(
     return config
 
 
-def set_projected_texture_matrix(mapper, homography=None, world_to_clip=None):
+def set_projected_texture_matrix(
+    mapper: vtkMapper,
+    homography: Iterable[SupportsFloat] | None = None,
+    world_to_clip: Iterable[SupportsFloat] | None = None,
+) -> ProjectedTextureConfig:
     """Update the marked mapper's projection matrix (column-major values)."""
     config = _MAPPER_CONFIGS.get(mapper)
     if config is None:
@@ -86,6 +116,6 @@ def set_projected_texture_matrix(mapper, homography=None, world_to_clip=None):
     return config
 
 
-def projected_texture_config(mapper):
+def projected_texture_config(mapper: vtkObjectBase) -> ProjectedTextureConfig | None:
     config = _MAPPER_CONFIGS.get(mapper)
-    return dict(config) if config else None
+    return config.copy() if config else None

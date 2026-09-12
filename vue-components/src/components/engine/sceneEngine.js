@@ -15,6 +15,12 @@
 // State applies IN the websocket handler (hidden tabs keep receiving
 // messages); only rendering defers to the host's rAF/repaint callbacks, so a
 // paused tab stays current with O(1) memory.
+//
+// A gate may hold an ops message whose resources (an external texture the
+// message names) have not arrived. Held messages keep their order, so later
+// messages wait behind them; each applies when the gate releases it, or at
+// its deadline regardless, so a resource that never arrives costs at most
+// one hold. Snapshots are never held.
 
 import { base64ToArrayBuffer } from "../sync/base64";
 
@@ -44,11 +50,19 @@ export function createSceneEngine({
   mirror,
   cache,
   callbacks = {},
+  gate = null,
 }) {
   const session = client.getConnection().getSession();
   const commandHandlers = new Map(); // name -> Set(callback)
+  const holdMs = gate?.holdMs ?? 250;
 
   let mySeq = -1;
+  // The seq of the last message routed in order (applied or held); the
+  // consistency rule runs against it so messages behind a held one queue
+  // instead of reading as a gap.
+  let routedSeq = -1;
+  let held = []; // { message, deadline }, in seq order
+  let holdTimer = null;
   let live = false;
   let buffer = [];
   let subscription = null;
@@ -120,20 +134,72 @@ export function createSceneEngine({
     }
   }
 
-  function routeMessage(message) {
-    if (message.seq <= mySeq) {
-      return;
-    }
-    if (message.baseSeq !== mySeq) {
-      resync("seq-gap");
-      return;
-    }
+  function applyRouted(message) {
     try {
       applyOpsMessage(message);
     } catch (error) {
       console.warn(`[sceneEngine] apply failed: ${error.message}`);
       resync("apply-failed", { reset: true });
     }
+  }
+
+  function shouldHold(message) {
+    try {
+      return gate?.hold?.(message) === true;
+    } catch (error) {
+      console.warn(`[sceneEngine] gate failed: ${error.message}`);
+      return false;
+    }
+  }
+
+  function clearHeld() {
+    held = [];
+    clearTimeout(holdTimer);
+    holdTimer = null;
+  }
+
+  function armHoldTimer() {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    if (!held.length) return;
+    const delay = Math.max(0, held[0].deadline - Date.now());
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      drainHeld();
+    }, delay);
+  }
+
+  // Apply held messages in order until one the gate still holds before its
+  // deadline. A message past its deadline applies whatever the gate says.
+  function drainHeld() {
+    while (held.length && live && !stopped) {
+      const { message, deadline } = held[0];
+      if (Date.now() < deadline && shouldHold(message)) break;
+      held.shift();
+      applyRouted(message);
+    }
+    armHoldTimer();
+  }
+
+  function retryHeld() {
+    if (held.length) drainHeld();
+  }
+
+  function routeMessage(message) {
+    if (message.seq <= routedSeq) {
+      return;
+    }
+    if (message.baseSeq !== routedSeq) {
+      resync("seq-gap");
+      return;
+    }
+    routedSeq = message.seq;
+    if (held.length || shouldHold(message)) {
+      held.push({ message, deadline: Date.now() + holdMs });
+      if (held.length === 1) armHoldTimer();
+      return;
+    }
+    applyRouted(message);
   }
 
   function handleMessage(message) {
@@ -170,6 +236,7 @@ export function createSceneEngine({
     resyncInFlight = true;
     live = false;
     buffer = [];
+    clearHeld();
     try {
       if (reset) {
         // Instances and mirror may have diverged mid-message; rebuild from
@@ -199,6 +266,7 @@ export function createSceneEngine({
         reconciler.applySnapshot(snapshot.nodes || {}, mirror, cache);
         mirror.gcBlobCache(cache);
         mySeq = snapshot.seq;
+        routedSeq = mySeq;
         lastAppliedOp = { kind: "snapshot" };
         applied = true;
       } catch (error) {
@@ -253,6 +321,7 @@ export function createSceneEngine({
     resyncInFlight = false;
     live = false;
     buffer = [];
+    clearHeld();
     if (subscription) {
       session.unsubscribe(subscription);
       subscription = null;
@@ -292,6 +361,7 @@ export function createSceneEngine({
       mirrorSize: mirror.size(),
       lastAppliedOp,
       bufferLength: buffer.length,
+      heldLength: held.length,
     };
   }
 
@@ -300,6 +370,7 @@ export function createSceneEngine({
     stop,
     resync,
     onCommand,
+    retryHeld,
     getSeq,
     getDiagnostics,
   };

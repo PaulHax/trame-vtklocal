@@ -65,6 +65,8 @@ export const COMMON_VIEW_API_KEYS = Object.freeze([
   "requestFrameIfNeeded",
   "onSceneApplied",
   "onPaintCompleted",
+  "registerSceneGate",
+  "retrySceneGate",
   "getAppliedCommand",
   "onCommand",
   "getInstance",

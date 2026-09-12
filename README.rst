@@ -278,3 +278,17 @@ Professional Support
 * `Training <https://www.kitware.com/courses/trame/>`_: Learn how to confidently use trame from the expert developers at Kitware.
 * `Support <https://www.kitware.com/trame/support/>`_: Our experts can assist your team as you build your web application and establish in-house expertise.
 * `Custom Development <https://www.kitware.com/trame/support/>`_: Leverage Kitware’s 25+ years of experience to quickly build your web application.
+
+Scene gate for external resources
+---------------------------------
+
+``VtkJsSharedView`` exposes ``registerSceneGate(hold)`` and
+``retrySceneGate()``. ``hold(message)`` receives each in-order scene ops
+message before it applies and returns ``true`` to hold it, for example while
+the video frame a retained ``video.frame.<key>`` command names has not
+arrived. Held messages keep their order, so later messages queue behind them.
+Call ``retrySceneGate()`` when the awaited resource lands; a held message also
+applies at its deadline (250 ms) whatever the gate says, so a resource that
+never arrives costs one hold, not a stalled view. Snapshots are never held.
+The registration disposer releases anything the gate held.
+

@@ -82,6 +82,7 @@ export function useSceneSync(
   let renderRequestCallback = null;
   const sceneAppliedCallbacks = new Set();
   const commandRegistrations = new Set(); // { name, callback } — survive re-init
+  const sceneGates = new Set(); // hold predicates — survive re-init
   let syncedRootId = null;
   let renderedCamera = null;
   let clientCamera = null;
@@ -195,6 +196,25 @@ export function useSceneSync(
     return () => {
       sceneAppliedCallbacks.delete(callback);
     };
+  }
+
+  // hold(message) answers whether an ops message must wait for a resource
+  // the caller has not received yet. Held messages apply in order when the
+  // caller retries, or at the engine's deadline. Disposing a gate releases
+  // whatever it held.
+  function registerSceneGate(hold) {
+    if (typeof hold !== "function") {
+      return () => {};
+    }
+    sceneGates.add(hold);
+    return () => {
+      sceneGates.delete(hold);
+      engine?.retryHeld?.();
+    };
+  }
+
+  function retrySceneGate() {
+    engine?.retryHeld?.();
   }
 
   function onPaintCompleted(callback) {
@@ -477,6 +497,14 @@ export function useSceneSync(
       reconciler,
       mirror,
       cache: blobCache,
+      gate: {
+        hold: (message) => {
+          for (const hold of sceneGates) {
+            if (hold(message) === true) return true;
+          }
+          return false;
+        },
+      },
       callbacks: {
         beforeSnapshot() {
           appliedCommands.clear();
@@ -545,6 +573,7 @@ export function useSceneSync(
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
     paintCompletedCallbacks.clear();
+    sceneGates.clear();
   }
 
   function getSyncDiagnostics() {
@@ -555,6 +584,7 @@ export function useSceneSync(
       mirrorSize = 0,
       lastAppliedOp = null,
       bufferLength = 0,
+      heldLength = 0,
     } = engine?.getDiagnostics?.() ?? {};
     let cacheBytes = 0;
     if (blobCache) {
@@ -576,6 +606,7 @@ export function useSceneSync(
       mirrorSize,
       lastAppliedOp,
       queueLength: bufferLength,
+      heldLength,
       syncedRootId,
       rendering: {
         preparedFrameSerial,
@@ -983,6 +1014,8 @@ export function useSceneSync(
     endCameraInteraction,
     onSceneApplied,
     onPaintCompleted,
+    registerSceneGate,
+    retrySceneGate,
     getAppliedCommand: (name) => appliedCommands.get(name),
     onCommand,
     getInstance,

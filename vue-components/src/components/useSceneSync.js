@@ -10,42 +10,30 @@ import { buildInstance } from "./instanceFactory";
 import { createReconciler } from "./engine/reconcile";
 import { createSceneEngine } from "./engine/sceneEngine";
 import { dumpAppliedScene } from "./dumpAppliedScene";
+import { registerBlockHandlers } from "./blockHandlers";
+import { createCameraReports } from "./cameraReports";
 import {
-  applyDistanceToCameraBlock,
   createDistanceToCameraGlyphRegistry,
   describeDistanceToCameraGlyphRegistry,
   updateDistanceToCameraGlyphs,
-  DISTANCE_TO_CAMERA_BLOCK_KEY,
 } from "./distanceToCameraGlyphs";
 import {
-  applyPickableBlock,
   createPickableRegistry,
   describePickableRegistry,
   pickAt as pickAtRegistry,
   resolvePickableMapper,
-  PICKABLE_BLOCK_KEY,
 } from "./pickables";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 import { createRegistrationGesture } from "./registrationGesture";
 import {
   createStreamedSceneHost,
   enrichGestureWithCloudSolve,
-  STREAMED_SCENE_BLOCK_KEY,
 } from "./streamedSceneHost";
-import {
-  applyPointCloudPresentationBlock,
-  updatePointCloudPresentations,
-  POINT_CLOUD_PRESENTATION_BLOCK_KEY,
-} from "./pointCloudPresentation";
+import { updatePointCloudPresentations } from "./pointCloudPresentation";
 import { createPickableGestures } from "./pickableGestures";
 import { createDragPreview } from "./dragPreview";
+import { createPresentationFeedback } from "./presentationFeedback";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
-
-const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
-// Above any real refresh period, below the pause that separates one burst of
-// painting from the next. An interval longer than this spans idle time even
-// when the paint inside it was cheap.
-const IDLE_PRESENTATION_GAP_MS = 80;
 
 export function useSceneSync(
   {
@@ -82,11 +70,6 @@ export function useSceneSync(
   let syncedRootId = null;
   let renderedCamera = null;
   let clientCamera = null;
-  // One entry per open camera gesture, holding that gesture's `report` flag.
-  const cameraInteractionStack = [];
-  let cameraReportOptions = { during: "none", terminal: true };
-  let pendingCameraReport = false;
-  let cameraReportFrame = 0;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
   let streamedSceneHost = null;
@@ -96,35 +79,30 @@ export function useSceneSync(
   // state, not scene-sync state: the server owns it and only its pushes may
   // change it, so a scene re-initialization must not silently disarm.
   const registrationGesture = createRegistrationGesture();
-  // Once the host reports whole-frame metrics, the view's own presentation
-  // measurement stops being fed to the budget loop so the same frame is never
-  // counted twice.
-  let hostFrameFeedbackSeen = false;
-  // Presentation bookkeeping for the frames this view measures itself.
-  let presentationFrame = 0;
-  let pendingPaintMs = null;
-  let lastPresentedAt = null;
-  // Streamed members publish their selected/drawn state from beforeRender().
-  // Keep an explicit public paint boundary so support clients can distinguish
-  // that prepared state from pixels which have actually reached the canvas.
-  let preparedFrameSerial = 0;
-  let completedFrameSerial = 0;
-  const paintCompletedCallbacks = new Set();
   const appliedCommands = new Map();
-  let completedPreparedFrameSerial = 0;
-  let sceneSeqAtLastPaint = -1;
-  // Unlike the transport cursor, this advances only for a message that can
-  // change pixels. Empty ops messages deliberately do not request a paint, so
-  // consumers waiting for visual currency must compare against this watermark
-  // rather than mySeq.
-  let sceneSeqRequiringPaint = -1;
-
-  function requireScenePaint(message) {
-    const seq = Number(message?.seq);
-    if (Number.isFinite(seq)) {
-      sceneSeqRequiringPaint = Math.max(sceneSeqRequiringPaint, seq);
-    }
-  }
+  const presentation = createPresentationFeedback({
+    getRenderWindow: () => getRenderWindow?.() || null,
+    getStreamedSceneHost: () => streamedSceneHost,
+    getSceneSeq: () => engine?.getDiagnostics?.()?.mySeq ?? -1,
+    requestRender: () => renderRequestCallback?.(),
+  });
+  const cameraReports = createCameraReports({
+    readReport: () => {
+      const camera = bindPrimaryCameraToRenderers().camera;
+      if (!camera) return null;
+      return {
+        ...extractCameraParams(camera),
+        seq: getSeq(),
+        viewport: readGestureViewport(),
+      };
+    },
+    emit: (report) => emit?.("camera", report),
+    onInteractionStart: () => streamedSceneHost?.beginInteraction(),
+    onInteractionEnd: () => {
+      streamedSceneHost?.endInteraction();
+      renderRequestCallback?.();
+    },
+  });
 
   function ensureStreamedSceneHost() {
     if (!streamedSceneHost) {
@@ -133,7 +111,7 @@ export function useSceneSync(
         tiles3dTexturePolicy,
         tiles3dQualityPolicy,
       });
-      if (cameraInteractionStack.length > 0) {
+      if (cameraReports.isInteracting()) {
         streamedSceneHost.beginInteraction();
       }
     }
@@ -207,11 +185,6 @@ export function useSceneSync(
 
   function retrySceneGate() {
     engine?.retryHeld?.();
-  }
-
-  function onPaintCompleted(callback) {
-    paintCompletedCallbacks.add(callback);
-    return () => paintCompletedCallbacks.delete(callback);
   }
 
   // Register a handler for server commands riding scene.ops broadcasts.
@@ -364,16 +337,14 @@ export function useSceneSync(
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
-    cameraInteractionStack.length = 0;
+    cameraReports.reset();
     renderedCamera = null;
-    cancelCameraReport();
     distanceToCameraGlyphs.clear();
     pickables.clear();
     streamedSceneHost?.dispose();
     streamedSceneHost = null;
     pointCloudPresentations.clear();
-    hostFrameFeedbackSeen = false;
-    cancelPresentationReport();
+    presentation.reset();
     instances = null;
   }
 
@@ -394,54 +365,17 @@ export function useSceneSync(
       rootInstance: getRenderWindow(),
     });
 
-    reconciler.registerBlockHandler(
-      PICKABLE_BLOCK_KEY,
-      (nodeId, block, instance) => {
-        if (!block) {
-          gestures.cancelForNode(nodeId);
-          if (dragPreview.targets(nodeId)) dragPreview.end();
-        }
-        return applyPickableBlock(pickables, nodeId, block, instance);
+    registerBlockHandlers(reconciler, {
+      pickables,
+      onPickableRemoved: (nodeId) => {
+        gestures.cancelForNode(nodeId);
+        if (dragPreview.targets(nodeId)) dragPreview.end();
       },
-    );
-    reconciler.registerBlockHandler(
-      DISTANCE_TO_CAMERA_BLOCK_KEY,
-      (nodeId, block, instance) =>
-        applyDistanceToCameraBlock(
-          distanceToCameraGlyphs,
-          nodeId,
-          block,
-          instance,
-        ),
-    );
-    // Projected-texture props ride the block; the instance is already the
-    // fork's mapper subclass (the node's type selects it).
-    reconciler.registerBlockHandler(
-      PROJECTED_TEXTURE_BLOCK_KEY,
-      (nodeId, block, instance) => {
-        if (block && typeof instance?.set === "function") {
-          instance.set(block);
-        }
-      },
-    );
-    reconciler.registerBlockHandler(
-      STREAMED_SCENE_BLOCK_KEY,
-      (nodeId, block, instance) => {
-        // No host and nothing to apply means there is also nothing to remove.
-        if (!block && !streamedSceneHost) return;
-        ensureStreamedSceneHost().applyBlock(nodeId, block, instance);
-      },
-    );
-    reconciler.registerBlockHandler(
-      POINT_CLOUD_PRESENTATION_BLOCK_KEY,
-      (nodeId, block, instance) =>
-        applyPointCloudPresentationBlock(
-          pointCloudPresentations,
-          nodeId,
-          block,
-          instance,
-        ),
-    );
+      distanceToCameraGlyphs,
+      pointCloudPresentations,
+      getStreamedSceneHost: () => streamedSceneHost,
+      ensureStreamedSceneHost,
+    });
 
     engine = createSceneEngineImpl({
       client,
@@ -471,7 +405,7 @@ export function useSceneSync(
           afterApply(snapshot);
           emit?.("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
-          requireScenePaint(snapshot);
+          presentation.requireScenePaint(snapshot);
           if (!snapshot.commands?.some((command) => command?.render === true)) {
             renderRequestCallback?.();
           }
@@ -481,13 +415,13 @@ export function useSceneSync(
           afterApply(message);
           noteMessageApplied(message);
           if (!Array.isArray(message?.ops) || message.ops.length) {
-            requireScenePaint(message);
+            presentation.requireScenePaint(message);
             renderRequestCallback?.();
           }
         },
         onRenderRequested(message) {
           if (!disposed) {
-            requireScenePaint(message);
+            presentation.requireScenePaint(message);
             renderRequestCallback?.();
           }
         },
@@ -516,14 +450,14 @@ export function useSceneSync(
     // Force-end any drag in flight so its window listeners and pointer capture
     // don't outlive the view.
     gestures.teardown();
-    cancelCameraReport();
+    cameraReports.cancel();
     dragPreview.end();
     // The GL context is shared across views and outlives this one, so its
     // textures must be deleted explicitly, before the render window goes away.
     peekExternalTextures(getRenderWindow?.() || null)?.clear();
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
-    paintCompletedCallbacks.clear();
+    presentation.dispose();
     sceneGates.clear();
   }
 
@@ -559,13 +493,7 @@ export function useSceneSync(
       queueLength: bufferLength,
       heldLength,
       syncedRootId,
-      rendering: {
-        preparedFrameSerial,
-        completedFrameSerial,
-        completedPreparedFrameSerial,
-        sceneSeqAtLastPaint,
-        sceneSeqRequiringPaint,
-      },
+      rendering: presentation.describe(),
       appliedIdentity: {
         ...appliedIdentity,
         records: appliedIdentity.records.map((record) => ({
@@ -637,29 +565,9 @@ export function useSceneSync(
 
   // Apply all scene-derived render state before painting.
   function beforeRender() {
-    // vtk.js can notify RenderEvent from inside a view's explicit pre-paint
-    // hook. Both calls prepare the same paint, so retain one serial until that
-    // paint is reported complete. The coordinator uses this serial to make its
-    // admission drain idempotent.
-    if (preparedFrameSerial === completedPreparedFrameSerial) {
-      preparedFrameSerial += 1;
-      peekExternalTextures(getRenderWindow?.())?.beginPaint();
-    }
+    const frameSerial = presentation.preparePaint();
     updateDistanceToCameraGlyphsForRender();
-    updateStreamedSceneForRender(preparedFrameSerial);
-  }
-
-  function notePaintCompleted() {
-    completedFrameSerial += 1;
-    completedPreparedFrameSerial = preparedFrameSerial;
-    sceneSeqAtLastPaint = engine?.getDiagnostics?.()?.mySeq ?? -1;
-    const event = {
-      frameSerial: completedFrameSerial,
-      sceneSeq: sceneSeqAtLastPaint,
-      textures:
-        peekExternalTextures(getRenderWindow?.())?.paintedTextures() || [],
-    };
-    paintCompletedCallbacks.forEach((callback) => callback(event));
+    updateStreamedSceneForRender(frameSerial);
   }
 
   // The post-apply pass every applied message runs, snapshot or ops. Applying
@@ -669,86 +577,6 @@ export function useSceneSync(
     bindPrimaryCameraToRenderers();
     protectPreviewBindings();
     dragPreview.reapply(message);
-  }
-
-  // The adaptive budget never schedules a frame of its own: the host paints,
-  // reports the frame, and asks whether the view still owes the user another
-  // one. Without this the settled regime would stop measuring the moment the
-  // host went idle, and quality would freeze wherever motion left it.
-  function requestFrameWhileBudgetWorks() {
-    if (streamedSceneHost?.needsFrame()) renderRequestCallback?.();
-  }
-
-  function cancelPresentationReport() {
-    if (presentationFrame) {
-      globalThis.window?.cancelAnimationFrame?.(presentationFrame);
-    }
-    presentationFrame = 0;
-    pendingPaintMs = null;
-    lastPresentedAt = null;
-  }
-
-  // `hostFrameMs` is the interval between presentations, not how long a frame
-  // took to build. The budget loop reads the shortest intervals it sees as the
-  // display's refresh period, so a build duration teaches it a quantum far
-  // below the real one; it also cannot say whether a frame reached the
-  // display. So the report waits for the next presentation tick and carries
-  // the interval measured there.
-  //
-  // No `vtkFrameMs` accompanies it. That sibling names the streamed sub-pass
-  // inside a larger host frame and is divided by the fraction of a frame
-  // budgeted to it; this view's paint is the whole frame's work, so passing it
-  // there would inflate every measurement by the reciprocal of that fraction.
-  function schedulePresentationReport() {
-    if (presentationFrame) return;
-    presentationFrame = requestFrame((presentedAt) => {
-      presentationFrame = 0;
-      const paintMs = pendingPaintMs ?? 0;
-      pendingPaintMs = null;
-      const interval =
-        lastPresentedAt === null ? null : presentedAt - lastPresentedAt;
-      lastPresentedAt = presentedAt;
-      // An interval far longer than the work inside it spans idle time: a view
-      // that painted, sat still, and painted again has not slowed down, and
-      // reporting the gap as a frame cost drives quality to the floor.
-      const contiguous = Math.max(IDLE_PRESENTATION_GAP_MS, paintMs * 4);
-      const usable =
-        interval !== null && interval > 0 && interval <= contiguous;
-      if (usable && !hostFrameFeedbackSeen) {
-        streamedSceneHost?.recordHostFrame({
-          hostFrameMs: interval,
-          now: presentedAt,
-        });
-      }
-      // Asked on every presentation, including one whose interval was
-      // rejected: the budget loop only keeps measuring while something keeps
-      // painting, so a frame dropped for spanning idle time must still renew
-      // the request or the loop stops here.
-      requestFrameWhileBudgetWorks();
-    });
-  }
-
-  // The view measures each paint's wall-time and reports it here; it feeds the
-  // adaptive-quality budget loop for any streamed LOD cloud (a no-op when no
-  // cloud has adaptive enabled).
-  function recordFrameDuration(durationMs) {
-    if (hostFrameFeedbackSeen) return;
-    // Paints that coalesce into one presentation all count: the interval has
-    // to cover the work of every paint inside it.
-    pendingPaintMs = (pendingPaintMs ?? 0) + (durationMs || 0);
-    schedulePresentationReport();
-  }
-
-  function recordPaintDuration(durationMs) {
-    notePaintCompleted();
-    recordFrameDuration(durationMs);
-  }
-
-  function recordHostFrame(metrics) {
-    hostFrameFeedbackSeen = true;
-    cancelPresentationReport();
-    streamedSceneHost?.recordHostFrame(metrics);
-    requestFrameWhileBudgetWorks();
   }
 
   // Answer "what pickable glyph point is under (cssX, cssY)" from what this
@@ -824,85 +652,6 @@ export function useSceneSync(
     return view?.getCanvas?.() ?? null;
   }
 
-  function requestFrame(callback) {
-    return globalThis.window?.requestAnimationFrame?.(callback) || 0;
-  }
-
-  function cancelCameraReport() {
-    if (cameraReportFrame) {
-      globalThis.window?.cancelAnimationFrame?.(cameraReportFrame);
-    }
-    cameraReportFrame = 0;
-    pendingCameraReport = false;
-  }
-
-  function emitCameraReport(terminal = false) {
-    const camera = bindPrimaryCameraToRenderers().camera;
-    if (!camera) return false;
-    emit?.("camera", {
-      ...extractCameraParams(camera),
-      seq: getSeq(),
-      viewport: readGestureViewport(),
-      terminal: !!terminal,
-    });
-    return true;
-  }
-
-  function flushCameraReport() {
-    cameraReportFrame = 0;
-    if (!pendingCameraReport) return;
-    pendingCameraReport = false;
-    emitCameraReport(false);
-  }
-
-  function reportCamera({ terminal = false } = {}) {
-    if (terminal) {
-      cancelCameraReport();
-      return cameraReportOptions.terminal ? emitCameraReport(true) : false;
-    }
-    if (cameraReportOptions.during !== "interaction") return false;
-    pendingCameraReport = true;
-    if (!cameraReportFrame) cameraReportFrame = requestFrame(flushCameraReport);
-    return true;
-  }
-
-  function enableCameraReports({ during = "none", terminal = true } = {}) {
-    if (!["interaction", "none"].includes(during)) {
-      throw new Error("camera report 'during' must be 'interaction' or 'none'");
-    }
-    cameraReportOptions = { during, terminal: !!terminal };
-    if (during === "none") cancelCameraReport();
-  }
-
-  // Camera interaction is a stack, not a boolean: overlapping gesture sources
-  // (e.g. a wheel-idle timer and a drag) each begin/end independently, and the
-  // shared camera channel must stay live until the LAST one ends. A boolean
-  // would let one source's end silence another's in-flight reports. Each entry
-  // carries its own `report` flag, so an end can only retract what its begin
-  // pushed — the two can never drift apart.
-  function beginCameraInteraction({ report = true } = {}) {
-    cameraInteractionStack.push(!!report);
-    if (cameraInteractionStack.length === 1) {
-      streamedSceneHost?.beginInteraction();
-    }
-  }
-
-  function cameraInteraction() {
-    if (cameraInteractionStack.includes(true)) reportCamera();
-  }
-
-  // End the most recently opened camera gesture.
-  function endCameraInteraction() {
-    if (cameraInteractionStack.length === 0) return;
-    const reported = cameraInteractionStack.pop();
-    if (reported && !cameraInteractionStack.includes(true)) {
-      reportCamera({ terminal: true });
-    }
-    if (cameraInteractionStack.length > 0) return;
-    streamedSceneHost?.endInteraction();
-    renderRequestCallback?.();
-  }
-
   const dragPreview = createDragPreview({
     getCamera: () => bindPrimaryCameraToRenderers().camera,
     getViewportMetrics: () =>
@@ -948,13 +697,13 @@ export function useSceneSync(
     getRenderers,
     setRenderedCamera,
     getRenderedCamera,
-    enableCameraReports,
-    reportCamera,
-    beginCameraInteraction,
-    cameraInteraction,
-    endCameraInteraction,
+    enableCameraReports: cameraReports.enable,
+    reportCamera: cameraReports.report,
+    beginCameraInteraction: cameraReports.begin,
+    cameraInteraction: cameraReports.interaction,
+    endCameraInteraction: cameraReports.end,
     onSceneApplied,
-    onPaintCompleted,
+    onPaintCompleted: presentation.onPaintCompleted,
     registerSceneGate,
     retrySceneGate,
     getAppliedCommand: (name) => appliedCommands.get(name),
@@ -970,10 +719,10 @@ export function useSceneSync(
     setEmitBackgroundClick: gestures.setEmitBackgroundClick,
     setShouldGrab: gestures.setShouldGrab,
     beforeRender,
-    recordFrameDuration,
-    recordPaintDuration,
-    recordHostFrame,
-    requestFrameIfNeeded: requestFrameWhileBudgetWorks,
+    recordFrameDuration: presentation.recordFrameDuration,
+    recordPaintDuration: presentation.recordPaintDuration,
+    recordHostFrame: presentation.recordHostFrame,
+    requestFrameIfNeeded: presentation.requestFrameIfNeeded,
     getSyncDiagnostics,
     getAppliedSceneState,
   };

@@ -1,7 +1,7 @@
 """Flat-node translator tests.
 
 Every scene runs the same caller choreography as ``vtkjs_base``: register the
-render window, ``Render()`` under the dtc bypass, ``UpdateStatesFromObjects()``.
+render window, ``Render()``, ``UpdateStatesFromObjects()``.
 Mutation steps refresh states *without* re-rendering so camera/light state
 stays inert and node diffs isolate exactly the mutated objects.
 """
@@ -26,9 +26,9 @@ from push_oracle.scenes import (
     make_two_stage_pipeline_scene,
 )
 from trame_vtklocal.module.vtkjs_translator import map_class_name
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import projected_texture as ptx
+from trame_vtklocal.module.screen_size_glyphs import mark_screen_size_glyphs
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.array_datatypes import js_datatype
 from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
@@ -46,9 +46,8 @@ from trame_vtklocal.widgets.blob_payloads import (
 
 def _wrap_scene(name, api, render_window, handles):
     render_window_id = api.vtk_object_manager.RegisterObject(render_window)
-    with dtc.bypass_distance_to_camera_for_serialization(render_window):
-        render_window.Render()
-        api.vtk_object_manager.UpdateStatesFromObjects()
+    render_window.Render()
+    api.vtk_object_manager.UpdateStatesFromObjects()
     return OracleScene(
         name=name,
         api=api,
@@ -58,14 +57,13 @@ def _wrap_scene(name, api, render_window, handles):
     )
 
 
-def make_glyph_scene(name="glyph_dtc"):
-    """Glyph mapper fed by a vtkDistanceToCamera filter (screen-size glyphs)."""
+def make_glyph_scene(name="glyph_screen_size"):
+    """Glyph mapper marked for screen-size glyphs."""
     from vtkmodules.vtkCommonCore import vtkFloatArray, vtkPoints
     from vtkmodules.vtkCommonDataModel import vtkPolyData
     from vtkmodules.vtkFiltersSources import vtkSphereSource
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
-        vtkDistanceToCamera,
         vtkGlyph3DMapper,
         vtkRenderer,
         vtkRenderWindow,
@@ -89,18 +87,13 @@ def make_glyph_scene(name="glyph_dtc"):
     rotation.InsertNextTuple3(0.0, 0.0, -0.5)
     centers.GetPointData().AddArray(rotation)
 
-    distance_filter = vtkDistanceToCamera()
-    distance_filter.SetInputData(centers)
-    distance_filter.SetScreenSize(36)
-
     source = vtkSphereSource()
     source.Update()
 
     mapper = vtkGlyph3DMapper()
-    mapper.SetInputConnection(distance_filter.GetOutputPort())
+    mapper.SetInputData(centers)
     mapper.SetSourceData(source.GetOutput())
-    mapper.SetScaleArray("DistanceToCamera")
-    mapper.SetScaleModeToScaleByMagnitude()
+    mark_screen_size_glyphs(mapper, 36)
     mapper.SetOrientationArray("GlyphRotation")
     mapper.SetOrientationModeToRotation()
     mapper.OrientOn()
@@ -117,7 +110,6 @@ def make_glyph_scene(name="glyph_dtc"):
         "mapper": mapper,
         "centers": centers,
         "centers_points": points,
-        "filter": distance_filter,
         "source_output": source.GetOutput(),
     }
     return _wrap_scene(name, api, render_window, handles)
@@ -264,8 +256,7 @@ SCENE_FACTORIES = [
 
 def refresh(scene):
     """Caller choreography for a re-translate after mutations (no Render)."""
-    with dtc.bypass_distance_to_camera_for_serialization(scene.render_window):
-        scene.api.vtk_object_manager.UpdateStatesFromObjects()
+    scene.api.vtk_object_manager.UpdateStatesFromObjects()
 
 
 def translate(scene):
@@ -485,7 +476,7 @@ def test_add_then_remove_actor_round_trips_through_the_store():
 # ----------------------------------------------------------------------
 
 
-def test_distance_to_camera_glyph_mapper_bypasses_the_filter():
+def test_screen_size_glyph_mapper_carries_its_block():
     scene = make_glyph_scene()
     nodes = translate(scene)
 
@@ -504,15 +495,9 @@ def test_distance_to_camera_glyph_mapper_bypasses_the_filter():
     assert node["blocks"]["distanceToCamera"] == {
         "arrayName": "DistanceToCamera",
         "screenSize": 36.0,
-        "inputDataObjectId": centers_id,
     }
 
-    # The algorithm itself never becomes a node.
-    assert all(n["type"] != "vtkDistanceToCamera" for n in nodes.values())
-    filter_id = scene.api.vtk_object_manager.GetId(scene.handles["filter"])
-    assert str(filter_id) not in nodes
-
-    # The pre-filter dataset is a normal dataset node with its points array.
+    # The glyph centers are a normal dataset node with their points array.
     assert nodes[centers_id]["type"] == "vtkPolyData"
     assert nodes[centers_id]["arrays"]["points"]["ref"].startswith("c:")
 

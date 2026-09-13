@@ -23,13 +23,6 @@ function validArrayName(value) {
   return typeof value === "string" && value.length > 0;
 }
 
-function validObjectId(value) {
-  return (
-    (typeof value === "string" && value.length > 0) ||
-    (Number.isInteger(value) && value > 0)
-  );
-}
-
 function normalizeConfig(config) {
   if (!config || typeof config !== "object") {
     return null;
@@ -40,17 +33,12 @@ function normalizeConfig(config) {
     return null;
   }
 
-  if (!validObjectId(config.inputDataObjectId)) {
-    return null;
-  }
-
   const maxScale = Number(config.maxScale);
   return {
     screenSize,
     arrayName: validArrayName(config.arrayName)
       ? config.arrayName
       : DEFAULT_DISTANCE_TO_CAMERA_ARRAY,
-    inputDataObjectId: String(config.inputDataObjectId),
     // null (not DEFAULT_MAX_SCALE) when the app gives no explicit cap, so the
     // per-update path derives a scene-proportional cap from the point extent.
     maxScale: isPositiveFinite(maxScale) ? maxScale : null,
@@ -58,16 +46,10 @@ function normalizeConfig(config) {
 }
 
 // Block handler for the reconcile engine: `distanceToCamera` block changes
-// land here as (nodeId, block|null, instance). The input dataset resolves
-// through the synchronizer context by the block's inputDataObjectId; when it
-// is not live yet, the entry stays pending and resolves at render time.
-export function applyDistanceToCameraBlock(
-  registry,
-  nodeId,
-  block,
-  instance,
-  synchronizerContext,
-) {
+// land here as (nodeId, block|null, instance). The glyph centers are the
+// mapper's own input; the entry stays pending until the render-time update
+// finds both the mapper and that input live.
+export function applyDistanceToCameraBlock(registry, nodeId, block, instance) {
   if (!registry || nodeId == null) {
     return registry;
   }
@@ -79,46 +61,20 @@ export function applyDistanceToCameraBlock(
     return registry;
   }
 
-  const mapper = isLiveInstance(instance)
-    ? instance
-    : synchronizerContext?.getInstance?.(id);
-  const input = synchronizerContext?.getInstance?.(config.inputDataObjectId);
-
-  if (!isLiveInstance(mapper) || !isLiveInstance(input)) {
-    registry.set(id, {
-      id,
-      mapper: null,
-      input: null,
-      ...config,
-      lastSignature: null,
-      pending: true,
-    });
-    return registry;
-  }
-
   const previous = registry.get(id);
   const unchanged =
     previous &&
-    previous.mapper === mapper &&
-    previous.input === input &&
+    previous.mapper === instance &&
     previous.screenSize === config.screenSize &&
     previous.arrayName === config.arrayName &&
-    previous.inputDataObjectId === config.inputDataObjectId &&
     previous.maxScale === config.maxScale;
-
-  if (mapper.getInputData?.(0) !== input) {
-    mapper.setInputData?.(input, 0);
-  }
-  mapper.setScaleArray?.(config.arrayName);
-
   registry.set(id, {
-    ...(unchanged ? previous : {}),
     id,
-    mapper,
-    input,
+    mapper: isLiveInstance(instance) ? instance : null,
+    input: unchanged ? previous.input : null,
     ...config,
     lastSignature: unchanged ? previous.lastSignature : null,
-    pending: false,
+    pending: !unchanged || previous.pending,
   });
   return registry;
 }
@@ -270,7 +226,6 @@ function entrySignature(entry, camera, input, points, metrics) {
     entry.screenSize,
     entry.arrayName,
     entry.maxScale,
-    entry.inputDataObjectId,
     camera?.getMTime?.() ?? 0,
     camera?.getPhysicalScale?.() ?? 1,
     input?.getMTime?.() ?? 0,
@@ -336,39 +291,27 @@ export function updateDistanceToCameraGlyphs(
 
   let updated = false;
   for (const [id, entry] of registry) {
-    const mapper = entry.mapper;
-    const input = entry.input;
-    const hasContextLookup =
-      typeof synchronizerContext?.getInstance === "function";
-    const contextMapper = hasContextLookup
-      ? synchronizerContext.getInstance(id)
-      : mapper;
-    const contextInput = hasContextLookup
-      ? synchronizerContext.getInstance(entry.inputDataObjectId)
-      : input;
-    const dependenciesLive =
-      isLiveInstance(contextMapper) && isLiveInstance(contextInput);
-    const dependenciesChanged =
-      contextMapper !== entry.mapper || contextInput !== entry.input;
-    if (dependenciesLive && (entry.pending || dependenciesChanged)) {
-      entry.mapper = contextMapper;
-      entry.input = contextInput;
-      entry.pending = false;
-      entry.lastSignature = null;
-      if (contextMapper.getInputData?.(0) !== contextInput) {
-        contextMapper.setInputData?.(contextInput, 0);
-      }
-      contextMapper.setScaleArray?.(entry.arrayName);
-    }
-    if (!dependenciesLive) {
+    const mapper =
+      typeof synchronizerContext?.getInstance === "function"
+        ? synchronizerContext.getInstance(id)
+        : entry.mapper;
+    const input = isLiveInstance(mapper) ? mapper.getInputData?.(0) : null;
+    if (!isLiveInstance(mapper) || !isLiveInstance(input)) {
       // The serialized configuration remains authoritative while either
       // runtime dependency is absent. A later render pass adopts replacements
       // without requiring the block owner to be upserted again.
-      entry.mapper = isLiveInstance(contextMapper) ? contextMapper : null;
-      entry.input = isLiveInstance(contextInput) ? contextInput : null;
+      entry.mapper = isLiveInstance(mapper) ? mapper : null;
+      entry.input = null;
       entry.pending = true;
       entry.lastSignature = null;
       continue;
+    }
+    if (entry.pending || mapper !== entry.mapper || input !== entry.input) {
+      entry.mapper = mapper;
+      entry.input = input;
+      entry.pending = false;
+      entry.lastSignature = null;
+      mapper.setScaleArray?.(entry.arrayName);
     }
 
     const points = entry.input?.getPoints?.();
@@ -454,7 +397,6 @@ export function describeDistanceToCameraGlyphRegistry(registry) {
       pending: !!entry.pending,
       arrayName: entry.arrayName,
       screenSize: entry.screenSize,
-      inputDataObjectId: entry.inputDataObjectId,
       mapperLive: isLiveInstance(entry.mapper),
       inputLive: isLiveInstance(entry.input),
       pointCount: input?.getPoints?.()?.getNumberOfPoints?.() ?? null,

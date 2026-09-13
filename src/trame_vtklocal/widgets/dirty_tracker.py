@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.node_translator import is_node_class
 from trame_vtklocal.widgets.dirty_batch import DirtyBatch
 
@@ -153,14 +152,7 @@ class DirtyTracker:
     def _mark_dirty(self, object_id: str | int) -> None:
         # Observers can fire during interpreter teardown when self.__dict__ is
         # already cleared; default-True _disposed makes that a silent no-op.
-        # The dtc rewire check drops the bypass's semantic-no-op input swaps,
-        # which fire ModifiedEvent from every layer that serializes (including
-        # ones with no handle on this tracker, e.g. the protocol blob GC).
-        if (
-            getattr(self, "_disposed", True)
-            or self._suppressed
-            or dtc.serialization_rewire_active()
-        ):
+        if getattr(self, "_disposed", True) or self._suppressed:
             return
         self._dirty_ids.add(str(object_id))
         self._swept_ids.discard(str(object_id))
@@ -213,10 +205,8 @@ class DirtyTracker:
     def sync_observers(self) -> None:
         """Rebuild the observer graph from the current dependency set."""
         object_manager = self._object_manager
-        render_window = object_manager.GetObjectAtId(self._rw_id)
         with self.suppress():
-            with dtc.bypass_distance_to_camera_for_serialization(render_window):
-                ids = list(object_manager.GetAllDependencies(self._rw_id))
+            ids = list(object_manager.GetAllDependencies(self._rw_id))
 
         pending_dirty_ids = set(self._dirty_ids)
         pending_swept_ids = set(self._swept_ids)
@@ -342,7 +332,7 @@ class DirtyTracker:
                     continue
 
                 producer = connection.GetProducer()
-                if producer is None or dtc.is_distance_to_camera_algorithm(producer):
+                if producer is None:
                     continue
 
                 self._observe_pipeline_producer(
@@ -363,11 +353,8 @@ class DirtyTracker:
         live_ids: set[str],
     ) -> str | None:
         data_object = None
-        if port_index == 0 and connection_index == 0:
-            _input_algorithm, data_object = dtc.mapper_distance_to_camera_input(mapper)
-
         get_input_data = getattr(mapper, "GetInputDataObject", None)
-        if data_object is None and get_input_data is not None:
+        if get_input_data is not None:
             try:
                 data_object = get_input_data(port_index, connection_index)
             except (TypeError, RuntimeError):
@@ -498,11 +485,6 @@ class DirtyTracker:
             mtime = vtk_obj.GetMTime()
             if mtime != previous:
                 self._mtimes[object_id] = mtime
-                # The bypass's input rewires advance mapper MTimes without
-                # changing anything real; a genuine change after the bypass
-                # always lands on a strictly larger MTime.
-                if dtc.mtime_is_rewire_noise(vtk_obj, mtime):
-                    continue
                 if object_id not in self._dirty_ids:
                     self._swept_ids.add(object_id)
                 self._dirty_ids.add(object_id)

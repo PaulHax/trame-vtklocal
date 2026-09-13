@@ -438,7 +438,6 @@ export function useSceneSync(
           nodeId,
           block,
           instance,
-          synchronizerContext,
         ),
     );
     // Projected-texture props ride the block; the instance is already the

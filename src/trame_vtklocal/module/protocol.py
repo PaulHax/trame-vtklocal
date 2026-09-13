@@ -4,7 +4,6 @@ import asyncio
 import zipfile
 import json
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 from wslink import register as _wslink_register
@@ -13,7 +12,6 @@ from wslink.websocket import LinkProtocol
 from vtkmodules.vtkSerializationManager import vtkObjectManager
 from vtkmodules.vtkCommonCore import vtkVersion
 
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.store import ref_manager_hashes
 
 if TYPE_CHECKING:
@@ -56,16 +54,6 @@ def map_id_mtime(object_manager: vtkObjectManager, vtk_id: int) -> tuple[int, in
     if vtk_obj is None:
         return (vtk_id, 0)
     return (vtk_id, vtk_obj.GetMTime())
-
-
-def object_for_id(
-    object_manager: vtkObjectManager, obj_id: int | str
-) -> vtkObjectBase | None:
-    try:
-        vtk_object: vtkObjectBase | None = object_manager.GetObjectAtId(int(obj_id))
-        return vtk_object
-    except (RuntimeError, TypeError, ValueError):
-        return None
 
 
 # wslink ships no type information, so its base class is untyped here.
@@ -182,32 +170,17 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
         return hashes
 
     def _active_object_blob_hashes(self) -> set[str]:
-        with self._bypass_distance_to_camera_for_push_views():
-            try:
-                active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
-            except (RuntimeError, TypeError, ValueError):
-                return set()
-            try:
-                return {
-                    str(value)
-                    for value in self.vtk_object_manager.GetBlobHashes(active_ids)
-                }
-            except (RuntimeError, TypeError, ValueError):
-                return set()
-
-    def _bypass_distance_to_camera_for_push_views(self) -> ExitStack[bool | None]:
-        stack = ExitStack()
         try:
-            for push_view in self._push_views.values():
-                render_window = getattr(push_view, "_render_window", None)
-                if render_window is not None:
-                    stack.enter_context(
-                        dtc.bypass_distance_to_camera_for_serialization(render_window)
-                    )
-            return stack
-        except Exception:
-            stack.close()
-            raise
+            active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
+        except (RuntimeError, TypeError, ValueError):
+            return set()
+        try:
+            return {
+                str(value)
+                for value in self.vtk_object_manager.GetBlobHashes(active_ids)
+            }
+        except (RuntimeError, TypeError, ValueError):
+            return set()
 
     def register_widget(self, root_obj: vtkObjectBase, dep_obj: vtkObjectBase) -> None:
         self.vtk_object_manager.RegisterObject(dep_obj)
@@ -240,18 +213,16 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
     ) -> None:
         self._push_camera = push_camera
 
-        with self._bypass_distance_to_camera_for_push_views():
-            if API_NO_IDS_UPDATE:  # <= 9.4.2
+        if API_NO_IDS_UPDATE:  # <= 9.4.2
+            self.vtk_object_manager.UpdateStatesFromObjects()
+        else:  # > 9.4.2
+            if obj_to_update is None:
                 self.vtk_object_manager.UpdateStatesFromObjects()
-            else:  # > 9.4.2
-                if obj_to_update is None:
-                    self.vtk_object_manager.UpdateStatesFromObjects()
-                else:
-                    ids = [
-                        self.vtk_object_manager.GetId(vtk_obj)
-                        for vtk_obj in obj_to_update
-                    ]
-                    self.vtk_object_manager.UpdateStatesFromObjects(ids)
+            else:
+                ids = [
+                    self.vtk_object_manager.GetId(vtk_obj) for vtk_obj in obj_to_update
+                ]
+                self.vtk_object_manager.UpdateStatesFromObjects(ids)
 
         if self._debug_state:
             self.vtk_object_manager.Export(f"snapshot-{self._debug_state_counter}")
@@ -289,8 +260,7 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
 
     @property
     def active_ids(self) -> Sequence[int]:
-        with self._bypass_distance_to_camera_for_push_views():
-            return self.vtk_object_manager.GetAllDependencies(0)
+        return self.vtk_object_manager.GetAllDependencies(0)
 
     @export_rpc("vtklocal.subscribe.update")
     def update_subscription(self, obj_id: int, delta: int) -> None:
@@ -335,20 +305,18 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id: int) -> ObjectStatus:
-        root_object = object_for_id(self.vtk_object_manager, obj_id)
-        with dtc.bypass_distance_to_camera_for_serialization(root_object):
-            ids: Sequence[int] = self.vtk_object_manager.GetAllDependencies(obj_id)
+        ids: Sequence[int] = self.vtk_object_manager.GetAllDependencies(obj_id)
 
-            # Add widgets ids without duplicate
-            ids_width_deps = list(ids)
-            if obj_id in self._widgets:
-                for dep_id in self._widgets[obj_id]:
-                    ids_width_deps += list(
-                        self.vtk_object_manager.GetAllDependencies(dep_id)
-                    )
-            ids = list(set(ids_width_deps))
+        # Add widgets ids without duplicate
+        ids_width_deps = list(ids)
+        if obj_id in self._widgets:
+            for dep_id in self._widgets[obj_id]:
+                ids_width_deps += list(
+                    self.vtk_object_manager.GetAllDependencies(dep_id)
+                )
+        ids = list(set(ids_width_deps))
 
-            hashes = self.vtk_object_manager.GetBlobHashes(ids)
+        hashes = self.vtk_object_manager.GetBlobHashes(ids)
         renderWindow = self.vtk_object_manager.GetObjectAtId(obj_id)
         ids_mtime = [map_id_mtime(self.vtk_object_manager, v) for v in ids]
         ignore_ids: list[int] = []

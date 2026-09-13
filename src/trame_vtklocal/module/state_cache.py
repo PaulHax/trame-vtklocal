@@ -116,6 +116,3 @@ class SceneReader:
             int(obj_id)
         )
         return vtk_object
-
-    def clear_state_cache(self) -> None:
-        self._states.clear()

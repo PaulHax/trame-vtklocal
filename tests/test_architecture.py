@@ -74,27 +74,21 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
-    # getattr-probed mapper/pipeline helpers with typed signatures for every
-    # VTK object they probe
-    "module/distance_to_camera.py": 431,
-    # one translator for every node kind, plus the shared-reader seam and the
-    # distance-to-camera block shape it emits
-    "module/node_translator.py": 450,
-    # wslink RPC surface + push-view blob registry with debounced GC
-    "module/protocol.py": 430,
+    # one translator for every node kind, plus the shared-reader seam
+    "module/node_translator.py": 421,
     # the node, op and commit shapes the store validates live beside it, since
     # it may import nothing else from the package
     "store.py": 506,
     # one concern (dirty candidates) but three observer graphs: objects,
-    # dataset children, pipeline producers — plus the dtc rewire-noise filter
-    "widgets/dirty_tracker.py": 519,
+    # dataset children, pipeline producers
+    "widgets/dirty_tracker.py": 501,
     # retained-copy differ plus the hot-array fast-path guard
     "widgets/hot_arrays.py": 438,
     # publish tick + wire encoding + resync + dropped-blob re-entry guard +
     # the hot-array fast-path dispatch in _commit_batch.
     # Next reduction: event_is_current() is a VTK-free, store-only predicate
     # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 558,
+    "widgets/publisher.py": 549,
 }
 
 

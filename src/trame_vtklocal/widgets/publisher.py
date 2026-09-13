@@ -24,7 +24,6 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.camera_authority import (
     CameraAuthority,
     validate_camera_authority,
@@ -319,20 +318,16 @@ class ScenePublisher:
             )
         if fast_result is not None:
             return fast_result
-        # One serialization scope for the whole tick: the dtc bypass walks
-        # every renderer's prop tree and rewires every dtc-fed mapper, so
-        # entering it once (not per step) halves that walk and the rewire
-        # MTime churn. Every VTK touch below is serialization work.
+        # Every VTK touch below is serialization work.
         with self._tracker.suppress():
-            with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                self._update_pipeline_producers(batch.producers)
-                self._refresh_object_states(batch.refresh_ids)
-                if batch.structural:
-                    # Translation reads class names from the live dependency
-                    # set, so rebuild it before translating added objects.
-                    self._tracker.sync_observers()
-                    self._refresh_translation_cache_index()
-                nodes = self._translate_candidates(batch.candidates)
+            self._update_pipeline_producers(batch.producers)
+            self._refresh_object_states(batch.refresh_ids)
+            if batch.structural:
+                # Translation reads class names from the live dependency set,
+                # so rebuild it before translating added objects.
+                self._tracker.sync_observers()
+                self._refresh_translation_cache_index()
+            nodes = self._translate_candidates(batch.candidates)
         tx = self._store.transact()
         for node_id, node in nodes.items():
             self._hot_arrays.apply(node_id, node, self._store.get(node_id), tx)
@@ -419,10 +414,9 @@ class ScenePublisher:
         """Render + refresh the whole window's serialized states (eager init)."""
         object_manager = self._object_manager
         with self._tracker.suppress():
-            with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                if hasattr(self._render_window, "Render"):
-                    self._render_window.Render()
-                object_manager.UpdateStatesFromObjects([self._rw_id])
+            if hasattr(self._render_window, "Render"):
+                self._render_window.Render()
+            object_manager.UpdateStatesFromObjects([self._rw_id])
         self._prune_object_manager()
 
     def _refresh_object_states(self, refresh_ids: Iterable[str]) -> None:
@@ -450,8 +444,6 @@ class ScenePublisher:
         # producer.Update() can fire ModifiedEvent downstream; the
         # commit-wide suppression keeps those out of the next tick.
         for producer in producers.values():
-            if dtc.is_distance_to_camera_algorithm(producer):
-                continue
             update = getattr(producer, "Update", None)
             if update is not None:
                 update()
@@ -462,14 +454,13 @@ class ScenePublisher:
 
     def _translate_full_scene(self) -> dict[str, SceneNode]:
         with self._tracker.suppress():
-            with dtc.bypass_distance_to_camera_for_serialization(self._render_window):
-                return translate_scene(
-                    self._object_manager,
-                    self._rw_id,
-                    camera_authority=self._camera_authority,
-                    state_cache=self._state_cache,
-                    class_names=self._class_names,
-                )
+            return translate_scene(
+                self._object_manager,
+                self._rw_id,
+                camera_authority=self._camera_authority,
+                state_cache=self._state_cache,
+                class_names=self._class_names,
+            )
 
     def _translate_candidates(
         self, candidate_ids: Iterable[str]

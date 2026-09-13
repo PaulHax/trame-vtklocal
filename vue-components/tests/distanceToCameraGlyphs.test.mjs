@@ -159,7 +159,7 @@ test("computeDistanceToCameraScales clamps degenerate projections", async () => 
   assert.equal(scales[0], 600);
 });
 
-test("distance-to-camera registry sizes the recorded filter input without server output", async () => {
+test("distance-to-camera registry sizes the mapper's own input", async () => {
   const [
     distanceToCameraGlyphs,
     vtkGlyph3DMapperMod,
@@ -173,18 +173,13 @@ test("distance-to-camera registry sizes the recorded filter input without server
   ]);
 
   const mapper = vtkGlyph3DMapperMod.default.newInstance();
-  const serverOutput = vtkPolyDataMod.default.newInstance();
-  mapper.setInputData(serverOutput);
-
   const filterInput = vtkPolyDataMod.default.newInstance();
   const points = vtkPointsMod.default.newInstance();
   points.setData(new Float32Array([0, 0, 0]), 3);
   filterInput.setPoints(points);
+  mapper.setInputData(filterInput);
 
-  const instances = new Map([
-    ["mapper", mapper],
-    ["filter-input", filterInput],
-  ]);
+  const instances = new Map([["mapper", mapper]]);
   const synchronizerContext = {
     getInstance: (id) => instances.get(String(id)),
   };
@@ -196,12 +191,9 @@ test("distance-to-camera registry sizes the recorded filter input without server
     {
       arrayName: "DistanceToCamera",
       screenSize: 40,
-      inputDataObjectId: "filter-input",
     },
     mapper,
-    synchronizerContext,
   );
-  assert.equal(mapper.getInputData(0), filterInput);
 
   const camera = {
     getMTime: () => 1,
@@ -248,7 +240,6 @@ test("distance-to-camera registry sizes the recorded filter input without server
   assert.ok(array);
   assert.equal(filterInput.getPointData().getScalars(), array);
   assertAlmostEqual(array.getData()[0], 0.1);
-  assert.ok(!serverOutput.getPointData().getArray("DistanceToCamera"));
 });
 
 test("distance-to-camera registry caps degenerate scales at the point-set extent", async () => {
@@ -273,10 +264,7 @@ test("distance-to-camera registry caps degenerate scales at the point-set extent
   filterInput.setPoints(points);
   mapper.setInputData(filterInput);
 
-  const instances = new Map([
-    ["mapper", mapper],
-    ["filter-input", filterInput],
-  ]);
+  const instances = new Map([["mapper", mapper]]);
   const synchronizerContext = {
     getInstance: (id) => instances.get(String(id)),
   };
@@ -288,10 +276,8 @@ test("distance-to-camera registry caps degenerate scales at the point-set extent
     {
       arrayName: "DistanceToCamera",
       screenSize: 40,
-      inputDataObjectId: "filter-input",
     },
     mapper,
-    synchronizerContext,
   );
 
   const camera = {
@@ -344,11 +330,9 @@ test("distance-to-camera registry honors lock-style projection zoom", async () =
   const points = vtkPointsMod.default.newInstance();
   points.setData(new Float32Array([0, 0, -10]), 3);
   filterInput.setPoints(points);
+  mapper.setInputData(filterInput);
 
-  const instances = new Map([
-    ["mapper", mapper],
-    ["filter-input", filterInput],
-  ]);
+  const instances = new Map([["mapper", mapper]]);
   const synchronizerContext = {
     getInstance: (id) => instances.get(String(id)),
   };
@@ -360,10 +344,8 @@ test("distance-to-camera registry honors lock-style projection zoom", async () =
     {
       arrayName: "DistanceToCamera",
       screenSize: 40,
-      inputDataObjectId: "filter-input",
     },
     mapper,
-    synchronizerContext,
   );
 
   const zoom = 1.75;
@@ -417,18 +399,16 @@ test("distance-to-camera registry resolves pending mapper state during render", 
   };
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
 
-  // The block can arrive before the input dataset instance resolves — the
-  // entry stays pending and resolves during the render-time update.
+  // The block can arrive before the mapper instance resolves — the entry
+  // stays pending and resolves during the render-time update.
   distanceToCameraGlyphs.applyDistanceToCameraBlock(
     registry,
     "mapper",
     {
       arrayName: "DistanceToCamera",
       screenSize: 20,
-      inputDataObjectId: "filter-input",
     },
     null,
-    synchronizerContext,
   );
 
   assert.equal(registry.get("mapper")?.pending, true);
@@ -438,8 +418,8 @@ test("distance-to-camera registry resolves pending mapper state during render", 
   const points = vtkPointsMod.default.newInstance();
   points.setData(new Float32Array([0, 0, 0]), 3);
   filterInput.setPoints(points);
+  mapper.setInputData(filterInput);
   instances.set("mapper", mapper);
-  instances.set("filter-input", filterInput);
 
   const camera = {
     getMTime: () => 1,
@@ -506,10 +486,8 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
   const mapper = vtkGlyph3DMapperMod.default.newInstance();
   const firstInput = makeInput(0);
   const replacementInput = makeInput(2);
-  const instances = new Map([
-    ["mapper", mapper],
-    ["filter-input", firstInput],
-  ]);
+  mapper.setInputData(firstInput);
+  const instances = new Map([["mapper", mapper]]);
   const synchronizerContext = {
     getInstance: (id) => instances.get(String(id)),
   };
@@ -520,10 +498,8 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
     {
       arrayName: "DistanceToCamera",
       screenSize: 20,
-      inputDataObjectId: "filter-input",
     },
     mapper,
-    synchronizerContext,
   );
 
   const camera = {
@@ -554,7 +530,7 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
     }),
     true,
   );
-  instances.set("filter-input", replacementInput);
+  mapper.setInputData(replacementInput);
 
   assert.equal(
     distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {

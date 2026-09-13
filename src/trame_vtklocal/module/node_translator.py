@@ -2,8 +2,8 @@
 
 Translates a ``vtkObjectManager`` scene into flat store nodes. Shared tables
 own class maps/fixups. Callers own render-window ``Render()`` /
-``UpdateStatesFromObjects()`` / dtc-bypass choreography (as the publisher
-does); the translator only reads object-manager state plus live objects.
+``UpdateStatesFromObjects()`` choreography (as the publisher does); the
+translator only reads object-manager state plus live objects.
 
 Client-authority cameras never become nodes or refs.
 """
@@ -16,11 +16,14 @@ from typing import TYPE_CHECKING, cast
 from vtkmodules.vtkCommonCore import vtkCollection
 from vtkmodules.vtkRenderingCore import vtkPointGaussianMapper
 
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.point_gaussian import validate_simple_points
+from trame_vtklocal.module.screen_size_glyphs import (
+    SCREEN_SIZE_GLYPHS_BLOCK,
+    screen_size_glyphs_config,
+)
 from trame_vtklocal.module.node_arrays import (
     glyph_mapper_array_props,
     polydata_array_entries,
@@ -46,15 +49,10 @@ from trame_vtklocal.module.vtkjs_translator import (
 from trame_vtklocal.streamed_scene import STREAMED_SCENE_TYPE
 
 if TYPE_CHECKING:
-    from vtkmodules.vtkCommonCore import vtkObjectBase
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
     from trame_vtklocal.module.state_cache import ParsedStateCache, VtkState
     from trame_vtklocal.store import ArrayEntry, RefSlot, SceneNode
-
-
-class DistanceToCameraBlock(dtc.DistanceToCameraConfig):
-    inputDataObjectId: str
 
 
 # The only ref slots a node may carry (state key -> slot name), keyed by
@@ -275,29 +273,6 @@ def _mapper_input_port_ids(reader: SceneReader, state: VtkState) -> list[int]:
     return port_ids
 
 
-def _distance_to_camera_block(
-    reader: SceneReader, vtkjs_type: str, vtk_mapper: vtkObjectBase
-) -> DistanceToCameraBlock | None:
-    """Distance-to-camera bypass block for a glyph mapper, or None."""
-    if vtkjs_type != "vtkGlyph3DMapper":
-        return None
-    translation = dtc.distance_to_camera_mapper_translation(vtk_mapper)
-    if not translation:
-        return None
-    input_id = dtc.ensure_registered_vtk_object(
-        reader.object_manager,
-        translation["inputDataObject"],
-        reader.clear_state_cache,
-    )
-    if not input_id:
-        return None
-    config: DistanceToCameraBlock = {
-        **translation["config"],
-        "inputDataObjectId": str(input_id),
-    }
-    return config
-
-
 def _translate_mapper(
     reader: SceneReader, state: VtkState, vtkjs_type: str
 ) -> SceneNode:
@@ -312,15 +287,11 @@ def _translate_mapper(
 
     if vtkjs_type == "vtkGlyph3DMapper":
         props.update(glyph_mapper_array_props(vtk_mapper))
+        screen_size = screen_size_glyphs_config(vtk_mapper)
+        if screen_size:
+            blocks[SCREEN_SIZE_GLYPHS_BLOCK] = screen_size
 
     input_ids = _mapper_input_port_ids(reader, state)
-    dtc_block = _distance_to_camera_block(reader, vtkjs_type, vtk_mapper)
-    if dtc_block:
-        # Port 0 bypasses the vtkDistanceToCamera algorithm: the client feeds
-        # the pre-filter dataset and applies screen-size scaling itself.
-        props["scaleArray"] = dtc_block["arrayName"]
-        blocks["distanceToCamera"] = dtc_block
-        input_ids = [int(dtc_block["inputDataObjectId"]), *input_ids[1:]]
     if input_ids:
         refs["inputs"] = [str(input_id) for input_id in input_ids]
 

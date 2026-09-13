@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from vtkmodules.vtkCommonCore import vtkBitArray
+from vtkmodules.vtkCommonDataModel import vtkDataObject
 
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.vtkjs_translator import (
     ATTRIBUTE_REGISTRATIONS,
     FIELD_DATA_GETTERS,
@@ -316,13 +316,34 @@ def polydata_array_entries(
     return arrays
 
 
+def _mapper_input_array_name(vtk_mapper: vtkObjectBase, index: int) -> str | None:
+    if index == 0:
+        get_scale_array = getattr(vtk_mapper, "GetScaleArray", None)
+        if get_scale_array is not None:
+            scale_array: str | None = get_scale_array()
+            if scale_array:
+                return scale_array
+
+    get_input_array_info = getattr(vtk_mapper, "GetInputArrayInformation", None)
+    if get_input_array_info is None:
+        return None
+    try:
+        info = get_input_array_info(index)
+    except TypeError:
+        return None
+    if not info:
+        return None
+    name: str | None = info.Get(vtkDataObject.FIELD_NAME())
+    return name or None
+
+
 def glyph_mapper_array_props(vtk_mapper: vtkObjectBase) -> dict[str, str]:
     """Recover vtkGlyph3DMapper array-name properties missing from VTK state."""
     props: dict[str, str] = {}
-    scale_array = dtc.mapper_input_array_name(vtk_mapper, index=0)
+    scale_array = _mapper_input_array_name(vtk_mapper, index=0)
     if scale_array:
         props["scaleArray"] = scale_array
-    orientation_array = dtc.mapper_input_array_name(vtk_mapper, index=3)
+    orientation_array = _mapper_input_array_name(vtk_mapper, index=3)
     if orientation_array:
         props["orientationArray"] = orientation_array
     return props

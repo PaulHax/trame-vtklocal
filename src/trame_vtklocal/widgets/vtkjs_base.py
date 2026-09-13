@@ -7,9 +7,6 @@ from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar, Union
 from trame_client.widgets.core import AbstractElement
 
 from trame_vtklocal import module
-from trame_vtklocal.module.distance_to_camera import (
-    bypass_distance_to_camera_for_serialization,
-)
 from trame_vtklocal.module.camera_authority import (
     CameraAuthority,
     validate_camera_authority,
@@ -114,14 +111,10 @@ class VtkJsBaseView(HtmlElement):
         self._ref = str(ref)
 
         self._render_window = render_window
-        with bypass_distance_to_camera_for_serialization(render_window):
-            self._window_id = self.object_manager.RegisterObject(render_window)
-            render_window.Render()
-            # Scope serialization to this view's window: the object manager is
-            # shared across views, and the no-arg overload would also serialize
-            # other views' glyph mappers whose vtkDistanceToCamera filters are
-            # not bypassed here (they execute renderer-less and error out).
-            self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
+        self._window_id = self.object_manager.RegisterObject(render_window)
+        render_window.Render()
+        # The object manager is shared across views: serialize this window only.
+        self.object_manager.UpdateStatesFromObjects([int(self._window_id)])
 
         self._publisher: ScenePublisher | None = None
         self._closed = False

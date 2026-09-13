@@ -28,7 +28,6 @@ from vtkmodules.vtkRenderingCore import (
 # so without this Render() segfaults when this module runs on its own.
 from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLRenderer  # noqa: F401
 
-from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.node_translator import translate_scene
 from trame_vtklocal.module.protocol import ObjectManagerAPI
 from trame_vtklocal.widgets.blob_payloads import resolve_ref_payload
@@ -93,9 +92,8 @@ def _point_cloud_scene(user_matrix=None, native_array_names=False):
     renderer.ResetCamera()
 
     rw_id = om.RegisterObject(render_window)
-    with dtc.bypass_distance_to_camera_for_serialization(render_window):
-        render_window.Render()
-        om.UpdateStatesFromObjects()
+    render_window.Render()
+    om.UpdateStatesFromObjects()
 
     nodes = translate_scene(om, rw_id)
     handles = {"object_manager": om, "mapper": mapper, "actor": actor}

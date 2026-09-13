@@ -73,9 +73,9 @@ def _iter_cell_array_children(cell_array: vtkObject | None) -> Iterator[vtkObjec
         return
 
     yield cell_array
-    yield from _iter_via_getters(
-        cell_array, ("GetData", "GetConnectivityArray", "GetOffsetsArray")
-    )
+    # Not GetData(): it copies the whole connectivity per call, never a dependency.
+    getters = ("GetConnectivityArray", "GetOffsetsArray")
+    yield from _iter_via_getters(cell_array, getters)
 
 
 def _iter_dataset_dirty_children(dataset: vtkObjectBase | None) -> Iterator[vtkObject]:

@@ -81,7 +81,7 @@ SIZE_BUDGETS = {
     # distance-to-camera block shape it emits
     "module/node_translator.py": 460,
     # wslink RPC surface + push-view blob registry with debounced GC
-    "module/protocol.py": 450,
+    "module/protocol.py": 430,
     # the node, op and commit shapes the store validates live beside it, since
     # it may import nothing else from the package
     "store.py": 506,
@@ -94,7 +94,7 @@ SIZE_BUDGETS = {
     # the hot-array fast-path dispatch in _commit_batch.
     # Next reduction: event_is_current() is a VTK-free, store-only predicate
     # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 606,
+    "widgets/publisher.py": 569,
 }
 
 

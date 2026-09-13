@@ -37,11 +37,12 @@ from trame_vtklocal.module.node_translator import (
 )
 from trame_vtklocal.module.node_arrays import restore_dataset_blobs
 from trame_vtklocal.module.state_cache import ParsedStateCache
-from trame_vtklocal.store import SceneStore
+from trame_vtklocal.store import REF_CELLS_PREFIX, SceneStore
 from trame_vtklocal.module.streamed_scene_registry import _StreamedSceneRegistry
 from trame_vtklocal.widgets.blob_payloads import (
     attach_binary,
     nodes_reference_missing_blob,
+    pack_cell_array_payload,
     resolve_ref_payload,
 )
 from trame_vtklocal.widgets.dirty_tracker import DirtyTracker
@@ -135,6 +136,9 @@ class ScenePublisher:
         self._store = SceneStore(self._rw_str)
         self._state_cache = ParsedStateCache()
         self._class_names: dict[str, str] = {}
+        # A c2: ref names its two content hashes, so its packed bytes never
+        # change while the ref is live; entries leave with the ref.
+        self._packed_cells: dict[str, bytes] = {}
         self._streamed_scene_registry = _StreamedSceneRegistry()
 
         self._hot_arrays = HotArrayDiffer(
@@ -273,6 +277,7 @@ class ScenePublisher:
         self._retained_commands.clear()
         self._state_cache.clear()
         self._class_names.clear()
+        self._packed_cells.clear()
         self._streamed_scene_registry.cleanup()
 
     def _schedule_publish(self) -> None:
@@ -383,6 +388,8 @@ class ScenePublisher:
         leaving = self._hot_arrays.take_released_refs()
         if result is not None:
             leaving |= result["refs_leaving"]
+        for ref in leaving:
+            self._packed_cells.pop(ref, None)
         self._notify_blob_registry(leaving)
         # A structural batch already rebuilt the observer graph and both index
         # caches in _commit_batch, before translation; nothing between there
@@ -545,7 +552,13 @@ class ScenePublisher:
     # ------------------------------------------------------------------
 
     def _resolve_ref_payload(self, ref: str) -> bytes:
-        return resolve_ref_payload(self._object_manager, ref, self._live_hot_array)
+        if not ref.startswith(REF_CELLS_PREFIX):
+            return resolve_ref_payload(self._object_manager, ref, self._live_hot_array)
+        packed = self._packed_cells.get(ref)
+        if packed is None:
+            packed = pack_cell_array_payload(self._object_manager, ref)
+            self._packed_cells[ref] = packed
+        return packed
 
     def _attach_binary(self, message: OpsMessage | ResyncPayload) -> None:
         attach_binary(self._api, message)

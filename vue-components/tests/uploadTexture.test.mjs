@@ -45,11 +45,7 @@ async function buildScene(renderWindow, onEngineReady = () => {}) {
       getRenderWindow: () => renderWindow,
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: { getInstance: () => null },
-        syncRenderWindow: { id: "sync-render-window" },
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => ({ getInstance: () => null }),
       createReconciler: () => ({
         registerBlockHandler() {
           return () => {};
@@ -72,7 +68,7 @@ async function buildScene(renderWindow, onEngineReady = () => {}) {
       },
     },
   );
-  scene.initialize({ contextName: "ctx", renderWindowId: 1 });
+  scene.initialize({ renderWindowId: 1 });
   return scene;
 }
 

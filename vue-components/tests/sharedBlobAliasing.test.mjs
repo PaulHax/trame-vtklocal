@@ -50,12 +50,7 @@ async function makeScene(sharedRef, values, ids = ["a", "b"]) {
   );
   const instances = new Map(ids.map((id) => [id, makePolyData()]));
   const reconciler = createReconciler({
-    synchronizerContext: {
-      getInstance: (id) => instances.get(String(id)),
-      registerInstance: (id, instance) => instances.set(String(id), instance),
-      unregisterInstance: (id) => instances.delete(String(id)),
-    },
-    objectManager: { build: () => null },
+    buildInstance: (_type, id) => instances.get(String(id)) ?? null,
     rootId: "root",
     rootInstance: null,
   });

@@ -20,11 +20,7 @@ async function buildScene() {
       getRenderWindow: () => ({ id: "rw-view-api" }),
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: { getInstance: () => null },
-        syncRenderWindow: { id: "sync-render-window" },
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => ({ getInstance: () => null }),
       createReconciler: () => ({
         registerBlockHandler: () => () => {},
         teardown() {},
@@ -38,7 +34,7 @@ async function buildScene() {
       }),
     },
   );
-  scene.initialize({ contextName: "ctx", renderWindowId: 1 });
+  scene.initialize({ renderWindowId: 1 });
   return scene;
 }
 

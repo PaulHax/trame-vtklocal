@@ -11,11 +11,12 @@ function newRecord(id) {
   };
 }
 
-// Applied vtk instance identity, separate from serialized desired state.
-// Records remain stable until removal so holders cannot retain retired
-// instances after a replacement.
-export function createAppliedRegistry({ synchronizerContext } = {}) {
+// The one record of which vtk.js instance stands for each node id, separate
+// from serialized desired state. Records remain stable until removal so holders
+// cannot retain retired instances after a replacement.
+export function createInstanceRegistry() {
   const records = new Map();
+  const idsByInstance = new WeakMap();
   let instanceRevision = 0;
 
   function ensureRecord(id) {
@@ -30,6 +31,10 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
 
   function noteInstance(record, instance) {
     if (record.instance === instance) return false;
+    if (record.instance && idsByInstance.get(record.instance) === record.id) {
+      idsByInstance.delete(record.instance);
+    }
+    if (instance) idsByInstance.set(instance, record.id);
     record.instance = instance;
     record.revision += 1;
     instanceRevision += 1;
@@ -48,25 +53,8 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
     return record;
   }
 
-  // Adopt a root or external instance registered before reconciliation starts.
-  function adoptRegistered(id, appliedType = null) {
-    const record = ensureRecord(id);
-    const instance = synchronizerContext?.getInstance?.(record.id) ?? null;
-    noteInstance(record, isLiveInstance(instance) ? instance : null);
-    if (record.instance) {
-      record.appliedType = appliedType ?? record.appliedType;
-      record.status = "live";
-      record.pendingReason = null;
-    } else {
-      record.appliedType = null;
-      record.status = "pending";
-    }
-    return record;
-  }
-
   function register(id, instance, appliedType) {
     const record = ensureRecord(id);
-    synchronizerContext?.registerInstance?.(record.id, instance);
     noteInstance(record, instance);
     record.appliedType = appliedType ?? null;
     record.status = "pending";
@@ -91,7 +79,6 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
 
   function detach(id, { status = "pending", reason = null } = {}) {
     const record = ensureRecord(id);
-    synchronizerContext?.unregisterInstance?.(record.id);
     noteInstance(record, null);
     record.appliedType = null;
     record.status = status;
@@ -102,7 +89,6 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
   function remove(id) {
     const record = records.get(String(id));
     if (!record) return null;
-    synchronizerContext?.unregisterInstance?.(record.id);
     noteInstance(record, null);
     record.appliedType = null;
     record.status = "removed";
@@ -116,7 +102,12 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
   }
 
   function getInstance(id) {
+    if (id === undefined || id === null) return null;
     return getRecord(id)?.instance ?? null;
+  }
+
+  function getInstanceId(instance) {
+    return (instance && idsByInstance.get(instance)) ?? null;
   }
 
   function ids() {
@@ -145,7 +136,6 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
 
   return {
     beginDesired,
-    adoptRegistered,
     register,
     markLive,
     markPending,
@@ -153,6 +143,7 @@ export function createAppliedRegistry({ synchronizerContext } = {}) {
     remove,
     getRecord,
     getInstance,
+    getInstanceId,
     ids,
     instanceRevision: () => instanceRevision,
     describe,

@@ -12,17 +12,10 @@ function liveInstance(name) {
 }
 
 test("applied records stay stable until removal and revisions track identity", async () => {
-  const { createAppliedRegistry } = await loadModule(
-    "/src/components/engine/appliedRegistry.js",
+  const { createInstanceRegistry } = await loadModule(
+    "/src/components/engine/instanceRegistry.js",
   );
-  const instances = new Map();
-  const registry = createAppliedRegistry({
-    synchronizerContext: {
-      getInstance: (id) => instances.get(String(id)),
-      registerInstance: (id, instance) => instances.set(String(id), instance),
-      unregisterInstance: (id) => instances.delete(String(id)),
-    },
-  });
+  const registry = createInstanceRegistry();
   const first = liveInstance("first");
   const replacement = liveInstance("replacement");
 
@@ -48,6 +41,13 @@ test("applied records stay stable until removal and revisions track identity", a
   assert.equal(registry.getRecord(7), record);
   assert.equal(record.revision, 2);
   assert.equal(record.instance, replacement);
+  assert.equal(registry.getInstance(7), replacement);
+  assert.equal(registry.getInstanceId(replacement), "7");
+  assert.equal(
+    registry.getInstanceId(first),
+    null,
+    "a replaced instance no longer resolves to the id",
+  );
 
   registry.remove("7");
   assert.equal(registry.getRecord("7"), null);
@@ -55,6 +55,7 @@ test("applied records stay stable until removal and revisions track identity", a
   assert.equal(record.instance, null);
   assert.equal(record.status, "removed");
   assert.equal(record.appliedType, null);
+  assert.equal(registry.getInstanceId(replacement), null);
 
   const recreated = registry.beginDesired("7", "vtkReplacement");
   registry.register("7", replacement, "vtkReplacement");
@@ -66,10 +67,10 @@ test("applied records stay stable until removal and revisions track identity", a
 });
 
 test("applied diagnostics omit desired state and raw instances", async () => {
-  const { createAppliedRegistry } = await loadModule(
-    "/src/components/engine/appliedRegistry.js",
+  const { createInstanceRegistry } = await loadModule(
+    "/src/components/engine/instanceRegistry.js",
   );
-  const registry = createAppliedRegistry();
+  const registry = createInstanceRegistry();
   const record = registry.markPending(
     "late",
     "vtkUnavailable",

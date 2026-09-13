@@ -110,13 +110,13 @@ function dumpProps(instance, mirrorProps) {
   return props;
 }
 
-function instanceId(synchronizerContext, instance) {
+function instanceId(instances, instance) {
   if (!instance) return null;
-  const id = synchronizerContext.getInstanceId?.(instance);
+  const id = instances.getInstanceId?.(instance);
   return id === undefined || id === null ? null : String(id);
 }
 
-function dumpRefs(instance, mirrorRefs, synchronizerContext) {
+function dumpRefs(instance, mirrorRefs, instances) {
   const refs = {};
   for (const [slot, mirrorValue] of Object.entries(mirrorRefs)) {
     const singleGetter = SINGLE_REF_GETTERS[slot];
@@ -125,7 +125,7 @@ function dumpRefs(instance, mirrorRefs, synchronizerContext) {
         typeof instance?.[singleGetter] === "function"
           ? instance[singleGetter]()
           : null;
-      refs[slot] = instanceId(synchronizerContext, child) ?? mirrorValue;
+      refs[slot] = instanceId(instances, child) ?? mirrorValue;
       continue;
     }
 
@@ -137,7 +137,7 @@ function dumpRefs(instance, mirrorRefs, synchronizerContext) {
           : null;
       refs[slot] = children
         ? children
-            .map((child) => instanceId(synchronizerContext, child))
+            .map((child) => instanceId(instances, child))
             .filter((id) => id !== null)
         : [...mirrorValue];
       continue;
@@ -150,7 +150,7 @@ function dumpRefs(instance, mirrorRefs, synchronizerContext) {
           typeof instance?.[indexedGetter] === "function"
             ? instance[indexedGetter](index)
             : null;
-        return instanceId(synchronizerContext, child) ?? mirrorId;
+        return instanceId(instances, child) ?? mirrorId;
       });
       refs[slot] = ids;
       continue;
@@ -162,7 +162,7 @@ function dumpRefs(instance, mirrorRefs, synchronizerContext) {
           typeof instance?.getInputData === "function"
             ? instance.getInputData(port)
             : null;
-        return instanceId(synchronizerContext, dataset) ?? mirrorId;
+        return instanceId(instances, dataset) ?? mirrorId;
       });
       continue;
     }
@@ -189,27 +189,27 @@ function dumpArrays(nodeId, mirrorArrays, getBoundArray) {
 /**
  * @param {string} rootId       the render-window node id
  * @param {Object} mirror       the engine mirror store (id -> node)
- * @param {Object} synchronizerContext
+ * @param {Object} instances
  * @param {Function} [getBoundArray]  (nodeId, key) -> bound vtk data array
  */
 export function dumpAppliedScene(
   rootId,
   mirror,
-  synchronizerContext,
+  instances,
   getBoundArray = null,
 ) {
-  if (!mirror || !synchronizerContext) return null;
+  if (!mirror || !instances) return null;
 
   const nodes = {};
   for (const [id, node] of mirror.entries()) {
-    const registered = synchronizerContext.getInstance?.(id) ?? null;
+    const registered = instances.getInstance?.(id) ?? null;
     const instance = isLiveInstance(registered) ? registered : null;
     const dumped = { type: node.type };
     if (node.props) {
       dumped.props = dumpProps(instance, node.props);
     }
     if (node.refs) {
-      dumped.refs = dumpRefs(instance, node.refs, synchronizerContext);
+      dumped.refs = dumpRefs(instance, node.refs, instances);
     }
     if (node.arrays) {
       dumped.arrays = dumpArrays(id, node.arrays, getBoundArray);

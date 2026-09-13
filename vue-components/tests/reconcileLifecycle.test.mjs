@@ -86,27 +86,16 @@ async function makeHarness({ build = null } = {}) {
   const { createMirrorStore } = await loadModule(
     "/src/components/engine/mirrorStore.js",
   );
-  const instances = new Map();
   const builds = [];
-  const context = {
-    getInstance: (id) => instances.get(String(id)),
-    registerInstance: (id, instance) => instances.set(String(id), instance),
-    unregisterInstance: (id) => instances.delete(String(id)),
-  };
-  const objectManager = {
-    build(type, options) {
-      builds.push({ type, id: String(options.managedInstanceId) });
-      return build
-        ? build(type, String(options.managedInstanceId), builds.length)
-        : makeInstance(type, String(options.managedInstanceId));
-    },
-  };
   const reconciler = createReconciler({
-    synchronizerContext: context,
-    objectManager,
+    buildInstance(type, id) {
+      builds.push({ type, id });
+      return build ? build(type, id, builds.length) : makeInstance(type, id);
+    },
     rootId: "root",
     rootInstance: null,
   });
+  const instances = { get: (id) => reconciler.instances.getInstance(id) };
   const mirror = createMirrorStore();
   const cache = new Map([
     ["c:points", new Uint8Array(new Float32Array([0, 0, 0, 1, 1, 1]).buffer)],
@@ -150,7 +139,7 @@ function assertFullyHydrated(owner, target) {
 test("a deleted same-type instance is fully hydrated and referrers adopt it", async () => {
   const harness = await makeHarness();
   await applyOwnerScene(harness);
-  const record = harness.reconciler.getAppliedRecord("owner");
+  const record = harness.reconciler.instances.getRecord("owner");
   const oldOwner = harness.instances.get("owner");
   const actor = harness.instances.get("actor");
   oldOwner.markDeleted();
@@ -163,7 +152,7 @@ test("a deleted same-type instance is fully hydrated and referrers adopt it", as
 
   const replacement = harness.instances.get("owner");
   assert.notEqual(replacement, oldOwner);
-  assert.equal(harness.reconciler.getAppliedRecord("owner"), record);
+  assert.equal(harness.reconciler.instances.getRecord("owner"), record);
   assertFullyHydrated(replacement, harness.instances.get("target"));
   assert.equal(actor.getMapper(), replacement);
   assert.equal(record.status, "live");
@@ -178,17 +167,9 @@ test("the widget-owned root is represented and hydrated without a build", async 
     "/src/components/engine/mirrorStore.js",
   );
   const root = makeInstance("vtkRenderWindow", "root");
-  const instances = new Map();
   const reconciler = createReconciler({
-    synchronizerContext: {
-      getInstance: (id) => instances.get(String(id)),
-      registerInstance: (id, instance) => instances.set(String(id), instance),
-      unregisterInstance: (id) => instances.delete(String(id)),
-    },
-    objectManager: {
-      build: () => {
-        throw new Error("the root must not be built");
-      },
+    buildInstance: () => {
+      throw new Error("the root must not be built");
     },
     rootId: "root",
     rootInstance: root,
@@ -207,26 +188,8 @@ test("the widget-owned root is represented and hydrated without a build", async 
   );
 
   assert.deepEqual(root.setCalls, [{ numberOfLayers: 2 }]);
-  assert.equal(reconciler.getAppliedRecord("root").instance, root);
-  assert.equal(reconciler.getAppliedRecord("root").status, "live");
-});
-
-test("a missing registered instance rebuilds with complete state", async () => {
-  const harness = await makeHarness();
-  await applyOwnerScene(harness);
-  const oldOwner = harness.instances.get("owner");
-  harness.instances.delete("owner");
-
-  harness.reconciler.applyMessage(
-    [{ op: "upsert", id: "owner", node: ownerNode }],
-    harness.mirror,
-    harness.cache,
-  );
-
-  const replacement = harness.instances.get("owner");
-  assert.notEqual(replacement, oldOwner);
-  assertFullyHydrated(replacement, harness.instances.get("target"));
-  assert.equal(oldOwner.deleteCalls, 1);
+  assert.equal(reconciler.instances.getRecord("root").instance, root);
+  assert.equal(reconciler.instances.getRecord("root").status, "live");
 });
 
 test("private array ownership survives an owner rebuild", async () => {
@@ -256,7 +219,7 @@ test("private array ownership survives an owner rebuild", async () => {
 test("a type-changing replacement uses the same full-hydration contract", async () => {
   const harness = await makeHarness();
   await applyOwnerScene(harness);
-  const record = harness.reconciler.getAppliedRecord("owner");
+  const record = harness.reconciler.instances.getRecord("owner");
   const oldOwner = harness.instances.get("owner");
   const replacementNode = { ...ownerNode, type: "vtkReplacementOwner" };
 
@@ -269,7 +232,7 @@ test("a type-changing replacement uses the same full-hydration contract", async 
   const replacement = harness.instances.get("owner");
   assertFullyHydrated(replacement, harness.instances.get("target"));
   assert.equal(oldOwner.deleteCalls, 1);
-  assert.equal(harness.reconciler.getAppliedRecord("owner"), record);
+  assert.equal(harness.reconciler.instances.getRecord("owner"), record);
   assert.equal(record.appliedType, "vtkReplacementOwner");
 });
 
@@ -381,7 +344,7 @@ test("create-after-remove reattaches every supported ref-slot shape", async () =
     harness.mirror,
     harness.cache,
   );
-  const record = harness.reconciler.getAppliedRecord("target");
+  const record = harness.reconciler.instances.getRecord("target");
   const oldTarget = harness.instances.get("target");
 
   harness.reconciler.applyMessage(
@@ -390,7 +353,7 @@ test("create-after-remove reattaches every supported ref-slot shape", async () =
     harness.cache,
   );
   assert.equal(record.status, "removed");
-  assert.equal(harness.reconciler.getAppliedRecord("target"), null);
+  assert.equal(harness.reconciler.instances.getRecord("target"), null);
   harness.reconciler.applyMessage(
     [{ op: "upsert", id: "target", node: targetNode }],
     harness.mirror,
@@ -399,7 +362,7 @@ test("create-after-remove reattaches every supported ref-slot shape", async () =
 
   const replacement = harness.instances.get("target");
   assert.notEqual(replacement, oldTarget);
-  assert.notEqual(harness.reconciler.getAppliedRecord("target"), record);
+  assert.notEqual(harness.reconciler.instances.getRecord("target"), record);
   assert.equal(harness.instances.get("single").getMapper(), replacement);
   assert.deepEqual(harness.instances.get("list").getViewProps(), [replacement]);
   assert.equal(
@@ -431,7 +394,7 @@ test("duplicate upserts fail before builds, callbacks, or mirror mutation", asyn
   assert.deepEqual(harness.builds, []);
   assert.deepEqual(callbacks, []);
   assert.equal(harness.mirror.size(), 0);
-  assert.equal(harness.reconciler.getAppliedRecord("7"), null);
+  assert.equal(harness.reconciler.instances.getRecord("7"), null);
 });
 
 test("reset retires an applied-only instance left by failed hydration", async () => {
@@ -452,16 +415,16 @@ test("reset retires an applied-only instance left by failed hydration", async ()
     /blob c:missing missing from cache/,
   );
   const partial = harness.instances.get("partial");
-  const record = harness.reconciler.getAppliedRecord("partial");
+  const record = harness.reconciler.instances.getRecord("partial");
   assert.ok(partial);
   assert.equal(harness.mirror.get("partial"), undefined);
 
   harness.reconciler.reset(harness.mirror);
-  assert.equal(harness.instances.has("partial"), false);
+  assert.equal(harness.instances.get("partial"), null);
   assert.equal(partial.deleteCalls, 1);
   assert.equal(record.status, "removed");
   assert.equal(record.instance, null);
-  assert.equal(harness.reconciler.getAppliedRecord("partial"), null);
+  assert.equal(harness.reconciler.instances.getRecord("partial"), null);
 });
 
 test("a pending build records desired/applied divergence and later recovers", async () => {
@@ -476,7 +439,7 @@ test("a pending build records desired/applied divergence and later recovers", as
     harness.mirror,
     harness.cache,
   );
-  const record = harness.reconciler.getAppliedRecord("late");
+  const record = harness.reconciler.instances.getRecord("late");
   assert.equal(record.status, "pending");
   assert.equal(harness.mirror.get("late").type, "vtkEventuallyAvailable");
   assert.equal(record.appliedType, null);
@@ -488,7 +451,7 @@ test("a pending build records desired/applied divergence and later recovers", as
     harness.mirror,
     harness.cache,
   );
-  assert.equal(harness.reconciler.getAppliedRecord("late"), record);
+  assert.equal(harness.reconciler.instances.getRecord("late"), record);
   assert.equal(record.status, "live");
   assert.equal(record.appliedType, "vtkEventuallyAvailable");
   assert.deepEqual(record.instance.setCalls, [{ value: 12 }]);

@@ -180,7 +180,7 @@ test("distance-to-camera registry sizes the mapper's own input", async () => {
   mapper.setInputData(filterInput);
 
   const instances = new Map([["mapper", mapper]]);
-  const synchronizerContext = {
+  const nodeInstances = {
     getInstance: (id) => instances.get(String(id)),
   };
 
@@ -220,7 +220,7 @@ test("distance-to-camera registry sizes the mapper's own input", async () => {
       distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
         renderer,
         renderWindow,
-        synchronizerContext,
+        instances: nodeInstances,
       }),
       true,
     );
@@ -229,7 +229,7 @@ test("distance-to-camera registry sizes the mapper's own input", async () => {
       distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
         renderer,
         renderWindow,
-        synchronizerContext,
+        instances: nodeInstances,
       }),
       false,
     );
@@ -265,7 +265,7 @@ test("distance-to-camera registry caps degenerate scales at the point-set extent
   mapper.setInputData(filterInput);
 
   const instances = new Map([["mapper", mapper]]);
-  const synchronizerContext = {
+  const nodeInstances = {
     getInstance: (id) => instances.get(String(id)),
   };
 
@@ -299,7 +299,7 @@ test("distance-to-camera registry caps degenerate scales at the point-set extent
     distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
       renderer,
       renderWindow,
-      synchronizerContext,
+      instances: nodeInstances,
     }),
     true,
   );
@@ -333,7 +333,7 @@ test("distance-to-camera registry honors lock-style projection zoom", async () =
   mapper.setInputData(filterInput);
 
   const instances = new Map([["mapper", mapper]]);
-  const synchronizerContext = {
+  const nodeInstances = {
     getInstance: (id) => instances.get(String(id)),
   };
 
@@ -370,7 +370,7 @@ test("distance-to-camera registry honors lock-style projection zoom", async () =
     distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
       renderer,
       renderWindow,
-      synchronizerContext,
+      instances: nodeInstances,
     }),
     true,
   );
@@ -394,7 +394,7 @@ test("distance-to-camera registry resolves pending mapper state during render", 
   ]);
 
   const instances = new Map();
-  const synchronizerContext = {
+  const nodeInstances = {
     getInstance: (id) => instances.get(String(id)),
   };
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
@@ -445,7 +445,7 @@ test("distance-to-camera registry resolves pending mapper state during render", 
     distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
       renderer,
       renderWindow,
-      synchronizerContext,
+      instances: nodeInstances,
     }),
     true,
   );
@@ -488,7 +488,7 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
   const replacementInput = makeInput(2);
   mapper.setInputData(firstInput);
   const instances = new Map([["mapper", mapper]]);
-  const synchronizerContext = {
+  const nodeInstances = {
     getInstance: (id) => instances.get(String(id)),
   };
   const registry = distanceToCameraGlyphs.createDistanceToCameraGlyphRegistry();
@@ -526,7 +526,7 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
     distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
       renderer,
       renderWindow,
-      synchronizerContext,
+      instances: nodeInstances,
     }),
     true,
   );
@@ -536,7 +536,7 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
     distanceToCameraGlyphs.updateDistanceToCameraGlyphs(registry, {
       renderer,
       renderWindow,
-      synchronizerContext,
+      instances: nodeInstances,
     }),
     true,
   );

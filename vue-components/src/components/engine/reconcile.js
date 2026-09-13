@@ -20,7 +20,7 @@ import {
 } from "./arrayBinding";
 import { viewAsTypedArray } from "../sync/base64";
 import { isLiveInstance } from "../predicates";
-import { createAppliedRegistry } from "./appliedRegistry";
+import { createInstanceRegistry } from "./instanceRegistry";
 
 // Ref-slot -> vtk.js call map (pinned by the wire protocol).
 const SINGLE_REF_SETTERS = {
@@ -63,8 +63,8 @@ function sameIdList(a, b) {
 }
 
 export function createReconciler({
-  synchronizerContext,
-  objectManager,
+  instances = createInstanceRegistry(),
+  buildInstance,
   rootId,
   rootInstance,
   shouldDeferProps = () => false,
@@ -83,18 +83,17 @@ export function createReconciler({
   // server rebinds so every optimistic write is cache-safe and allocation-free.
   const privateSlots = new Map();
   const deferredProps = new Map(); // id -> latest server props
-  const appliedRegistry = createAppliedRegistry({ synchronizerContext });
   let rootAttached = false;
 
   // The root render window is widget-owned, never built. Register it so
   // getInstance/getInstanceId treat it like every other node.
-  if (rootInstance && synchronizerContext?.registerInstance) {
-    appliedRegistry.register(String(rootId), rootInstance, null);
-    appliedRegistry.markLive(String(rootId), null);
+  if (rootInstance) {
+    instances.register(String(rootId), rootInstance, null);
+    instances.markLive(String(rootId), null);
   }
 
   function getInstance(id) {
-    return appliedRegistry.getInstance(id);
+    return instances.getInstance(id);
   }
 
   function liveInstanceFor(id) {
@@ -470,7 +469,7 @@ export function createReconciler({
   }
 
   function applyNodeDiff(id, node, prev, cache) {
-    const appliedRecord = appliedRegistry.getRecord(id);
+    const appliedRecord = instances.getRecord(id);
     const instance = liveInstanceFor(id);
     if (!instance || appliedRecord?.appliedType !== node.type) {
       // Unbuildable type (already warned in the build pass); skip its state.
@@ -492,7 +491,7 @@ export function createReconciler({
     applyRefsDiff(instance, node.refs || {}, prev?.refs || {});
     applyArraysDiff(instance, id, node.arrays || {}, prev?.arrays || {}, cache);
     applyBlocksDiff(instance, id, node.blocks || {}, prev?.blocks || {}, isNew);
-    appliedRegistry.markLive(id, node.type);
+    instances.markLive(id, node.type);
   }
 
   function applyArrayPatch(op, mirror, cache) {
@@ -583,23 +582,23 @@ export function createReconciler({
     dropBindings(id, { forgetPrivate: true });
     deferredProps.delete(id);
     if (instance) {
-      appliedRegistry.remove(id);
+      instances.remove(id);
       if (isLiveInstance(instance)) {
         instance.delete?.();
       }
     } else {
-      appliedRegistry.remove(id);
+      instances.remove(id);
     }
   }
 
   function buildFor(id, type) {
-    const built = objectManager.build(type, { managedInstanceId: id });
+    const built = buildInstance(type, id);
     if (!built) {
       console.warn(`[reconcile] cannot build type ${type} (node ${id})`);
-      appliedRegistry.markPending(id, type, `cannot build type ${type}`);
+      instances.markPending(id, type, `cannot build type ${type}`);
       return null;
     }
-    appliedRegistry.register(id, built, type);
+    instances.register(id, built, type);
     return built;
   }
 
@@ -610,33 +609,16 @@ export function createReconciler({
         continue;
       }
       const id = String(op.id);
-      const previousAppliedRecord = appliedRegistry.getRecord(id);
       const previousMirrorNode = mirror.get(id);
       const desiredType = op.node.type;
-      appliedRegistry.beginDesired(id, desiredType);
+      instances.beginDesired(id, desiredType);
       if (id === rootId) {
-        appliedRegistry.markLive(id, desiredType);
+        instances.markLive(id, desiredType);
         continue;
-      }
-      const registered = synchronizerContext?.getInstance?.(id) ?? null;
-      const runtimeChanged =
-        previousAppliedRecord && previousAppliedRecord.instance !== registered;
-      if (!previousAppliedRecord || runtimeChanged) {
-        const previousInstance = previousAppliedRecord?.instance;
-        appliedRegistry.adoptRegistered(
-          id,
-          previousMirrorNode?.type ?? desiredType,
-        );
-        if (runtimeChanged) {
-          if (isLiveInstance(previousInstance)) {
-            retired.set(id, previousInstance);
-          }
-          dropBindings(id);
-        }
       }
       let instance = getInstance(id);
       if (instance && !isLiveInstance(instance)) {
-        appliedRegistry.detach(id);
+        instances.detach(id);
         dropBindings(id);
         instance = null;
       }
@@ -647,7 +629,7 @@ export function createReconciler({
         }
         continue;
       }
-      const appliedType = appliedRegistry.getRecord(id)?.appliedType;
+      const appliedType = instances.getRecord(id)?.appliedType;
       if (appliedType && appliedType !== desiredType) {
         // Same id, new type: rebuild, then rewire referrers after the ops
         // apply. When the new type cannot be built, keep the old instance
@@ -660,7 +642,7 @@ export function createReconciler({
         }
         continue;
       }
-      if (!previousMirrorNode || runtimeChanged) {
+      if (!previousMirrorNode) {
         hydrated.add(id);
         reattach.add(id);
       }
@@ -775,7 +757,7 @@ export function createReconciler({
     if (rootInstanceLive) {
       drainRootCollections(rootInstanceLive);
     }
-    const ids = new Set([...mirror.ids(), ...appliedRegistry.ids()]);
+    const ids = new Set([...mirror.ids(), ...instances.ids()]);
     for (const id of ids) {
       teardownNode(id, mirror.get(id));
     }
@@ -830,7 +812,7 @@ export function createReconciler({
     privateSlots.clear();
     deferredProps.clear();
     blockHandlers.clear();
-    appliedRegistry.clear();
+    instances.clear();
   }
 
   return {
@@ -841,9 +823,7 @@ export function createReconciler({
     getBoundArray,
     protectLocalWrites,
     flushDeferredProps,
-    getAppliedRecord: appliedRegistry.getRecord,
-    describeAppliedRegistry: appliedRegistry.describe,
-    instanceRevision: appliedRegistry.instanceRevision,
+    instances,
     teardown,
   };
 }

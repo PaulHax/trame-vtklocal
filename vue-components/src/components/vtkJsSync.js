@@ -1,33 +1,4 @@
-import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
-// Registers every synthetic/state-sync type in one deterministic registry.
-import "./syntheticTypes";
-
 import { isLiveInstance } from "./predicates";
-
-export function createSyncContext(contextName, renderWindow) {
-  const synchronizerContext =
-    vtkSynchronizableRenderWindow.getSynchronizerContext(contextName);
-  const syncRenderWindow = vtkSynchronizableRenderWindow.decorate(
-    renderWindow,
-    contextName,
-  );
-  return { synchronizerContext, syncRenderWindow };
-}
-
-export function createManagedSyncContext(contextName, renderWindow) {
-  const { synchronizerContext, syncRenderWindow } = createSyncContext(
-    contextName,
-    renderWindow,
-  );
-
-  return {
-    synchronizerContext,
-    syncRenderWindow,
-    cleanup() {
-      cleanupSyncContext(contextName);
-    },
-  };
-}
 
 function getRenderWindowRenderers(renderWindow, methodName = "getRenderers") {
   if (!isLiveInstance(renderWindow)) {
@@ -46,28 +17,19 @@ function getRenderWindowRenderers(renderWindow, methodName = "getRenderers") {
   }
 }
 
-export function getSyncedRenderers(renderWindow) {
+// Renderers that stand for server nodes, as opposed to ones a host added.
+export function getSyncedRenderers(renderWindow, instances) {
   return getRenderWindowRenderers(renderWindow).filter(
-    (ren) =>
-      ren.get("remoteId")?.remoteId !== undefined ||
-      ren.get("managedInstanceId")?.managedInstanceId !== undefined,
+    (renderer) => instances?.getInstanceId?.(renderer) != null,
   );
 }
 
-export function getFirstSyncedRenderer(renderWindow) {
-  return getSyncedRenderers(renderWindow)[0] || null;
-}
-
-export function getPrimaryRenderer(renderWindow) {
+export function getPrimaryRenderer(renderWindow, instances) {
   return (
-    getFirstSyncedRenderer(renderWindow) ||
+    getSyncedRenderers(renderWindow, instances)[0] ||
     getRenderWindowRenderers(renderWindow, "getRenderersByReference")[0] ||
     null
   );
-}
-
-export function cleanupSyncContext(contextName) {
-  vtkSynchronizableRenderWindow.clearSynchronizerContext(contextName);
 }
 
 const CAMERA_FIELDS = [

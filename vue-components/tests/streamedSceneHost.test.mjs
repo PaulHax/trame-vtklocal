@@ -914,23 +914,13 @@ test("the reconciler re-fires a block when applied actor identity changes, and t
     },
   };
   const actorBuilds = [firstActor, secondActor];
-  const instances = new Map();
-  const synchronizerContext = {
-    getInstance: (id) => instances.get(String(id)) ?? null,
-    registerInstance: (id, instance) => instances.set(String(id), instance),
-    unregisterInstance: (id) => instances.delete(String(id)),
-  };
-  const objectManager = {
-    build(type) {
+  const mirror = mirrorModule.createMirrorStore();
+  const reconciler = reconcileModule.createReconciler({
+    buildInstance(type) {
       if (type === "vtkStreamedSceneActor") return actorBuilds.shift();
       if (type === "vtkRenderer") return hostRenderer;
       return null;
     },
-  };
-  const mirror = mirrorModule.createMirrorStore();
-  const reconciler = reconcileModule.createReconciler({
-    synchronizerContext,
-    objectManager,
     rootId: "root",
     rootInstance: null,
   });
@@ -963,7 +953,7 @@ test("the reconciler re-fires a block when applied actor identity changes, and t
     renderers: [hostRenderer],
     renderWindow: { getViews: () => [{ getSize: () => [200, 100] }] },
     topologyVersion: 1,
-    getInstance: synchronizerContext.getInstance,
+    getInstance: reconciler.instances.getInstance,
     referrersOf,
   };
   reconciler.applyMessage(
@@ -1888,11 +1878,7 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
       tiles3dQualityPolicy: "fixed",
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: { getInstance: () => null },
-        syncRenderWindow: null,
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => ({ getInstance: () => null }),
       createMirrorStore: () => ({
         entries: () => [][Symbol.iterator](),
         get: () => null,
@@ -1921,7 +1907,6 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     },
   );
   scene.initialize({
-    contextName: "streamed-host",
     renderWindowId: 1,
     onRenderNeeded: () => {
       renders += 1;
@@ -2029,7 +2014,6 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
     removeEventListener() {},
   };
   const hostRenderer = renderer();
-  hostRenderer.get = () => ({ remoteId: "renderer" });
   const renderWindow = {
     getRenderers: () => [hostRenderer],
     getViews: () => [{ getSize: () => [200, 100], getCanvas: () => canvas }],
@@ -2070,13 +2054,10 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
       getRenderWindow: () => renderWindow,
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: {
-          getInstance: () => null,
-          getInstanceId: () => null,
-        },
-        syncRenderWindow: renderWindow,
-        cleanup() {},
+      createInstanceRegistry: () => ({
+        getInstance: () => null,
+        getInstanceId: (instance) =>
+          instance === hostRenderer ? "renderer" : null,
       }),
       createMirrorStore: () => ({
         entries: () => [][Symbol.iterator](),
@@ -2099,7 +2080,7 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
       createStreamedSceneHost: () => fakeHost,
     },
   );
-  scene.initialize({ contextName: "emitted-solves", renderWindowId: 1 });
+  scene.initialize({ renderWindowId: 1 });
   handlers.get("streamedScene")("anchor", pointBlock(), actor());
   handlers.get("pickable")(
     "glyph",
@@ -2177,11 +2158,7 @@ test("useSceneSync reports the presentation interval, not the paint duration", a
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: { getInstance: () => null },
-        syncRenderWindow: null,
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => ({ getInstance: () => null }),
       createMirrorStore: () => ({
         entries: () => [][Symbol.iterator](),
         get: () => null,
@@ -2203,7 +2180,7 @@ test("useSceneSync reports the presentation interval, not the paint duration", a
     },
   );
   try {
-    scene.initialize({ contextName: "presentation", renderWindowId: 1 });
+    scene.initialize({ renderWindowId: 1 });
     handlers.get("streamedScene")("42", pointBlock(), actor());
 
     scene.recordPaintDuration(4);

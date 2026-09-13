@@ -81,7 +81,6 @@ export default {
       renderWindow.addView(externalRenderWindow);
 
       scene.initialize({
-        contextName: `vtkjs-shared-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
         onRenderNeeded() {
           requestRender();

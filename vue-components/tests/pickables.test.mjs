@@ -121,7 +121,7 @@ test("pickAt returns the nearest point within the grab radius", async () => {
   const hit = pickables.pickAt(registry, 410, 200, {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   });
 
   assert.ok(hit);
@@ -156,7 +156,7 @@ test("pickAt honors the grab radius boundary", async () => {
   const opts = {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   };
 
   // 0.95 * radius (19 px) -> inside.
@@ -180,7 +180,7 @@ test("pickAt breaks ties by priority then declaration order", async () => {
   const opts = {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   };
 
   // Higher priority wins even though both are exactly on the pointer.
@@ -241,7 +241,7 @@ test("pickAt rejects points behind the camera", async () => {
   const hit = pickables.pickAt(registry, 400, 200, {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   });
   assert.equal(hit, null);
 });
@@ -267,7 +267,7 @@ test("pointId stays aligned to point order after a point update", async () => {
   const opts = {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   };
 
   const before = pickables.pickAt(registry, 600, 200, opts);
@@ -296,7 +296,7 @@ test("re-tagging via a block update reaches pickAt", async () => {
   const opts = {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   };
 
   const registry = pickables.createPickableRegistry();
@@ -369,7 +369,7 @@ test("pickAt drops entries whose mapper instance was deleted", async () => {
   const hit = pickables.pickAt(registry, 400, 200, {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: ctx,
+    instances: ctx,
   });
   assert.equal(hit, null);
   assert.equal(registry.size, 0);
@@ -396,7 +396,7 @@ test("pickAt reuses projected positions until points or camera change", async ()
   const options = {
     renderer,
     renderWindow: { getViews: () => [{ getSize: () => [WIDTH, HEIGHT] }] },
-    synchronizerContext: contextFor(new Map([["m", mapper]])),
+    instances: contextFor(new Map([["m", mapper]])),
   };
 
   pickables.pickAt(registry, 400, 200, options);
@@ -428,7 +428,7 @@ test("preview metadata and bound points node id ride the pick result", async () 
   const hit = pickables.pickAt(registry, 400, 200, {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: {
+    instances: {
       getInstance: () => mapper,
       getInstanceId: (instance) => (instance === poly ? "poly" : null),
     },
@@ -457,7 +457,7 @@ test("cloud preview metadata rides the pick result", async () => {
   const hit = pickables.pickAt(registry, 400, 200, {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: contextFor(new Map([["m", mapper]])),
+    instances: contextFor(new Map([["m", mapper]])),
   });
 
   assert.equal(hit.preview, "cloud");
@@ -473,7 +473,7 @@ test("a pick whose input point set cannot be resolved names no nodes", async () 
   const hit = pickables.pickAt(registry, 400, 200, {
     renderer: view.renderer,
     renderWindow: view.renderWindow,
-    synchronizerContext: {
+    instances: {
       getInstance: () => mapper,
       // The store cannot name the mapper's input, so currency is unknowable.
       getInstanceId: () => null,

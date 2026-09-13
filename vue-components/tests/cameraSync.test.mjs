@@ -96,11 +96,7 @@ async function makeScene() {
       getRenderWindow: () => renderWindow,
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: {},
-        syncRenderWindow: renderWindow,
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => ({}),
       createReconciler: () => ({
         registerBlockHandler() {},
         teardown() {},
@@ -123,7 +119,6 @@ async function makeScene() {
     },
   );
   scene.initialize({
-    contextName: "camera-sync-test",
     renderWindowId: 1,
     onRenderNeeded() {},
   });
@@ -224,7 +219,6 @@ test("re-initializing during a gesture does not silence later terminal reports",
     // end then lands on a counter that was already reset.
     scene.beginCameraInteraction();
     scene.initialize({
-      contextName: "camera-sync-test",
       renderWindowId: 1,
       onRenderNeeded() {},
     });

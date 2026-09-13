@@ -87,7 +87,6 @@ export default {
       renderWindow.addView(openGLRenderWindow);
 
       scene.initialize({
-        contextName: `vtkjs-local-${props.renderWindow}`,
         renderWindowId: props.renderWindow,
         onRenderNeeded() {
           scheduleRender();

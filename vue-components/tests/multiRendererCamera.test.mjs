@@ -27,10 +27,8 @@ function makeCamera() {
 
 function makeRenderer(id, camera) {
   return {
+    id: String(id),
     camera,
-    get(name) {
-      return name === "remoteId" ? { remoteId: id } : {};
-    },
     getActiveCamera() {
       return this.camera;
     },
@@ -38,6 +36,34 @@ function makeRenderer(id, camera) {
       this.camera = value;
     },
   };
+}
+
+// Every renderer these tests build stands for a server node.
+const serverRenderers = {
+  getInstanceId: (instance) => instance?.id ?? null,
+};
+
+function initializedScene(useSceneSync, renderWindow, cameraAuthority) {
+  const scene = useSceneSync(
+    {
+      client: {},
+      emit() {},
+      getRenderWindow: () => renderWindow,
+      cameraAuthority,
+    },
+    {
+      createInstanceRegistry: () => serverRenderers,
+      createReconciler: () => ({ registerBlockHandler() {}, teardown() {} }),
+      createSceneEngine: () => ({
+        start() {},
+        stop() {},
+        onCommand: () => () => {},
+        getDiagnostics: () => ({}),
+      }),
+    },
+  );
+  scene.initialize({ renderWindowId: 1 });
+  return scene;
 }
 
 function makeRenderWindow(renderers) {
@@ -54,12 +80,7 @@ test("client camera authority shares one camera across renderer layers", async (
   const primary = makeRenderer(1, primaryCamera);
   const underlay = makeRenderer(2, makeCamera());
   const renderWindow = makeRenderWindow([primary, underlay]);
-  const scene = useSceneSync({
-    client: {},
-    emit() {},
-    getRenderWindow: () => renderWindow,
-    cameraAuthority: "client",
-  });
+  const scene = initializedScene(useSceneSync, renderWindow, "client");
 
   const viewMatrix = Array.from({ length: 16 }, (_, i) => i + 1);
   const projectionMatrix = Array.from({ length: 16 }, (_, i) => 32 - i);
@@ -79,12 +100,7 @@ test("server camera authority preserves independent renderer cameras", async () 
   const primary = makeRenderer(1, primaryCamera);
   const underlay = makeRenderer(2, underlayCamera);
   const renderWindow = makeRenderWindow([primary, underlay]);
-  const scene = useSceneSync({
-    client: {},
-    emit() {},
-    getRenderWindow: () => renderWindow,
-    cameraAuthority: "server",
-  });
+  const scene = initializedScene(useSceneSync, renderWindow, "server");
 
   scene.setRenderedCamera({
     viewMatrix: Array(16).fill(1),
@@ -116,11 +132,7 @@ test("client camera authority binds initial, added, and replaced renderers befor
       cameraAuthority: "client",
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext: {},
-        syncRenderWindow: renderWindow,
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => serverRenderers,
       createReconciler: () => ({
         registerBlockHandler() {},
         teardown() {},
@@ -142,7 +154,6 @@ test("client camera authority binds initial, added, and replaced renderers befor
     },
   );
   scene.initialize({
-    contextName: "multi-renderer-camera",
     renderWindowId: 1,
     onRenderNeeded() {
       assert.equal(

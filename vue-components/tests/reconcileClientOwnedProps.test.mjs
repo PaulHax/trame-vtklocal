@@ -44,20 +44,12 @@ async function makeHarness() {
   const { createMirrorStore } = await loadModule(
     "/src/components/engine/mirrorStore.js",
   );
-  const instances = new Map();
   const reconciler = createReconciler({
-    synchronizerContext: {
-      getInstance: (id) => instances.get(String(id)),
-      registerInstance: (id, instance) => instances.set(String(id), instance),
-      unregisterInstance: (id) => instances.delete(String(id)),
-    },
-    objectManager: {
-      build: (type, options) =>
-        makeInstance(type, String(options.managedInstanceId)),
-    },
+    buildInstance: (type, id) => makeInstance(type, id),
     rootId: "root",
     rootInstance: null,
   });
+  const instances = { get: (id) => reconciler.instances.getInstance(id) };
   return {
     reconciler,
     mirror: createMirrorStore(),

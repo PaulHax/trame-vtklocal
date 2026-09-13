@@ -20,15 +20,9 @@ test("camera props defer during interaction and latest server state wins at end"
     isDeleted: () => false,
   };
   const instances = new Map([["camera", camera]]);
-  const context = {
-    getInstance: (id) => instances.get(String(id)),
-    registerInstance: (id, instance) => instances.set(String(id), instance),
-    unregisterInstance: (id) => instances.delete(String(id)),
-  };
   let interacting = false;
   const reconciler = createReconciler({
-    synchronizerContext: context,
-    objectManager: { build: () => null },
+    buildInstance: (_type, id) => instances.get(String(id)) ?? null,
     rootId: "root",
     rootInstance: null,
     shouldDeferProps: (_id, node) => interacting && node.type === "vtkCamera",

@@ -272,7 +272,7 @@ function boundedMaxScale(pointValues, fallback) {
 
 export function updateDistanceToCameraGlyphs(
   registry,
-  { renderer, renderWindow, synchronizerContext } = {},
+  { renderer, renderWindow, instances } = {},
 ) {
   if (!registry?.size || !renderer || !renderWindow) {
     return false;
@@ -292,8 +292,8 @@ export function updateDistanceToCameraGlyphs(
   let updated = false;
   for (const [id, entry] of registry) {
     const mapper =
-      typeof synchronizerContext?.getInstance === "function"
-        ? synchronizerContext.getInstance(id)
+      typeof instances?.getInstance === "function"
+        ? instances.getInstance(id)
         : entry.mapper;
     const input = isLiveInstance(mapper) ? mapper.getInputData?.(0) : null;
     if (!isLiveInstance(mapper) || !isLiveInstance(input)) {

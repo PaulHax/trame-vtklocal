@@ -185,52 +185,30 @@ test("homography shift/scale fold matches the unrebased projection", async () =>
   }
 });
 
-test("synthetic registry owns state-sync mappings and projected OpenGL override", async () => {
-  await loadModule("/src/components/syntheticTypes.js");
-  const { default: vtkObjectManager } = await loadModule(
-    "/node_modules/@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager.js",
+test("instance factory builds synthetic types and projected OpenGL override", async () => {
+  const { buildInstance } = await loadModule(
+    "/src/components/instanceFactory.js",
   );
   const { newInstance: newFactory } = await loadModule(
     "/node_modules/@kitware/vtk.js/Rendering/OpenGL/ViewNodeFactory.js",
   );
 
-  // State-sync side: serialized nodes of this type build the renderable and
-  // the generic updater applies its props.
-  assert.ok(
-    vtkObjectManager.getSupportedTypes().includes("vtkProjectedTextureMapper"),
-  );
-  assert.ok(
-    vtkObjectManager.getSupportedTypes().includes("vtkStreamedSceneActor"),
-  );
-  assert.equal(
-    vtkObjectManager.getSupportedTypes().includes("vtkPointCloudLodMapper"),
-    false,
-  );
-  const streamedActor = vtkObjectManager.build("vtkStreamedSceneActor", {});
-  assert.ok(streamedActor.isA("vtkActor"));
-  const built = vtkObjectManager.build("vtkProjectedTextureMapper", {});
+  // Wire side: nodes of the synthetic types build their renderable classes,
+  // and a stock type falls through to vtk.js.
+  assert.ok(buildInstance("vtkStreamedSceneActor").isA("vtkActor"));
+  const built = buildInstance("vtkProjectedTextureMapper");
   assert.ok(built.isA("vtkProjectedTextureMapper"));
-
-  const context = {
-    start() {},
-    end() {},
-    getInstance() {
-      return null;
-    },
-    registerInstance() {},
-  };
-  vtkObjectManager.update(
-    "vtkProjectedTextureMapper",
-    built,
-    {
-      properties: {
-        textureKey: "video",
-        mode: "worldToClip",
-        homography: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-      },
-    },
-    context,
+  assert.ok(
+    buildInstance("vtkPointGaussianMapper").isA("vtkPointGaussianMapper"),
   );
+  assert.ok(buildInstance("vtkPolyData").isA("vtkPolyData"));
+  assert.equal(buildInstance("vtkPointCloudLodMapper"), null);
+
+  built.set({
+    textureKey: "video",
+    mode: "worldToClip",
+    homography: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  });
   assert.equal(built.getTextureKey(), "video");
   assert.equal(built.getMode(), "worldToClip");
   assert.deepEqual(built.getHomography(), [1, 0, 0, 0, 1, 0, 0, 0, 1]);

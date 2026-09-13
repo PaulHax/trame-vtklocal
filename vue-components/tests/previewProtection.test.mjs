@@ -23,7 +23,7 @@ test("preview protection resolves a rebuilt pickable mapper", async () => {
     isDeleted: () => false,
     getInputData: () => newPoints,
   };
-  const synchronizerContext = {
+  const registry = {
     getInstance: (id) => (id === "mapper" ? rebuiltMapper : null),
     getInstanceId: (instance) =>
       instance === oldPoints
@@ -48,11 +48,7 @@ test("preview protection resolves a rebuilt pickable mapper", async () => {
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
     },
     {
-      createManagedSyncContext: () => ({
-        synchronizerContext,
-        syncRenderWindow: null,
-        cleanup() {},
-      }),
+      createInstanceRegistry: () => registry,
       createMirrorStore: () => ({
         entries: () => [][Symbol.iterator](),
         get: () => null,
@@ -70,7 +66,7 @@ test("preview protection resolves a rebuilt pickable mapper", async () => {
       },
     },
   );
-  scene.initialize({ contextName: "preview-protection", renderWindowId: 1 });
+  scene.initialize({ renderWindowId: 1 });
   blockHandlers.get("pickable")(
     "mapper",
     { grabPx: 8, preview: "screen" },

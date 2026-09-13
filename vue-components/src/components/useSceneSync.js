@@ -1,13 +1,12 @@
-import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
-
 import {
-  createManagedSyncContext,
   getPrimaryRenderer,
   getSyncedRenderers,
   applyCameraParams,
   extractCameraParams,
 } from "./vtkJsSync";
+import { createInstanceRegistry } from "./engine/instanceRegistry";
 import { createMirrorStore } from "./engine/mirrorStore";
+import { buildInstance } from "./instanceFactory";
 import { createReconciler } from "./engine/reconcile";
 import { createSceneEngine } from "./engine/sceneEngine";
 import { dumpAppliedScene } from "./dumpAppliedScene";
@@ -61,17 +60,16 @@ export function useSceneSync(
   dependencies = {},
 ) {
   const {
-    createManagedSyncContext:
-      createManagedSyncContextImpl = createManagedSyncContext,
+    createInstanceRegistry: createInstanceRegistryImpl = createInstanceRegistry,
     createMirrorStore: createMirrorStoreImpl = createMirrorStore,
     createReconciler: createReconcilerImpl = createReconciler,
     createSceneEngine: createSceneEngineImpl = createSceneEngine,
-    vtkObjectManager: vtkObjectManagerImpl = vtkObjectManager,
+    buildInstance: buildInstanceImpl = buildInstance,
     createStreamedSceneHost:
       createStreamedSceneHostImpl = createStreamedSceneHost,
   } = dependencies;
 
-  let managedSyncContext = null;
+  let instances = null;
   let engine = null;
   let reconciler = null;
   let mirror = null;
@@ -144,11 +142,11 @@ export function useSceneSync(
   }
 
   function getRenderer() {
-    return getPrimaryRenderer(getRenderWindow?.() || null);
+    return getPrimaryRenderer(getRenderWindow?.() || null, instances);
   }
 
   function getRenderers() {
-    return getSyncedRenderers(getRenderWindow?.() || null);
+    return getSyncedRenderers(getRenderWindow?.() || null, instances);
   }
 
   function bindPrimaryCameraToRenderers() {
@@ -241,9 +239,7 @@ export function useSceneSync(
 
   function getInstance(id) {
     if (id === undefined || id === null) return null;
-    return (
-      managedSyncContext?.synchronizerContext?.getInstance?.(String(id)) ?? null
-    );
+    return instances?.getInstance?.(String(id)) ?? null;
   }
 
   // Which desired nodes name `nodeId` in the given ref slot. The mirror
@@ -255,7 +251,7 @@ export function useSceneSync(
 
   function getSceneTopologyVersion() {
     return (
-      (mirror?.refRevision?.() ?? 0) + (reconciler?.instanceRevision?.() ?? 0)
+      (mirror?.refRevision?.() ?? 0) + (instances?.instanceRevision?.() ?? 0)
     );
   }
 
@@ -385,35 +381,24 @@ export function useSceneSync(
     pointCloudPresentations.clear();
     hostFrameFeedbackSeen = false;
     cancelPresentationReport();
-    managedSyncContext?.cleanup?.();
-    managedSyncContext = null;
+    instances = null;
   }
 
-  function initialize({
-    contextName,
-    renderWindowId,
-    onRenderNeeded,
-    onMessageApplied,
-  }) {
+  function initialize({ renderWindowId, onRenderNeeded, onMessageApplied }) {
     disposed = false;
     cleanupSyncContext();
     messageAppliedCallback = onMessageApplied || null;
     renderRequestCallback = onRenderNeeded || null;
     syncedRootId = renderWindowId !== undefined ? String(renderWindowId) : null;
 
-    managedSyncContext = createManagedSyncContextImpl(
-      contextName,
-      getRenderWindow(),
-    );
-    const { synchronizerContext, syncRenderWindow } = managedSyncContext;
-
+    instances = createInstanceRegistryImpl();
     mirror = createMirrorStoreImpl();
     blobCache = new Map();
     reconciler = createReconcilerImpl({
-      synchronizerContext,
-      objectManager: vtkObjectManagerImpl,
+      instances,
+      buildInstance: buildInstanceImpl,
       rootId: syncedRootId,
-      rootInstance: syncRenderWindow,
+      rootInstance: getRenderWindow(),
       shouldDeferProps: (_id, node) =>
         cameraAuthority === "server" &&
         cameraInteractionStack.length > 0 &&
@@ -571,7 +556,7 @@ export function useSceneSync(
         }
       }
     }
-    const appliedIdentity = reconciler?.describeAppliedRegistry?.() ?? {
+    const appliedIdentity = instances?.describe?.() ?? {
       instanceRevision: 0,
       records: [],
     };
@@ -616,13 +601,8 @@ export function useSceneSync(
 
   function getAppliedSceneState(rwId) {
     const id = rwId !== undefined ? String(rwId) : syncedRootId;
-    if (!id || !mirror || !managedSyncContext?.synchronizerContext) return null;
-    return dumpAppliedScene(
-      id,
-      mirror,
-      managedSyncContext.synchronizerContext,
-      reconciler?.getBoundArray,
-    );
+    if (!id || !mirror || !instances) return null;
+    return dumpAppliedScene(id, mirror, instances, reconciler?.getBoundArray);
   }
 
   function updateDistanceToCameraGlyphsForRender() {
@@ -634,7 +614,7 @@ export function useSceneSync(
     return updateDistanceToCameraGlyphs(distanceToCameraGlyphs, {
       renderer: getRenderer(),
       renderWindow: getRenderWindow?.(),
-      synchronizerContext: managedSyncContext?.synchronizerContext,
+      instances,
     });
   }
 
@@ -655,12 +635,11 @@ export function useSceneSync(
   // scene state, before a pointer can grab them. This keeps pointer moves free
   // of whole-array copies and keeps the blob cache canonical.
   function protectPreviewBindings() {
-    const synchronizerContext = managedSyncContext?.synchronizerContext;
     for (const entry of pickables.values()) {
       if (!entry.preview) continue;
-      const mapper = resolvePickableMapper(entry, synchronizerContext);
+      const mapper = resolvePickableMapper(entry, instances);
       const points = mapper?.getInputData?.(0);
-      const pointsNodeId = synchronizerContext?.getInstanceId?.(points);
+      const pointsNodeId = instances?.getInstanceId?.(points);
       if (pointsNodeId !== undefined && pointsNodeId !== null) {
         reconciler?.protectLocalWrites?.(String(pointsNodeId), "points");
       }
@@ -789,7 +768,7 @@ export function useSceneSync(
     return pickAtRegistry(pickables, cssX, cssY, {
       renderer: getRenderer(),
       renderWindow: getRenderWindow?.(),
-      synchronizerContext: managedSyncContext?.synchronizerContext,
+      instances,
     });
   }
 

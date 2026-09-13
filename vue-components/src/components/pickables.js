@@ -131,11 +131,11 @@ function projectWorldToCss(out, worldToClip, x, y, z, width, height) {
   return Number.isFinite(out[0]) && Number.isFinite(out[1]);
 }
 
-export function resolvePickableMapper(entry, synchronizerContext) {
+export function resolvePickableMapper(entry, instances) {
   if (isLiveInstance(entry.mapper)) {
     return entry.mapper;
   }
-  const resolved = synchronizerContext?.getInstance?.(entry.id);
+  const resolved = instances?.getInstance?.(entry.id);
   if (isLiveInstance(resolved)) {
     entry.mapper = resolved;
     entry.pending = false;
@@ -240,7 +240,7 @@ export function pickAt(
   registry,
   cssX,
   cssY,
-  { renderer, renderWindow, synchronizerContext } = {},
+  { renderer, renderWindow, instances } = {},
 ) {
   if (!registry?.size || !renderer || !renderWindow) {
     return null;
@@ -266,7 +266,7 @@ export function pickAt(
     const declarationOrder = order;
     order += 1;
 
-    const mapper = resolvePickableMapper(entry, synchronizerContext);
+    const mapper = resolvePickableMapper(entry, instances);
     if (!mapper) {
       // Instance was deleted (or never resolvable); drop it. A live view
       // re-registers it on the next full/patch sync.
@@ -299,7 +299,7 @@ export function pickAt(
       preview: entry.preview,
       plane: entry.plane,
       pointsNodeId:
-        synchronizerContext?.getInstanceId?.(mapper.getInputData?.(0)) ?? null,
+        instances?.getInstanceId?.(mapper.getInputData?.(0)) ?? null,
       world: near.world,
       grabOffset: near.grabOffset,
     };

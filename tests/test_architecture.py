@@ -82,7 +82,7 @@ SIZE_BUDGETS = {
     "store.py": 531,
     # one concern (dirty candidates) but three observer graphs: objects,
     # dataset children, pipeline producers
-    "widgets/dirty_tracker.py": 501,
+    "widgets/dirty_tracker.py": 500,
     # retained-copy differ plus the hot-array fast-path guard
     "widgets/hot_arrays.py": 438,
     # publish tick + wire encoding + resync + dropped-blob re-entry guard +

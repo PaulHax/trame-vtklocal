@@ -132,6 +132,11 @@ class DirtyTracker:
         self._pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
         self._structural_ids: set[str] = set()
         self._observed_objects: dict[str, tuple[vtkObject, int]] = {}
+        self._observed_this_pass: set[str] | None = None  # None outside a sync
+        # Manager ids of the last sync's live wrappers by id(wrapper): VTK hands
+        # back the same wrapper for a live object, and holding them keeps ids unique.
+        self._live_objects: dict[str, vtkObject] = {}
+        self._ids_by_wrapper: dict[int, str] = {}
         self._classes: dict[str, str] = {}
         self._mtimes: dict[str, int] = {}
         self._suppressed = False
@@ -175,19 +180,21 @@ class DirtyTracker:
 
     # -- observer graph ------------------------------------------------
 
-    def _clear_observers(self) -> None:
-        for vtk_obj, observer_tag in self._observed_objects.values():
+    def _drop_observers(self, object_ids: Iterable[str]) -> None:
+        for object_id in list(object_ids):
+            vtk_obj, observer_tag = self._observed_objects.pop(object_id)
             try:
                 vtk_obj.RemoveObserver(observer_tag)
             except (AttributeError, RuntimeError, ValueError):
                 pass
-        self._observed_objects.clear()
 
     def _observe(self, object_id: str | int, vtk_obj: vtkObject | None) -> None:
         if vtk_obj is None or not hasattr(vtk_obj, "AddObserver"):
             return
 
         object_id = str(object_id)
+        if self._observed_this_pass is not None:
+            self._observed_this_pass.add(object_id)
         observed = self._observed_objects.get(object_id)
         if observed is not None and observed[0] is vtk_obj:
             return
@@ -203,15 +210,16 @@ class DirtyTracker:
         self._observed_objects[object_id] = (vtk_obj, tag)
 
     def sync_observers(self) -> None:
-        """Rebuild the observer graph from the current dependency set."""
+        """Rebuild the observer graph from the current dependency set, keeping
+        observers on objects that stay live."""
         object_manager = self._object_manager
         with self.suppress():
             ids = list(object_manager.GetAllDependencies(self._rw_id))
 
         pending_dirty_ids = set(self._dirty_ids)
         pending_swept_ids = set(self._swept_ids)
-        self._clear_observers()
         live_ids = {str(object_id) for object_id in ids}
+        self._observed_this_pass = set()
 
         classes: dict[str, str] = {}
         mtimes: dict[str, int] = {}
@@ -230,6 +238,8 @@ class DirtyTracker:
                 mtimes[object_id] = vtk_obj.GetMTime()
         self._classes = classes
         self._mtimes = mtimes
+        self._live_objects = live_objects
+        self._ids_by_wrapper = {id(obj): oid for oid, obj in live_objects.items()}
 
         owner_ids: dict[str, set[str]] = {}
         pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
@@ -237,16 +247,19 @@ class DirtyTracker:
         for object_id, vtk_obj in live_objects.items():
             class_name = classes.get(object_id, "")
             if class_name in DATASET_PATCH_TYPES:
-                self._sync_dataset_children(object_id, vtk_obj, live_ids, owner_ids)
+                self._sync_dataset_children(object_id, vtk_obj, owner_ids)
             if "Mapper" in class_name:
                 self._sync_mapper_pipeline(
-                    object_id, vtk_obj, live_ids, owner_ids, pipeline_updates
+                    object_id, vtk_obj, owner_ids, pipeline_updates
                 )
             for collection in _owned_collections(vtk_obj):
-                collection_id = str(object_manager.GetId(collection))
-                if collection_id in live_ids:
+                collection_id = self._ids_by_wrapper.get(id(collection))
+                if collection_id is not None:
                     structural_ids.add(collection_id)
                     owner_ids.setdefault(collection_id, set()).add(object_id)
+
+        self._drop_observers(set(self._observed_objects) - self._observed_this_pass)
+        self._observed_this_pass = None
 
         self._owner_ids = owner_ids
         self._pipeline_updates = pipeline_updates
@@ -264,22 +277,15 @@ class DirtyTracker:
         self,
         dataset_id: str,
         dataset: vtkObjectBase | None,
-        live_ids: Iterable[str] | None,
         owner_ids: dict[str, set[str]] | None = None,
     ) -> None:
         if owner_ids is None:
             owner_ids = self._owner_ids
-        live_ids = set(live_ids or ())
         for child in _iter_dataset_dirty_children(dataset):
-            try:
-                child_id = str(self._object_manager.GetId(child))
-            except (TypeError, ValueError, RuntimeError):
-                continue
-            # Live-ids filter: iteration yields transient Python
-            # wrappers that GetId() assigns fresh ids to on every call;
-            # observing them grows _observed_objects unboundedly (~33k in
-            # 5 min of playback) and pins observer callbacks.
-            if live_ids and child_id not in live_ids:
+            # Transient wrappers are never dependencies; observing them would
+            # grow _observed_objects without bound.
+            child_id = self._ids_by_wrapper.get(id(child))
+            if child_id is None:
                 continue
             owner_ids.setdefault(child_id, set()).add(str(dataset_id))
             self._observe(child_id, child)
@@ -287,19 +293,17 @@ class DirtyTracker:
     def refresh_dataset_children(self, dataset_ids: Iterable[str | int]) -> None:
         """Re-observe children of just-published datasets (arrays get swapped)."""
         object_manager = self._object_manager
-        live_ids = set(self._classes)
         for object_id in dataset_ids:
             object_id = str(object_id)
             if self._classes.get(object_id, "") not in DATASET_PATCH_TYPES:
                 continue
             dataset = object_manager.GetObjectAtId(int(object_id))
-            self._sync_dataset_children(object_id, dataset, live_ids)
+            self._sync_dataset_children(object_id, dataset)
 
     def _sync_mapper_pipeline(
         self,
         mapper_id: str,
         mapper: vtkObject | None,
-        live_ids: set[str],
         owner_ids: dict[str, set[str]],
         pipeline_updates: dict[str, dict[int, vtkAlgorithm]],
     ) -> None:
@@ -319,7 +323,7 @@ class DirtyTracker:
 
             for connection_index in range(connection_count):
                 owner_id = self._mapper_input_dataset_id(
-                    mapper, port_index, connection_index, live_ids
+                    mapper, port_index, connection_index
                 )
                 if owner_id is None:
                     continue
@@ -350,7 +354,6 @@ class DirtyTracker:
         mapper: vtkAlgorithm,
         port_index: int,
         connection_index: int,
-        live_ids: set[str],
     ) -> str | None:
         data_object = None
         get_input_data = getattr(mapper, "GetInputDataObject", None)
@@ -371,14 +374,8 @@ class DirtyTracker:
         if data_object is None:
             return None
 
-        try:
-            owner_id = str(self._object_manager.GetId(data_object))
-        except (TypeError, ValueError, RuntimeError):
-            return None
-
-        if owner_id not in live_ids:
-            return None
-        if self._classes.get(owner_id, "") not in DATASET_PATCH_TYPES:
+        owner_id = self._ids_by_wrapper.get(id(data_object))
+        if owner_id is None or self._classes.get(owner_id) not in DATASET_PATCH_TYPES:
             return None
         return owner_id
 
@@ -490,7 +487,9 @@ class DirtyTracker:
                 self._dirty_ids.add(object_id)
 
     def cleanup(self) -> None:
-        self._clear_observers()
+        self._drop_observers(self._observed_objects)
+        self._live_objects = {}
+        self._ids_by_wrapper = {}
         self._dirty_ids.clear()
         self._swept_ids.clear()
         self._owner_ids.clear()

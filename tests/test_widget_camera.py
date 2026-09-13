@@ -11,26 +11,12 @@ def _render_window():
     return render_window
 
 
-def test_vtkjs_views_forward_camera_authority_to_the_client():
-    server = get_server("widget-camera-authority", client_type="vue3")
-    local_view = VtkJsLocalView(
-        _render_window(),
-        camera_authority="client",
-        trame_server=server,
-    )
-    shared_view = VtkJsSharedView(
-        _render_window(),
-        camera_authority="server",
-        trame_server=server,
-    )
+def test_vtkjs_views_bind_their_ref_and_camera_event():
+    server = get_server("widget-camera-events", client_type="vue3")
+    local_view = VtkJsLocalView(_render_window(), trame_server=server)
+    shared_view = VtkJsSharedView(_render_window(), trame_server=server)
 
     try:
-        assert local_view._attributes["camera_authority"] == (
-            'camera-authority="client"'
-        )
-        assert shared_view._attributes["camera_authority"] == (
-            'camera-authority="server"'
-        )
         assert local_view._attributes["view_key"] == (
             f'view-key="{local_view.ref_name}"'
         )
@@ -41,11 +27,22 @@ def test_vtkjs_views_forward_camera_authority_to_the_client():
         shared_view.cleanup()
 
 
-def test_camera_methods_retain_commands_under_client_authority():
+def test_local_view_seeds_its_camera_and_shared_view_does_not():
+    server = get_server("widget-camera-seed", client_type="vue3")
+    local_view = VtkJsLocalView(_render_window(), trame_server=server)
+    shared_view = VtkJsSharedView(_render_window(), trame_server=server)
+
+    try:
+        assert set(local_view._publisher._retained_commands) == {"camera.set"}
+        assert shared_view._publisher._retained_commands == {}
+    finally:
+        local_view.cleanup()
+        shared_view.cleanup()
+
+
+def test_camera_methods_retain_the_latest_camera_command():
     server = get_server("widget-camera-commands", client_type="vue3")
-    view = VtkJsLocalView(
-        _render_window(), camera_authority="client", trame_server=server
-    )
+    view = VtkJsSharedView(_render_window(), trame_server=server)
     try:
         view.set_camera({"parallelScale": 3})
         view.reset_camera()
@@ -59,27 +56,6 @@ def test_camera_methods_retain_commands_under_client_authority():
             {"name": "camera.reset", "payload": {}, "render": True},
         ]
         assert set(view._publisher._retained_commands) == {"camera.reset"}
-    finally:
-        view.cleanup()
-
-
-def test_camera_methods_do_not_retain_under_server_authority():
-    # In server mode the camera is a synced node: the snapshot already carries
-    # the current pose, so a retained command would replay a stale one on
-    # every resync.
-    server = get_server("widget-camera-commands-server", client_type="vue3")
-    view = VtkJsLocalView(
-        _render_window(), camera_authority="server", trame_server=server
-    )
-    try:
-        view.set_camera({"parallelScale": 3})
-        view.reset_camera()
-
-        assert [cmd["name"] for cmd in view._publisher._pending_commands] == [
-            "camera.set",
-            "camera.reset",
-        ]
-        assert view._publisher._retained_commands == {}
     finally:
         view.cleanup()
 

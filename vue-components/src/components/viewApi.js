@@ -19,11 +19,6 @@ export const VIEW_PROPS = Object.freeze({
     type: Number,
     required: true,
   },
-  cameraAuthority: {
-    type: String,
-    default: "server",
-    validator: (value) => value === "server" || value === "client",
-  },
   tiles3dTexturePolicy: {
     type: String,
     default: "auto",

@@ -100,7 +100,6 @@ async function makeScene() {
       createReconciler: () => ({
         registerBlockHandler() {},
         teardown() {},
-        flushDeferredProps() {},
       }),
       createSceneEngine: ({ callbacks }) => {
         engineCallbacks = callbacks;

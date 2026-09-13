@@ -47,7 +47,6 @@ export default {
       emit,
       getRenderWindow: () => renderWindow,
       getOpenGLRenderWindow: () => openGLRenderWindow,
-      cameraAuthority: props.cameraAuthority,
       tiles3dTexturePolicy: props.tiles3dTexturePolicy,
       tiles3dQualityPolicy: props.tiles3dQualityPolicy,
     });

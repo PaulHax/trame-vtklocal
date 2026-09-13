@@ -53,7 +53,6 @@ export function useSceneSync(
     emit,
     getRenderWindow,
     getOpenGLRenderWindow,
-    cameraAuthority = "server",
     tiles3dTexturePolicy = "auto",
     tiles3dQualityPolicy = "adaptive",
   },
@@ -154,10 +153,6 @@ export function useSceneSync(
     let camera = renderer?.getActiveCamera?.();
     if (!renderer || !camera) {
       return { renderer: null, camera: null };
-    }
-
-    if (cameraAuthority !== "client") {
-      return { renderer, camera };
     }
 
     if (clientCamera?.isDeleted?.()) {
@@ -287,7 +282,6 @@ export function useSceneSync(
   function applyCameraIntent(params) {
     const { camera } = bindPrimaryCameraToRenderers();
     if (!camera || !params) return false;
-    reconciler?.flushDeferredProps?.();
     renderedCamera = null;
     applyCameraParams(camera, params);
     camera.modified?.();
@@ -353,7 +347,6 @@ export function useSceneSync(
   function applyCameraResetIntent() {
     const { renderer } = bindPrimaryCameraToRenderers();
     if (!renderer) return false;
-    reconciler?.flushDeferredProps?.();
     renderedCamera = null;
     renderer.resetCamera();
     return true;
@@ -399,10 +392,6 @@ export function useSceneSync(
       buildInstance: buildInstanceImpl,
       rootId: syncedRootId,
       rootInstance: getRenderWindow(),
-      shouldDeferProps: (_id, node) =>
-        cameraAuthority === "server" &&
-        cameraInteractionStack.length > 0 &&
-        node?.type === "vtkCamera",
     });
 
     reconciler.registerBlockHandler(
@@ -911,7 +900,6 @@ export function useSceneSync(
     }
     if (cameraInteractionStack.length > 0) return;
     streamedSceneHost?.endInteraction();
-    reconciler?.flushDeferredProps?.();
     renderRequestCallback?.();
   }
 

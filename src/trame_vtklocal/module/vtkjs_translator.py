@@ -303,20 +303,6 @@ PROPERTY_SKIP_PROPERTIES: set[str] = {
     "specularPower",
 }
 
-# Properties vtk.js Camera expects
-CAMERA_PROPERTIES: set[str] = {
-    "position",
-    "focalPoint",
-    "viewUp",
-    "clippingRange",
-    "viewAngle",
-    "parallelProjection",
-    "parallelScale",
-    "physicalScale",
-    "physicalTranslation",
-    "physicalViewDirection",
-    "physicalViewUp",
-}
 
 # Keyed by VTK's integer light type; looked up with whatever the state holds.
 VTK_LIGHT_TYPE_MAP: dict[object, str] = {

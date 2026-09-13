@@ -1,5 +1,5 @@
 """ScenePublisher behavior: hot arrays, batching, commands, resync, blob GC,
-camera authority, and seq-stamped event staleness."""
+client-owned cameras, and seq-stamped event staleness."""
 
 from __future__ import annotations
 
@@ -544,48 +544,30 @@ def _camera_id(scene):
     return str(scene.api.vtk_object_manager.GetId(camera))
 
 
-@pytest.mark.parametrize(
-    ("camera_authority", "camera_synced"),
-    [("server", True), ("client", False)],
-)
-def test_camera_authority_gates_camera_upserts(camera_authority, camera_synced):
+def test_camera_changes_publish_nothing():
     scene = make_basic_scene()
-    publisher, server = make_publisher(scene, camera_authority=camera_authority)
+    publisher, server = make_publisher(scene)
     try:
-        camera_id = _camera_id(scene)
-        assert publisher.camera_authority == camera_authority
-        assert (camera_id in publisher.store.node_ids()) == camera_synced
+        assert _camera_id(scene) not in publisher.store.node_ids()
 
         scene.handles["renderer"].GetActiveCamera().SetPosition(1.0, 2.0, 9.0)
         publisher.sync()
+        assert server.protocol.drain() == []
 
-        messages = server.protocol.drain()
-        camera_upserts = [
-            op
-            for _topic, message in messages
-            for op in message["ops"]
-            if op["op"] == "upsert" and op["id"] == camera_id
-        ]
-        assert bool(camera_upserts) == camera_synced
-        if camera_synced:
-            assert camera_upserts[0]["node"]["props"]["position"] == [1.0, 2.0, 9.0]
-        else:
-            # The camera mutation produced nothing to broadcast at all, and a
-            # non-camera mutation still publishes normally afterwards.
-            assert messages == []
-            scene.handles["actor"].SetVisibility(False)
-            publisher.sync()
-            ((_topic, message),) = server.protocol.drain()
-            assert {op["id"] for op in message["ops"]} == {
-                str(scene.api.vtk_object_manager.GetId(scene.handles["actor"]))
-            }
+        # A non-camera mutation still publishes normally afterwards.
+        scene.handles["actor"].SetVisibility(False)
+        publisher.sync()
+        ((_topic, message),) = server.protocol.drain()
+        assert {op["id"] for op in message["ops"]} == {
+            str(scene.api.vtk_object_manager.GetId(scene.handles["actor"]))
+        }
     finally:
         publisher.cleanup()
 
 
-def test_client_camera_authority_resync_snapshot_has_no_camera():
+def test_resync_snapshot_has_no_camera():
     scene = make_basic_scene()
-    publisher, _server = make_publisher(scene, camera_authority="client")
+    publisher, _server = make_publisher(scene)
     try:
         payload = publisher.resync([])
         assert _camera_id(scene) not in payload["nodes"]
@@ -597,9 +579,9 @@ def test_client_camera_authority_resync_snapshot_has_no_camera():
         publisher.cleanup()
 
 
-def test_commands_ignore_camera_authority():
+def test_command_without_scene_changes_publishes_empty_ops():
     scene = make_basic_scene()
-    publisher, server = make_publisher(scene, camera_authority="client")
+    publisher, server = make_publisher(scene)
     try:
         publisher.send_command("mapCamera", {"frame": 3})
         publisher.sync()
@@ -610,18 +592,6 @@ def test_commands_ignore_camera_authority():
         assert message["ops"] == []
     finally:
         publisher.cleanup()
-
-
-def test_unknown_camera_authority_is_rejected_at_construction():
-    scene = make_basic_scene()
-    with pytest.raises(ValueError, match="camera_authority"):
-        ScenePublisher(
-            _FakeServer(),
-            scene.api,
-            scene.render_window,
-            scene.render_window_id,
-            camera_authority="nobody",
-        )
 
 
 # ----------------------------------------------------------------------

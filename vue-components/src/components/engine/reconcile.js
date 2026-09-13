@@ -24,7 +24,6 @@ import { createInstanceRegistry } from "./instanceRegistry";
 
 // Ref-slot -> vtk.js call map (pinned by the wire protocol).
 const SINGLE_REF_SETTERS = {
-  activeCamera: "setActiveCamera",
   mapper: "setMapper",
   property: "setProperty",
   lookupTable: "setLookupTable",
@@ -67,7 +66,6 @@ export function createReconciler({
   buildInstance,
   rootId,
   rootInstance,
-  shouldDeferProps = () => false,
 }) {
   const blockHandlers = new Map();
   // nodeId -> Map(arrayKey -> { array: vtk data array, ref }) — the client's
@@ -82,7 +80,6 @@ export function createReconciler({
   // nodeId -> Set(arrayKey). Previewable arrays stay private across ordinary
   // server rebinds so every optimistic write is cache-safe and allocation-free.
   const privateSlots = new Map();
-  const deferredProps = new Map(); // id -> latest server props
   let rootAttached = false;
 
   // The root render window is widget-owned, never built. Register it so
@@ -205,9 +202,8 @@ export function createReconciler({
     }
     const singleSetter = SINGLE_REF_SETTERS[slot];
     if (singleSetter) {
-      // A slot that disappears is left alone: a renderer with no activeCamera
-      // ref keeps its own local camera (client camera authority), and
-      // mapper/property/lookupTable only ever leave with their owner node.
+      // A slot that disappears is left alone: mapper/property/lookupTable only
+      // ever leave with their owner node.
       if (nextValue === undefined || nextValue === null) {
         return;
       }
@@ -482,12 +478,7 @@ export function createReconciler({
     if (id === rootId) {
       rootAttached = true;
     }
-    if (shouldDeferProps(id, node)) {
-      deferredProps.set(id, { instance, props: node.props || {} });
-    } else {
-      deferredProps.delete(id);
-      applyPropsDiff(instance, node.props || {}, prev?.props || {}, isNew);
-    }
+    applyPropsDiff(instance, node.props || {}, prev?.props || {}, isNew);
     applyRefsDiff(instance, node.refs || {}, prev?.refs || {});
     applyArraysDiff(instance, id, node.arrays || {}, prev?.arrays || {}, cache);
     applyBlocksDiff(instance, id, node.blocks || {}, prev?.blocks || {}, isNew);
@@ -580,7 +571,6 @@ export function createReconciler({
       blockHandlers.get(key)?.(id, null, instance);
     }
     dropBindings(id, { forgetPrivate: true });
-    deferredProps.delete(id);
     if (instance) {
       instances.remove(id);
       if (isLiveInstance(instance)) {
@@ -795,22 +785,11 @@ export function createReconciler({
     return true;
   }
 
-  function flushDeferredProps() {
-    for (const [id, deferred] of deferredProps) {
-      const instance = liveInstanceFor(id) || deferred.instance;
-      if (isLiveInstance(instance)) {
-        instance.set(deferred.props);
-      }
-    }
-    deferredProps.clear();
-  }
-
   function teardown() {
     bindings.clear();
     bindingsByRef.clear();
     bufferOwners.clear();
     privateSlots.clear();
-    deferredProps.clear();
     blockHandlers.clear();
     instances.clear();
   }
@@ -822,7 +801,6 @@ export function createReconciler({
     reset,
     getBoundArray,
     protectLocalWrites,
-    flushDeferredProps,
     instances,
     teardown,
   };

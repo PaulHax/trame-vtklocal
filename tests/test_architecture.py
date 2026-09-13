@@ -75,7 +75,7 @@ DEFAULT_LINE_BUDGET = 400
 # almost always to split it.
 SIZE_BUDGETS = {
     # one translator for every node kind, plus the shared-reader seam
-    "module/node_translator.py": 421,
+    "module/node_translator.py": 403,
     # the node, op and commit shapes the store validates live beside it, since
     # it may import nothing else from the package
     "store.py": 506,
@@ -88,7 +88,7 @@ SIZE_BUDGETS = {
     # the hot-array fast-path dispatch in _commit_batch.
     # Next reduction: event_is_current() is a VTK-free, store-only predicate
     # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 549,
+    "widgets/publisher.py": 532,
 }
 
 

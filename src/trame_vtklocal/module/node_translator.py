@@ -5,7 +5,7 @@ own class maps/fixups. Callers own render-window ``Render()`` /
 ``UpdateStatesFromObjects()`` choreography (as the publisher does); the
 translator only reads object-manager state plus live objects.
 
-Client-authority cameras never become nodes or refs.
+Cameras never become nodes or refs: the client owns the rendered camera.
 """
 
 from __future__ import annotations
@@ -28,11 +28,9 @@ from trame_vtklocal.module.node_arrays import (
     glyph_mapper_array_props,
     polydata_array_entries,
 )
-from trame_vtklocal.module.camera_authority import CameraAuthority
 from trame_vtklocal.module.state_cache import SceneReader
 from trame_vtklocal.module.streamed_scene_translation import translate_actor
 from trame_vtklocal.module.vtkjs_translator import (
-    CAMERA_PROPERTIES,
     COLLECTION_TYPES,
     LOOKUPTABLE_SKIP_PROPERTIES,
     MAPPER_SKIP_PROPERTIES,
@@ -59,7 +57,6 @@ if TYPE_CHECKING:
 # vtk.js type. Everything else that looks like a reference stays out of the
 # node entirely: props never hold refs, and unknown relations never dangle.
 SINGLE_REF_SLOTS: dict[str, dict[str, str]] = {
-    "vtkRenderer": {"ActiveCamera": "activeCamera"},
     "vtkActor": {"Mapper": "mapper", "Property": "property"},
     "vtkVolume": {"Mapper": "mapper", "Property": "property"},
     "vtkImageSlice": {"Mapper": "mapper", "Property": "property"},
@@ -100,15 +97,13 @@ _NON_NODE_CLASS_NAMES = COLLECTION_TYPES | {
 }
 
 
-def is_node_class(
-    class_name: str, camera_authority: CameraAuthority = "server"
-) -> bool:
+def is_node_class(class_name: str) -> bool:
     """Whether objects of this VTK class become scene-store nodes."""
     if not class_name:
         return False
     if class_name in SKIP_TYPES or class_name in _NON_NODE_CLASS_NAMES:
         return False
-    if camera_authority == "client" and map_class_name(class_name) == "vtkCamera":
+    if map_class_name(class_name) == "vtkCamera":
         return False
     return "Array" not in class_name
 
@@ -169,7 +164,7 @@ def _ref_node_ids(reader: SceneReader, value: object) -> list[int]:
     """Resolve a state ref (or list of refs) into node ids.
 
     Collections dissolve into their items; SKIP_TYPES and other non-node
-    classes (cameras under client authority included) drop out entirely so
+    classes (cameras included) drop out entirely so
     emitted ref slots can never dangle.
     """
     if isinstance(value, list):
@@ -185,7 +180,7 @@ def _ref_node_ids(reader: SceneReader, value: object) -> list[int]:
             for item_id in _collection_item_ids(reader, ref_id)
             for node_id in _ref_node_ids(reader, {"Id": item_id})
         ]
-    if not is_node_class(class_name, reader.camera_authority):
+    if not is_node_class(class_name):
         return []
     return [ref_id]
 
@@ -219,8 +214,6 @@ def _scalar_props(
         if key in SKIP_PROPERTIES or camel_key in SKIP_PROPERTIES:
             continue
         if _contains_ref(value):
-            continue
-        if vtkjs_type == "vtkCamera" and camel_key not in CAMERA_PROPERTIES:
             continue
         if camel_key in type_skips or camel_key in extra_skips:
             continue
@@ -340,7 +333,7 @@ def _translate_generic(
 def _translate_node(reader: SceneReader, obj_id: int) -> SceneNode | None:
     state = reader.state(obj_id)
     class_name = state.get("ClassName", "")
-    if not is_node_class(class_name, reader.camera_authority):
+    if not is_node_class(class_name):
         return None
 
     vtkjs_type = map_class_name(class_name)
@@ -353,42 +346,34 @@ def _translate_node(reader: SceneReader, obj_id: int) -> SceneNode | None:
 
 def scene_reader(
     object_manager: vtkObjectManager,
-    camera_authority: CameraAuthority = "server",
     state_cache: ParsedStateCache | None = None,
     class_names: Mapping[str, str] | None = None,
 ) -> SceneReader:
     """A cached state reader, shareable across several ``translate_object``
     calls in one pass so referenced states are JSON-parsed once."""
-    return SceneReader(
-        object_manager,
-        camera_authority,
-        state_cache=state_cache,
-        class_names=class_names,
-    )
+    return SceneReader(object_manager, state_cache=state_cache, class_names=class_names)
 
 
 def translate_object(
     object_manager: vtkObjectManager,
     obj_id: int | str,
-    camera_authority: CameraAuthority = "server",
     reader: SceneReader | None = None,
 ) -> SceneNode | None:
     """Translate one object into its flat node.
 
     Returns ``None`` for objects that never become nodes (SKIP_TYPES,
-    collections, data containers, client-authority cameras). Pass a shared
+    collections, data containers, cameras). Pass a shared
     ``reader`` (from :func:`scene_reader`) when translating several objects
     from the same refreshed states.
     """
     if reader is None:
-        reader = SceneReader(object_manager, camera_authority)
+        reader = SceneReader(object_manager)
     return _translate_node(reader, int(obj_id))
 
 
 def translate_scene(
     object_manager: vtkObjectManager,
     root_id: int | str,
-    camera_authority: CameraAuthority = "server",
     state_cache: ParsedStateCache | None = None,
     class_names: Mapping[str, str] | None = None,
 ) -> dict[str, SceneNode]:
@@ -399,10 +384,7 @@ def translate_scene(
     refs.
     """
     reader = SceneReader(
-        object_manager,
-        camera_authority,
-        state_cache=state_cache,
-        class_names=class_names,
+        object_manager, state_cache=state_cache, class_names=class_names
     )
     nodes: dict[str, SceneNode] = {}
     pending = [int(root_id)]

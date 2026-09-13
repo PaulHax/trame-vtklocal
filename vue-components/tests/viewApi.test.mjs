@@ -105,7 +105,6 @@ test("pickCloudPoint and setArmedCloudPick are exposed by both view implementati
   const props = {
     renderWindow: 1,
     wsClient: {},
-    cameraAuthority: "server",
     viewKey: null,
   };
   for (const path of [

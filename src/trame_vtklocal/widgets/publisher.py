@@ -24,10 +24,6 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from trame_vtklocal.module.camera_authority import (
-    CameraAuthority,
-    validate_camera_authority,
-)
 from trame_vtklocal.module.node_translator import (
     node_ref_ids,
     scene_reader,
@@ -122,7 +118,6 @@ class ScenePublisher:
         object_manager_api: PushViewHost,
         render_window: vtkRenderWindow,
         rw_id: int | str,
-        camera_authority: CameraAuthority = "server",
         hot_array_keys: Iterable[str] | None = None,
     ) -> None:
         self._server = server
@@ -130,7 +125,6 @@ class ScenePublisher:
         self._render_window = render_window
         self._rw_id = int(rw_id)
         self._rw_str = str(rw_id)
-        self._camera_authority = validate_camera_authority(camera_authority)
         self._store = SceneStore(self._rw_str)
         self._state_cache = ParsedStateCache()
         self._class_names: dict[str, str] = {}
@@ -251,10 +245,6 @@ class ScenePublisher:
     ) -> bool:
         """Whether a seq-stamped client event is current (see module helper)."""
         return event_is_current(self._store, event, node_id, strict=strict)
-
-    @property
-    def camera_authority(self) -> CameraAuthority:
-        return self._camera_authority
 
     @property
     def store(self) -> SceneStore:
@@ -457,7 +447,6 @@ class ScenePublisher:
             return translate_scene(
                 self._object_manager,
                 self._rw_id,
-                camera_authority=self._camera_authority,
                 state_cache=self._state_cache,
                 class_names=self._class_names,
             )
@@ -473,7 +462,6 @@ class ScenePublisher:
         pending = [str(object_id) for object_id in candidate_ids]
         reader = scene_reader(
             object_manager,
-            self._camera_authority,
             state_cache=self._state_cache,
             class_names=self._class_names,
         )
@@ -483,12 +471,7 @@ class ScenePublisher:
                 continue
             if object_manager.GetObjectAtId(int(node_id)) is None:
                 continue
-            node = translate_object(
-                object_manager,
-                int(node_id),
-                camera_authority=self._camera_authority,
-                reader=reader,
-            )
+            node = translate_object(object_manager, int(node_id), reader=reader)
             if node is None:
                 continue
             nodes[node_id] = node

@@ -43,13 +43,12 @@ const serverRenderers = {
   getInstanceId: (instance) => instance?.id ?? null,
 };
 
-function initializedScene(useSceneSync, renderWindow, cameraAuthority) {
+function initializedScene(useSceneSync, renderWindow) {
   const scene = useSceneSync(
     {
       client: {},
       emit() {},
       getRenderWindow: () => renderWindow,
-      cameraAuthority,
     },
     {
       createInstanceRegistry: () => serverRenderers,
@@ -74,13 +73,13 @@ function makeRenderWindow(renderers) {
   };
 }
 
-test("client camera authority shares one camera across renderer layers", async () => {
+test("the view shares one client camera across renderer layers", async () => {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
   const primaryCamera = makeCamera();
   const primary = makeRenderer(1, primaryCamera);
   const underlay = makeRenderer(2, makeCamera());
   const renderWindow = makeRenderWindow([primary, underlay]);
-  const scene = initializedScene(useSceneSync, renderWindow, "client");
+  const scene = initializedScene(useSceneSync, renderWindow);
 
   const viewMatrix = Array.from({ length: 16 }, (_, i) => i + 1);
   const projectionMatrix = Array.from({ length: 16 }, (_, i) => 32 - i);
@@ -93,27 +92,7 @@ test("client camera authority shares one camera across renderer layers", async (
   assert.deepEqual(primaryCamera.projectionMatrix, projectionMatrix);
 });
 
-test("server camera authority preserves independent renderer cameras", async () => {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const primaryCamera = makeCamera();
-  const underlayCamera = makeCamera();
-  const primary = makeRenderer(1, primaryCamera);
-  const underlay = makeRenderer(2, underlayCamera);
-  const renderWindow = makeRenderWindow([primary, underlay]);
-  const scene = initializedScene(useSceneSync, renderWindow, "server");
-
-  scene.setRenderedCamera({
-    viewMatrix: Array(16).fill(1),
-    projectionMatrix: Array(16).fill(2),
-  });
-
-  assert.equal(primary.getActiveCamera(), primaryCamera);
-  assert.equal(underlay.getActiveCamera(), underlayCamera);
-  assert.deepEqual(primaryCamera.viewMatrix, Array(16).fill(1));
-  assert.equal(underlayCamera.viewMatrix, null);
-});
-
-test("client camera authority binds initial, added, and replaced renderers before repaint", async () => {
+test("the client camera binds initial, added, and replaced renderers before repaint", async () => {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
   const primaryCamera = makeCamera();
   const primary = makeRenderer(1, primaryCamera);
@@ -129,7 +108,6 @@ test("client camera authority binds initial, added, and replaced renderers befor
       client: {},
       emit() {},
       getRenderWindow: () => renderWindow,
-      cameraAuthority: "client",
     },
     {
       createInstanceRegistry: () => serverRenderers,

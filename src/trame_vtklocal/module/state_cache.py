@@ -6,10 +6,6 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, TypedDict
 
-from trame_vtklocal.module.camera_authority import (
-    CameraAuthority,
-    validate_camera_authority,
-)
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
@@ -87,12 +83,10 @@ class SceneReader:
     def __init__(
         self,
         object_manager: vtkObjectManager,
-        camera_authority: CameraAuthority = "server",
         state_cache: ParsedStateCache | None = None,
         class_names: Mapping[str, str] | None = None,
     ) -> None:
         self.object_manager = object_manager
-        self.camera_authority = validate_camera_authority(camera_authority)
         self._states: dict[int, VtkState] = {}
         self._state_cache = state_cache
         self._class_names: Mapping[str, str] = class_names or {}

@@ -31,7 +31,6 @@ from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.screen_size_glyphs import mark_screen_size_glyphs
 from trame_vtklocal.module.node_translator import translate_object, translate_scene
 from trame_vtklocal.module.array_datatypes import js_datatype
-from trame_vtklocal.module.vtkjs_translator import CAMERA_PROPERTIES
 from trame_vtklocal.store import SceneStore, ref_manager_hashes
 from trame_vtklocal.widgets.blob_payloads import (
     pack_cell_array_payload,
@@ -523,98 +522,29 @@ def test_projected_texture_mapper_translates_as_a_block():
 
 
 # ----------------------------------------------------------------------
-# Camera authority
+# Cameras
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("scene_factory", [make_basic_scene, make_map_drape_scene])
-def test_client_camera_authority_excludes_cameras_and_the_active_camera_slot(
-    scene_factory,
-):
+def test_cameras_never_become_nodes_or_refs(scene_factory):
     scene = scene_factory()
-    server_nodes = translate(scene)
-    client_nodes = translate_scene(
-        scene.api.vtk_object_manager,
-        scene.render_window_id,
-        camera_authority="client",
-    )
+    nodes = translate(scene)
+    camera_id = oid(scene, scene.handles["renderer"].GetActiveCamera())
 
-    camera_ids = {
-        node_id for node_id, node in server_nodes.items() if node["type"] == "vtkCamera"
-    }
-    renderer_ids = {
-        node_id
-        for node_id, node in server_nodes.items()
-        if node["type"] == "vtkRenderer"
-    }
-    assert camera_ids
-
-    # No camera node and no activeCamera slot anywhere.
-    assert not camera_ids & set(client_nodes)
-    assert all(node["type"] != "vtkCamera" for node in client_nodes.values())
-    for renderer_id in renderer_ids:
-        assert "activeCamera" not in client_nodes[renderer_id].get("refs", {})
-
-    # Renderer nodes are otherwise identical; every other node is untouched.
-    for renderer_id in renderer_ids:
-        expected_refs = dict(server_nodes[renderer_id]["refs"])
-        expected_refs.pop("activeCamera")
-        assert client_nodes[renderer_id] == {
-            **server_nodes[renderer_id],
-            "refs": expected_refs,
-        }
-    unchanged_ids = set(server_nodes) - camera_ids - renderer_ids
-    assert set(client_nodes) == unchanged_ids | renderer_ids
-    for node_id in unchanged_ids:
-        assert client_nodes[node_id] == server_nodes[node_id]
+    assert camera_id not in nodes
+    assert all(node["type"] != "vtkCamera" for node in nodes.values())
+    assert all("activeCamera" not in node.get("refs", {}) for node in nodes.values())
+    assert translate_object(scene.api.vtk_object_manager, camera_id) is None
 
     # The emitted node set commits without dangling refs.
-    store, _ = commit_scene(scene, client_nodes)
-    assert store.snapshot()["nodes"] == client_nodes
-
-
-def test_client_camera_authority_translate_object_skips_the_camera():
-    scene = make_basic_scene()
-    camera_id = oid(scene, scene.handles["renderer"].GetActiveCamera())
-    object_manager = scene.api.vtk_object_manager
-
-    assert translate_object(object_manager, camera_id) is not None
-    assert (
-        translate_object(object_manager, camera_id, camera_authority="client") is None
-    )
-
-
-def test_unknown_camera_authority_is_rejected():
-    scene = make_basic_scene()
-    with pytest.raises(ValueError, match="camera_authority"):
-        translate_scene(
-            scene.api.vtk_object_manager,
-            scene.render_window_id,
-            camera_authority="nobody",
-        )
+    store, _ = commit_scene(scene, nodes)
+    assert store.snapshot()["nodes"] == nodes
 
 
 # ----------------------------------------------------------------------
 # Refs shapes
 # ----------------------------------------------------------------------
-
-
-def test_camera_node_uses_the_property_whitelist():
-    scene = make_basic_scene()
-    nodes = translate(scene)
-
-    camera = scene.handles["renderer"].GetActiveCamera()
-    camera_id = oid(scene, camera)
-    renderer_id = oid(scene, scene.handles["renderer"])
-
-    assert nodes[renderer_id]["refs"]["activeCamera"] == camera_id
-    camera_node = nodes[camera_id]
-    assert camera_node["type"] == "vtkCamera"
-    assert set(camera_node["props"]) <= CAMERA_PROPERTIES
-    assert {"position", "focalPoint", "viewUp", "viewAngle"} <= set(
-        camera_node["props"]
-    )
-    assert "refs" not in camera_node
 
 
 def test_renderer_lights_dissolve_into_a_ref_list():

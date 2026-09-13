@@ -7,10 +7,6 @@ from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar, Union
 from trame_client.widgets.core import AbstractElement
 
 from trame_vtklocal import module
-from trame_vtklocal.module.camera_authority import (
-    CameraAuthority,
-    validate_camera_authority,
-)
 
 if TYPE_CHECKING:
     from vtkmodules.vtkRenderingCore import vtkRenderWindow
@@ -72,7 +68,6 @@ class VtkJsBaseView(HtmlElement):
         self,
         _elem_name: str,
         render_window: vtkRenderWindow,
-        camera_authority: CameraAuthority = "server",
         tiles3d_texture_policy: Tiles3DTexturePolicy = "auto",
         tiles3d_quality_policy: Tiles3DQualityPolicy = "adaptive",
         **kwargs: object,
@@ -89,14 +84,6 @@ class VtkJsBaseView(HtmlElement):
         )
         super().__init__(_elem_name, **kwargs)
 
-        # "server": cameras are normal synced nodes. "client": the client owns
-        # the rendered camera — the translator excludes vtkCamera nodes and the
-        # renderer's activeCamera slot; the server drives the view via commands
-        # and reads camera matrices only from seq-stamped events.
-        self._camera_authority = validate_camera_authority(camera_authority)
-        self._attributes["camera_authority"] = (
-            f'camera-authority="{self._camera_authority}"'
-        )
         self._attributes["tiles3d_texture_policy"] = (
             f'tiles3d-texture-policy="{self._tiles3d_texture_policy}"'
         )
@@ -145,10 +132,6 @@ class VtkJsBaseView(HtmlElement):
         return self._ref
 
     @property
-    def camera_authority(self) -> CameraAuthority:
-        return self._camera_authority
-
-    @property
     def tiles3d_texture_policy(self) -> Tiles3DTexturePolicy:
         return self._tiles3d_texture_policy
 
@@ -166,7 +149,6 @@ class VtkJsBaseView(HtmlElement):
             self.api,
             self._render_window,
             self._window_id,
-            camera_authority=self._camera_authority,
         )
 
     def _configure_push(self) -> None:
@@ -243,23 +225,16 @@ class VtkJsBaseView(HtmlElement):
             "clippingRange": list(cam.GetClippingRange()),
         }
 
-    def _retain_camera_commands(self) -> bool:
-        # Retention exists for camera_authority="client", where commands are
-        # the only camera a resyncing client gets. In "server" mode the camera
-        # is a synced node — the snapshot already carries the current pose, and
-        # a retained command would replay a stale one on top of it.
-        return self._camera_authority == "client"
-
-    def reset_camera(self, *, retain: bool | None = None) -> None:
-        retain = self._retain_camera_commands() if retain is None else retain
+    # The client owns the rendered camera, so these commands are the only
+    # camera a resyncing client gets; they are retained unless asked not to be.
+    def reset_camera(self, *, retain: bool = True) -> None:
         if retain and self._publisher:
             self._publisher.clear_retained_command("camera.set")
         self.send_command("camera.reset", {}, retain=retain, render=True)
 
     def set_camera(
-        self, params: Mapping[str, object] | None = None, *, retain: bool | None = None
+        self, params: Mapping[str, object] | None = None, *, retain: bool = True
     ) -> None:
-        retain = self._retain_camera_commands() if retain is None else retain
         params = self._camera_params() if params is None else params
         if params is not None:
             if retain and self._publisher:

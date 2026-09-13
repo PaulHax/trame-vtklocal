@@ -22,7 +22,6 @@
 import { isLiveInstance } from "./predicates";
 
 const SINGLE_REF_GETTERS = {
-  activeCamera: "getActiveCamera",
   mapper: "getMapper",
   property: "getProperty",
   lookupTable: "getLookupTable",

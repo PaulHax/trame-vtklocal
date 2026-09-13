@@ -1,10 +1,10 @@
 """Feature blocks stored on the VTK object they describe.
 
-A block is a JSON object kept under a string key in the object's own
-``vtkInformation``: ``GetInformation()`` for an algorithm (every mapper), and
-``GetPropertyKeys()`` for a prop. The block lives and dies with the C++ object,
-so it survives Python wrapper churn without a registry, and the translator
-reads it back into ``node["blocks"][name]``.
+Every block on an object lives in one JSON object, keyed by block name, under a
+string key in the object's own ``vtkInformation``: ``GetInformation()`` for an
+algorithm (every mapper), and ``GetPropertyKeys()`` for a prop. The blocks live
+and die with the C++ object, so they survive Python wrapper churn without a
+registry, and the translator reads them back into ``node["blocks"][name]``.
 """
 
 from __future__ import annotations
@@ -14,23 +14,18 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from vtkmodules.vtkCommonCore import vtkInformation, vtkInformationStringKey
+from vtkmodules.vtkCommonDataModel import vtkCompositeDataSet
 from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 from vtkmodules.vtkRenderingCore import vtkProp
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObject, vtkObjectBase
 
-# vtkInformation compares keys by identity, so each name gets exactly one key
-# object for the life of the process.
-_KEYS: dict[str, vtkInformationStringKey] = {}
-
-
-def _key(name: str) -> vtkInformationStringKey:
-    key = _KEYS.get(name)
-    if key is None:
-        key = vtkInformationStringKey.MakeKey(f"trame_block_{name}", "trame_vtklocal")
-        _KEYS[name] = key
-    return key
+# A key created from Python (vtkInformationStringKey.MakeKey) crashes VTK's
+# static key manager when the process exits, so the blocks ride a key VTK
+# defines. Nothing in VTK reads NAME from an algorithm's
+# information or a prop's keys.
+_BLOCKS_KEY: vtkInformationStringKey = vtkCompositeDataSet.NAME()
 
 
 def _information(vtk_object: vtkObjectBase, create: bool) -> vtkInformation | None:
@@ -46,18 +41,22 @@ def _information(vtk_object: vtkObjectBase, create: bool) -> vtkInformation | No
     raise TypeError(f"{vtk_object.GetClassName()} cannot carry a feature block")
 
 
+def _blocks(information: vtkInformation | None) -> dict[str, dict[str, object]]:
+    if information is None or not information.Has(_BLOCKS_KEY):
+        return {}
+    blocks: object = json.loads(_BLOCKS_KEY.Get(information))
+    if not isinstance(blocks, dict) or not all(
+        isinstance(block, dict) for block in blocks.values()
+    ):
+        raise RuntimeError("feature blocks are not a JSON object of objects")
+    return blocks
+
+
 def get_block(vtk_object: vtkObjectBase | None, name: str) -> dict[str, object] | None:
     """The named block on ``vtk_object``, or None when it carries none."""
     if vtk_object is None:
         return None
-    information = _information(vtk_object, create=False)
-    key = _key(name)
-    if information is None or not information.Has(key):
-        return None
-    block: object = json.loads(key.Get(information))
-    if not isinstance(block, dict):
-        raise RuntimeError(f"feature block {name!r} is not a JSON object")
-    return block
+    return _blocks(_information(vtk_object, create=False)).get(name)
 
 
 def set_block(
@@ -69,16 +68,22 @@ def set_block(
     block on every update without forcing a re-serialization.
     """
     information = _information(vtk_object, create=block is not None)
-    key = _key(name)
-    has_block = information is not None and information.Has(key)
-    if information is None or (block is None and not has_block):
+    if information is None:
         return False
+    blocks = _blocks(information)
     if block is None:
-        information.Remove(key)
-    else:
-        encoded = json.dumps(block, sort_keys=True)
-        if has_block and key.Get(information) == encoded:
+        if blocks.pop(name, None) is None:
             return False
-        key.Set(information, encoded)
+    else:
+        # Compared encoded, so a block equal to the stored one after the JSON
+        # round trip (tuples read back as lists) is not a change.
+        encoded = json.dumps(block, sort_keys=True)
+        if name in blocks and json.dumps(blocks[name], sort_keys=True) == encoded:
+            return False
+        blocks[name] = json.loads(encoded)
+    if blocks:
+        _BLOCKS_KEY.Set(information, json.dumps(blocks, sort_keys=True))
+    else:
+        information.Remove(_BLOCKS_KEY)
     vtk_object.Modified()
     return True

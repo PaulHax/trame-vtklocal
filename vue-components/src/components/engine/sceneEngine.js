@@ -97,7 +97,7 @@ export function createSceneEngine({
     }
   }
 
-  function dispatchCommands(commands) {
+  function dispatchCommands(commands, context = { snapshot: false }) {
     let renderRequested = false;
     for (const command of commands || []) {
       const name = command?.name;
@@ -105,7 +105,7 @@ export function createSceneEngine({
       if (handlers) {
         for (const handler of [...handlers]) {
           try {
-            handler(command.payload, name);
+            handler(command.payload, name, context);
           } catch (error) {
             console.warn(
               `[sceneEngine] command handler ${name} failed:`,
@@ -296,7 +296,7 @@ export function createSceneEngine({
       callbacks.onSnapshotApplied?.(snapshot);
       // Retained commands describe client-owned state layered on top of the
       // snapshot, so dispatch only after the scene and cursor are current.
-      if (dispatchCommands(snapshot.commands)) {
+      if (dispatchCommands(snapshot.commands, { snapshot: true })) {
         callbacks.onRenderRequested?.(snapshot);
       }
       live = true;
@@ -343,6 +343,8 @@ export function createSceneEngine({
     }
   }
 
+  // Handlers receive (payload, name, { snapshot }); `snapshot` is true when
+  // the command is a retained one replayed by a resync snapshot.
   function onCommand(name, callback) {
     if (typeof callback !== "function") {
       return () => {};

@@ -295,8 +295,10 @@ class ScenePublisher:
             return
 
         result = self._commit_batch(batch) if batch else None
-        self._broadcast(result, commands)
-        self._after_publish(batch, result)
+        try:
+            self._broadcast(result, commands)
+        finally:  # the store committed; release its refs even if this raised
+            self._after_publish(batch, result)
 
     def _commit_batch(self, batch: DirtyBatch) -> CommitResult:
         # The fast path only reads VTK (GetObjectAtId/GetPoints/GetData), but

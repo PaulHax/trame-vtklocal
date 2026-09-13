@@ -86,10 +86,11 @@ SIZE_BUDGETS = {
     # retained-copy differ plus the hot-array fast-path guard
     "widgets/hot_arrays.py": 438,
     # publish tick + wire encoding + resync + dropped-blob re-entry guard +
-    # the hot-array fast-path dispatch in _commit_batch.
+    # the hot-array fast-path dispatch in _commit_batch + releasing a
+    # committed batch's refs when its broadcast raises.
     # Next reduction: event_is_current() is a VTK-free, store-only predicate
     # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 532,
+    "widgets/publisher.py": 534,
 }
 
 

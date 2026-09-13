@@ -91,14 +91,37 @@ test("retained snapshot commands dispatch once after snapshot application", asyn
     onSnapshotApplied: () => order.push("snapshot"),
     onRenderRequested: () => order.push("render"),
   });
-  engine.onCommand("camera.set", (payload) => {
-    order.push(`camera:${payload.parallelScale}`);
+  engine.onCommand("camera.set", (payload, name, { snapshot }) => {
+    order.push(`${name}:${payload.parallelScale}:${snapshot}`);
   });
 
   engine.start();
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(order, ["snapshot", "camera:5", "render"]);
+  assert.deepEqual(order, ["snapshot", "camera.set:5:true", "render"]);
+  engine.stop();
+});
+
+test("live commands dispatch without the snapshot flag", async () => {
+  const seen = [];
+  const snapshot = { v: 2, rw: "1", seq: 1, root: "1", nodes: {}, blobs: {} };
+  const { engine, session } = await makeEngine(snapshot);
+  engine.onCommand("camera.set", (payload, name, { snapshot: replayed }) => {
+    seen.push(replayed);
+  });
+  engine.start();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  session.push({
+    v: 2,
+    rw: "1",
+    baseSeq: 1,
+    seq: 2,
+    ops: [],
+    blobs: {},
+    commands: [{ name: "camera.set", payload: {}, render: true }],
+  });
+  assert.deepEqual(seen, [false]);
   engine.stop();
 });
 

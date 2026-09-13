@@ -70,6 +70,7 @@ export function useSceneSync(
   let syncedRootId = null;
   let renderedCamera = null;
   let clientCamera = null;
+  let appliedCameraIntent = null;
   const distanceToCameraGlyphs = createDistanceToCameraGlyphRegistry();
   const pickables = createPickableRegistry();
   let streamedSceneHost = null;
@@ -325,6 +326,19 @@ export function useSceneSync(
     return true;
   }
 
+  // A resync snapshot replays the retained camera command. When this sync
+  // already applied that exact command, the user has since owned the camera,
+  // so the replay must not snap it back.
+  function cameraCommand(apply) {
+    return (payload, name, { snapshot = false } = {}) => {
+      const intent = JSON.stringify([name, payload ?? null]);
+      if (snapshot && intent === appliedCameraIntent) return false;
+      const applied = apply(payload);
+      if (applied) appliedCameraIntent = intent;
+      return applied;
+    };
+  }
+
   function cleanupSyncContext() {
     appliedCommands.clear();
     engine?.stop?.();
@@ -337,6 +351,7 @@ export function useSceneSync(
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
+    appliedCameraIntent = null;
     cameraReports.reset();
     renderedCamera = null;
     distanceToCameraGlyphs.clear();
@@ -434,8 +449,8 @@ export function useSceneSync(
         },
       },
     });
-    engine.onCommand("camera.set", applyCameraIntent);
-    engine.onCommand("camera.reset", applyCameraResetIntent);
+    engine.onCommand("camera.set", cameraCommand(applyCameraIntent));
+    engine.onCommand("camera.reset", cameraCommand(applyCameraResetIntent));
     for (const registration of commandRegistrations) {
       registration.detach = engine.onCommand(
         registration.name,

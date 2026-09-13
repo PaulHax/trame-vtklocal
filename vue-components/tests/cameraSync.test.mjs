@@ -134,6 +134,36 @@ test("camera.set command applies parameters through the built-in handler", async
   assert.equal(harness.camera.state.parallelScale, 8);
 });
 
+test("a resync replaying an applied camera command leaves the user's camera alone", async () => {
+  const harness = await makeScene();
+  const setCamera = harness.commandHandlers.get("camera.set");
+  const seed = { position: [1, 2, 3] };
+  setCamera(seed, "camera.set", { snapshot: true });
+  assert.deepEqual(harness.camera.state.position, [1, 2, 3]);
+
+  // The user orbits, then a seq gap resyncs and replays the retained seed.
+  harness.camera.setPosition(9, 9, 9);
+  setCamera(seed, "camera.set", { snapshot: true });
+  assert.deepEqual(harness.camera.state.position, [9, 9, 9]);
+
+  // A new server intent, or the same one sent live again, still applies.
+  setCamera({ position: [4, 5, 6] }, "camera.set", { snapshot: true });
+  assert.deepEqual(harness.camera.state.position, [4, 5, 6]);
+  harness.camera.setPosition(9, 9, 9);
+  setCamera({ position: [4, 5, 6] }, "camera.set", { snapshot: false });
+  assert.deepEqual(harness.camera.state.position, [4, 5, 6]);
+
+  // A fresh sync applies the retained seed again.
+  harness.camera.setPosition(9, 9, 9);
+  harness.scene.initialize({ renderWindowId: 1, onRenderNeeded() {} });
+  harness.commandHandlers.get("camera.set")(
+    { position: [4, 5, 6] },
+    "camera.set",
+    { snapshot: true },
+  );
+  assert.deepEqual(harness.camera.state.position, [4, 5, 6]);
+});
+
 test("camera reports coalesce moves and force a terminal report", async () => {
   const previousWindow = globalThis.window;
   const fakeWindow = makeWindow();

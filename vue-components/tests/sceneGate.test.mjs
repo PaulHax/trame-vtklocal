@@ -71,7 +71,7 @@ test("a held message and everything behind it apply in order on retry", async ()
 
   session.push(ops(6));
   session.push(ops(7, "video.frame.a"));
-  session.push(ops(8));
+  session.push(ops(8, "video.frame.a"));
   assert.deepEqual(applied, [6]);
   assert.equal(engine.getSeq(), 6);
   assert.equal(engine.getDiagnostics().heldLength, 2);
@@ -89,10 +89,27 @@ test("a held message and everything behind it apply in order on retry", async ()
   engine.stop();
 });
 
+test("a message the gate would not hold releases what it holds, in order", async () => {
+  const missing = new Set(["video.frame.a"]);
+  const { engine, session, applied } = await makeEngine((message) =>
+    message.commands.some((command) => missing.has(command.name)),
+  );
+
+  session.push(ops(6, "video.frame.a"));
+  session.push(ops(7, "video.frame.a"));
+  assert.deepEqual(applied, []);
+  session.push(ops(8));
+  assert.deepEqual(applied, [6, 7, 8]);
+  assert.equal(engine.getDiagnostics().heldLength, 0);
+  assert.equal(engine.getDiagnostics().holdsReleased, 2);
+
+  engine.stop();
+});
+
 test("messages behind a hold are not read as a sequence gap", async () => {
   const resyncs = [];
   const { engine, session, applied } = await makeEngine(
-    (message) => message.seq === 6,
+    (message) => message.seq >= 6,
   );
   const warn = console.warn;
   console.warn = (text) => resyncs.push(text);

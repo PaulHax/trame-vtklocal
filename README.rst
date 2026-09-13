@@ -286,10 +286,12 @@ Scene gate for external resources
 ``retrySceneGate()``. ``hold(message)`` receives each in-order scene ops
 message before it applies and returns ``true`` to hold it, for example while
 the video frame a retained ``video.frame.<key>`` command names has not
-arrived. Held messages keep their order, so later messages queue behind them.
-Call ``retrySceneGate()`` when the awaited resource lands; a held message also
-applies at its deadline (3 s) whatever the gate says, so a resource that never
-arrives cannot stall the view. Ask for the resource again well before that
-deadline rather than relying on it. Snapshots are never held.
+arrived. Held messages keep their order: a later message the gate also holds
+queues behind them, while one it would not hold applies them first, so an
+unrelated update never waits on the resource. Call ``retrySceneGate()`` when
+the awaited resource lands; a held message also applies at its deadline (3 s)
+whatever the gate says, so a resource that never arrives cannot stall the
+view. Ask for the resource again well before that deadline rather than
+relying on it. Snapshots are never held.
 The registration disposer releases anything the gate held.
 

@@ -17,10 +17,11 @@
 // paused tab stays current with O(1) memory.
 //
 // A gate may hold an ops message whose resources (an external texture the
-// message names) have not arrived. Held messages keep their order, so later
-// messages wait behind them; each applies when the gate releases it, or at
-// its deadline regardless, so a resource that never arrives cannot stall the
-// view. Snapshots are never held.
+// message names) have not arrived. Held messages keep their order: a later
+// message the gate also holds queues behind them, while one it would not
+// hold releases them first, so nothing unrelated ever waits on a resource.
+// A held message also applies at its deadline regardless, so a resource that
+// never arrives cannot stall the view. Snapshots are never held.
 
 import { base64ToArrayBuffer } from "../sync/base64";
 
@@ -66,6 +67,7 @@ export function createSceneEngine({
   let routedSeq = -1;
   let held = []; // { message, deadline }, in seq order
   let holdTimer = null;
+  let holdsReleased = 0;
   let live = false;
   let buffer = [];
   let subscription = null;
@@ -188,6 +190,15 @@ export function createSceneEngine({
     if (held.length) drainHeld();
   }
 
+  // Apply everything held, in order, whatever the gate says.
+  function releaseHeld() {
+    holdsReleased += held.length;
+    while (held.length && live && !stopped) {
+      applyRouted(held.shift().message);
+    }
+    armHoldTimer();
+  }
+
   function routeMessage(message) {
     if (message.seq <= routedSeq) {
       return;
@@ -197,12 +208,13 @@ export function createSceneEngine({
       return;
     }
     routedSeq = message.seq;
-    if (held.length || shouldHold(message)) {
+    if (shouldHold(message)) {
       held.push({ message, deadline: Date.now() + holdMs });
       if (held.length === 1) armHoldTimer();
       return;
     }
-    applyRouted(message);
+    if (held.length) releaseHeld();
+    if (live && !stopped) applyRouted(message);
   }
 
   function handleMessage(message) {
@@ -365,6 +377,7 @@ export function createSceneEngine({
       lastAppliedOp,
       bufferLength: buffer.length,
       heldLength: held.length,
+      holdsReleased,
     };
   }
 

@@ -50,11 +50,6 @@ export function createPickableGestures({
   let drag = null; // { pick, grabOffset, pointerId, canvas, previousCursor }
   let pendingMove = null; // latest move payload (rAF-coalesced, last wins)
   let rafHandle = 0;
-  let hoverEnabled = false;
-  let hoverCanvas = null;
-  let hoveredPick = null;
-  let pendingHover = undefined;
-  let hoverRafHandle = 0;
 
   function requestFrame(cb) {
     return windowRef?.requestAnimationFrame
@@ -230,7 +225,6 @@ export function createPickableGestures({
       canvas,
       previousCursor: canvas?.style?.cursor || "",
     };
-    clearHover();
     stopEvent(event);
     try {
       canvas?.setPointerCapture?.(event?.pointerId);
@@ -249,101 +243,10 @@ export function createPickableGestures({
     return true;
   }
 
-  function samePick(a, b) {
-    if (a === b) return true;
-    if (!a || !b || a.nodeId !== b.nodeId) return false;
-    // Identity over index: a same-size re-bucket can put a different point
-    // at the hovered index. Id-less pickables carry the index as pointId,
-    // so the comparison stays valid for them too.
-    if (a.pointId != null && b.pointId != null) return a.pointId === b.pointId;
-    return a.pointIndex === b.pointIndex;
-  }
-
-  function dropHover() {
-    hoveredPick = null;
-    pendingHover = undefined;
-    cancelFrame(hoverRafHandle);
-    hoverRafHandle = 0;
-  }
-
-  // Dropping the hovered pick mid-stream owes the app a terminal leave —
-  // enter/leave must stay balanced or a highlight sticks forever. (Turning
-  // hover off via setHoverEnabled/teardown stays silent: the app asked.)
-  function clearHover() {
-    if (hoveredPick) {
-      emitPayload(buildPayload("target.leave", null, hoveredPick, null));
-    }
-    dropHover();
-  }
-
-  function flushHover() {
-    hoverRafHandle = 0;
-    const cssPointer = pendingHover;
-    pendingHover = undefined;
-    if (!hoverEnabled || drag) return;
-    const next = cssPointer ? pick(cssPointer.x, cssPointer.y) : null;
-    if (samePick(next, hoveredPick)) return;
-    if (hoveredPick) {
-      emitPayload(buildPayload("target.leave", cssPointer, hoveredPick, null));
-    }
-    if (next) {
-      emitPayload(buildPayload("target.enter", cssPointer, next, null));
-    }
-    hoveredPick = next;
-  }
-
-  function scheduleHover(cssPointer) {
-    pendingHover = cssPointer;
-    if (!hoverRafHandle) {
-      hoverRafHandle = requestFrame(flushHover);
-    }
-  }
-
-  function onHoverMove(event) {
-    if (!hoverEnabled || drag) return;
-    const cssPointer = pointerToCanvasCss(event);
-    if (cssPointer) scheduleHover(cssPointer);
-  }
-
-  function onHoverLeave() {
-    if (hoverEnabled && !drag) scheduleHover(null);
-  }
-
-  function attachHoverListeners() {
-    hoverCanvas?.addEventListener?.("pointermove", onHoverMove);
-    hoverCanvas?.addEventListener?.("pointerleave", onHoverLeave);
-  }
-
-  function detachHoverListeners() {
-    hoverCanvas?.removeEventListener?.("pointermove", onHoverMove);
-    hoverCanvas?.removeEventListener?.("pointerleave", onHoverLeave);
-  }
-
-  function bindHoverCanvas() {
-    const canvas = getCanvas();
-    if (canvas === hoverCanvas) return;
-    detachHoverListeners();
-    hoverCanvas = canvas;
-    if (hoverEnabled) attachHoverListeners();
-  }
-
-  function setHoverEnabled(enabled) {
-    hoverEnabled = !!enabled;
-    dropHover();
-    detachHoverListeners();
-    if (hoverEnabled) {
-      bindHoverCanvas();
-      attachHoverListeners();
-    }
-  }
-
   function cancelForNode(nodeId) {
     if (drag && drag.pick.nodeId === String(nodeId)) {
       endDrag(null, { cancelled: true });
       return true;
-    }
-    if (hoveredPick?.nodeId === String(nodeId)) {
-      clearHover();
     }
     return false;
   }
@@ -387,9 +290,6 @@ export function createPickableGestures({
     cancelFrame(rafHandle);
     rafHandle = 0;
     pendingMove = null;
-    dropHover();
-    detachHoverListeners();
-    hoverCanvas = null;
   }
 
   return {
@@ -398,8 +298,6 @@ export function createPickableGestures({
     setPointerContext,
     setEmitBackgroundClick,
     setShouldGrab,
-    setHoverEnabled,
-    bindHoverCanvas,
     cancelForNode,
     getActivePick: () => drag?.pick || null,
     teardown,

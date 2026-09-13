@@ -54,7 +54,6 @@ export function useSceneSync(
     emit,
     getRenderWindow,
     getOpenGLRenderWindow,
-    renderScene,
     cameraAuthority = "server",
     tiles3dTexturePolicy = "auto",
     tiles3dQualityPolicy = "adaptive",
@@ -285,20 +284,8 @@ export function useSceneSync(
     return true;
   }
 
-  function requestResync(reason = "scene-sync") {
-    engine?.resync?.(reason);
-  }
-
   function getQueueLength() {
     return engine?.getDiagnostics?.().bufferLength ?? 0;
-  }
-
-  function setCamera(params) {
-    const { camera } = bindPrimaryCameraToRenderers();
-    if (!camera) return;
-    renderedCamera = null;
-    applyCameraParams(camera, params);
-    renderScene?.();
   }
 
   function applyCameraIntent(params) {
@@ -365,14 +352,6 @@ export function useSceneSync(
         : null,
       size: size ? Array.from(size, Number) : null,
     };
-  }
-
-  function resetCamera() {
-    const { renderer } = bindPrimaryCameraToRenderers();
-    if (!renderer) return;
-    renderedCamera = null;
-    renderer.resetCamera();
-    renderScene?.();
   }
 
   function applyCameraResetIntent() {
@@ -557,7 +536,6 @@ export function useSceneSync(
       );
     }
     engine.start();
-    gestures.bindHoverCanvas();
   }
 
   function cleanup() {
@@ -998,15 +976,12 @@ export function useSceneSync(
   return {
     initialize,
     cleanup,
-    requestResync,
     getQueueLength,
     getRenderWindow,
     getRenderer,
     getRenderers,
-    setCamera,
     setRenderedCamera,
     getRenderedCamera,
-    resetCamera,
     enableCameraReports,
     reportCamera,
     beginCameraInteraction,
@@ -1018,8 +993,6 @@ export function useSceneSync(
     retrySceneGate,
     getAppliedCommand: (name) => appliedCommands.get(name),
     onCommand,
-    getInstance,
-    getSeq,
     uploadTexture,
     removeTexture,
     pickAt,
@@ -1030,7 +1003,6 @@ export function useSceneSync(
     setPointerContext: gestures.setPointerContext,
     setEmitBackgroundClick: gestures.setEmitBackgroundClick,
     setShouldGrab: gestures.setShouldGrab,
-    setHoverEnabled: gestures.setHoverEnabled,
     beforeRender,
     recordFrameDuration,
     recordPaintDuration,

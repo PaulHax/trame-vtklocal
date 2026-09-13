@@ -7,16 +7,13 @@ messages carry, so both ``module/`` and ``widgets/`` may import it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
-from typing import TYPE_CHECKING, Optional, Protocol, TypedDict, TypeVar, final
+from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING, Protocol, TypedDict, final
 
 if TYPE_CHECKING:
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
     from trame_vtklocal.store import SceneNode, SceneOp, WirePayload
-
-# A ``scene.resync`` observer; it receives the requesting wslink client id.
-ResyncCallbackT = TypeVar("ResyncCallbackT", bound=Callable[[Optional[str]], object])
 
 
 class _SceneCommandFields(TypedDict):
@@ -69,9 +66,7 @@ class OpsPublisher(Protocol):
 class PushView(Protocol):
     """The publisher serving one render window's ``scene.resync``."""
 
-    def resync(
-        self, known_refs: Iterable[str] | None = None, client_id: str | None = None
-    ) -> ResyncPayload: ...
+    def resync(self, known_refs: Iterable[str] | None = None) -> ResyncPayload: ...
 
 
 class PushViewHost(Protocol):

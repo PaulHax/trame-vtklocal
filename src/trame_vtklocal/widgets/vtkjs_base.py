@@ -16,13 +16,11 @@ from trame_vtklocal.module.camera_authority import (
 )
 
 if TYPE_CHECKING:
-    from vtkmodules.vtkCommonCore import vtkObjectBase
-    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
     from trame_vtklocal.module.protocol import ObjectManagerAPI
     from trame_vtklocal.widgets.publisher import ScenePublisher
-    from trame_vtklocal.wire import ResyncCallbackT
 
 
 Tiles3DTexturePolicy = Literal["auto", "native", "rgba"]
@@ -153,10 +151,6 @@ class VtkJsBaseView(HtmlElement):
     def ref_name(self) -> str:
         return self._ref
 
-    def get_instance_id(self, vtk_object: vtkObjectBase) -> str:
-        vtk_id = self.object_manager.GetId(vtk_object)
-        return str(vtk_id)
-
     @property
     def camera_authority(self) -> CameraAuthority:
         return self._camera_authority
@@ -195,11 +189,6 @@ class VtkJsBaseView(HtmlElement):
         if self._publisher:
             self._publisher.sync()
 
-    async def settled(self) -> None:
-        """Wait until every pending scene change has been published."""
-        if self._publisher:
-            await self._publisher.settled()
-
     def transaction(self) -> AbstractContextManager[ScenePublisher]:
         """Batch mutations (and commands) into one commit + broadcast."""
         return self._open_publisher().transaction()
@@ -220,19 +209,10 @@ class VtkJsBaseView(HtmlElement):
         if self._publisher:
             self._publisher.send_command(name, payload, retain=retain, render=render)
 
-    def on_client_resync(self, callback: ResyncCallbackT) -> ResyncCallbackT:
-        """Call ``callback(client_id)`` whenever a client pulls a snapshot."""
-        return self._open_publisher().on_client_resync(callback)
-
     def _open_publisher(self) -> ScenePublisher:
         if self._publisher is None:
             raise RuntimeError("view is closed")
         return self._publisher
-
-    def request_resync(self) -> None:
-        """Server-forced resync: every client re-pulls the full snapshot."""
-        if self._publisher:
-            self._publisher.request_resync()
 
     def event_is_current(
         self, event: object, node_id: str | int | None, strict: bool = True
@@ -253,11 +233,8 @@ class VtkJsBaseView(HtmlElement):
     # Client-side camera / pointer seams
     # ------------------------------------------------------------------
 
-    def get_renderer(self) -> vtkRenderer | None:
-        return self._render_window.GetRenderers().GetFirstRenderer()
-
     def _camera_params(self) -> CameraParams | None:
-        renderer = self.get_renderer()
+        renderer = self._render_window.GetRenderers().GetFirstRenderer()
         if not renderer:
             return None
         cam = renderer.GetActiveCamera()

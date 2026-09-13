@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import zipfile
 import json
-import logging
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
@@ -31,7 +30,6 @@ except ImportError:
     ZIP_COMPRESSION = zipfile.ZIP_STORED
 
 VTK_VERSION = vtkVersion()
-logger = logging.getLogger(__name__)
 # Stale blobs are retired in batches: verifying a hash is truly dead walks the
 # whole shared object manager (GetAllDependencies(0) + GetBlobHashes), so a
 # per-commit sweep would pay a full-scene walk on every landmark-drag move.
@@ -85,7 +83,6 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
         self._push_view_blob_hashes: dict[int, set[str]] = {}
         self._pending_stale_blob_hashes: set[str] = set()
         self._blob_gc_handle: asyncio.TimerHandle | None = None
-        self._warned_missing_client_id = False
 
         self._debug_state = False
         self._debug_state_counter = 1
@@ -212,18 +209,6 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
             stack.close()
             raise
 
-    def get_active_client_id(self) -> str | None:
-        core_server = getattr(self, "coreServer", None)
-        trame_server = getattr(core_server, "server", None)
-        ws_server = getattr(trame_server, "_server", None)
-        if ws_server is None or not hasattr(ws_server, "last_active_client_id"):
-            if not self._warned_missing_client_id:
-                logger.warning("Unable to resolve active wslink client id")
-                self._warned_missing_client_id = True
-            return None
-        client_id: str | None = ws_server.last_active_client_id
-        return client_id
-
     def register_widget(self, root_obj: vtkObjectBase, dep_obj: vtkObjectBase) -> None:
         self.vtk_object_manager.RegisterObject(dep_obj)
         root_id = self.vtk_object_manager.GetId(root_obj)
@@ -346,7 +331,7 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
         publisher = self._push_views.get(rw_id)
         if publisher is None:
             raise RuntimeError(f"No registered publisher for render window {rw_id}")
-        return publisher.resync(known_refs, client_id=self.get_active_client_id())
+        return publisher.resync(known_refs)
 
     @export_rpc("vtklocal.get.status")
     def get_status(self, obj_id: int) -> ObjectStatus:

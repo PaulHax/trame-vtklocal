@@ -1884,7 +1884,6 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
       client: {},
       emit() {},
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
-      renderScene() {},
       tiles3dTexturePolicy: "rgba",
       tiles3dQualityPolicy: "fixed",
     },
@@ -2069,7 +2068,6 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
       client: {},
       emit: (type, payload) => emitted.push([type, payload]),
       getRenderWindow: () => renderWindow,
-      renderScene() {},
     },
     {
       createManagedSyncContext: () => ({
@@ -2177,7 +2175,6 @@ test("useSceneSync reports the presentation interval, not the paint duration", a
       client: {},
       emit() {},
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
-      renderScene() {},
     },
     {
       createManagedSyncContext: () => ({

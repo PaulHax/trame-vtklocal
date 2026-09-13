@@ -18,7 +18,6 @@ async function buildScene() {
       client: {},
       emit() {},
       getRenderWindow: () => ({ id: "rw-view-api" }),
-      renderScene() {},
     },
     {
       createManagedSyncContext: () => ({
@@ -76,16 +75,16 @@ test("a backend adds its own entries and overrides the common keys it names", as
     "/src/components/viewApi.js",
   );
   const scene = await buildScene();
-  const backendResetCamera = () => {};
+  const backendGetRenderer = () => {};
   const api = createViewApi(scene, {
     container: {},
     render() {},
     resize() {},
-    resetCamera: backendResetCamera,
+    getRenderer: backendGetRenderer,
   });
 
-  assert.equal(api.resetCamera, backendResetCamera);
-  const unnamed = COMMON_VIEW_API_KEYS.filter((key) => key !== "resetCamera");
+  assert.equal(api.getRenderer, backendGetRenderer);
+  const unnamed = COMMON_VIEW_API_KEYS.filter((key) => key !== "getRenderer");
   for (const key of unnamed) {
     assert.equal(api[key], scene[key], `${key} is not the scene's own method`);
   }

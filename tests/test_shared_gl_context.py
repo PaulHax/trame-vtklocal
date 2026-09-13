@@ -51,12 +51,6 @@ def test_shared_common_scene_api(server, server_path, page: Page):
     assert result["ready"], "Shared view should be initialized before API inspection"
     assert result["missing"] == [], f"Missing common scene methods: {result['missing']}"
     assert result["hasRenderer"], "Shared view should expose getRenderer()"
-    assert result[
-        "cameraChanged"
-    ], "setCamera() should update the shared renderer camera"
-    assert result[
-        "cameraReset"
-    ], "resetCamera() should restore the shared renderer camera"
 
 
 def test_scene_ops_apply_on_arrival(server, server_path, page: Page):

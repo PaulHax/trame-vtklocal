@@ -47,15 +47,12 @@ export const VIEW_PROPS = Object.freeze({
 });
 
 export const COMMON_VIEW_API_KEYS = Object.freeze([
-  "requestResync",
   "getQueueLength",
   "getRenderWindow",
   "getRenderer",
   "getRenderers",
-  "setCamera",
   "setRenderedCamera",
   "getRenderedCamera",
-  "resetCamera",
   "enableCameraReports",
   "reportCamera",
   "beginCameraInteraction",
@@ -69,8 +66,6 @@ export const COMMON_VIEW_API_KEYS = Object.freeze([
   "retrySceneGate",
   "getAppliedCommand",
   "onCommand",
-  "getInstance",
-  "getSeq",
   "uploadTexture",
   "removeTexture",
   "pickAt",
@@ -81,7 +76,6 @@ export const COMMON_VIEW_API_KEYS = Object.freeze([
   "setPointerContext",
   "setEmitBackgroundClick",
   "setShouldGrab",
-  "setHoverEnabled",
   "getSyncDiagnostics",
   "getAppliedSceneState",
 ]);

@@ -46,7 +46,6 @@ test("preview protection resolves a rebuilt pickable mapper", async () => {
     {
       client: {},
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
-      renderScene() {},
     },
     {
       createManagedSyncContext: () => ({

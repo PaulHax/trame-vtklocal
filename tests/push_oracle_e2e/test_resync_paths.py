@@ -1,12 +1,9 @@
-"""Coverage for v2 resync code paths beyond the per-step matrix.
+"""Coverage for the v2 resync recovery path beyond the per-step matrix.
 
-The matrix proves the broadcast apply path is correct. These tests cover the
-*recovery* paths the production stack exercises when wire state diverges:
-
-- mid-stream server-initiated ``request_resync`` (no scene change)
-- automatic gap recovery: a dropped broadcast makes the next delivered
-  message's ``baseSeq`` miss the client cursor, and the engine resyncs
-  immediately (no timers in v2)
+The matrix proves the broadcast apply path is correct. These tests cover
+automatic gap recovery: a dropped broadcast makes the next delivered message's
+``baseSeq`` miss the client cursor, and the engine resyncs immediately (no
+timers in v2).
 """
 
 from __future__ import annotations
@@ -17,30 +14,6 @@ from tests.push_oracle_e2e.runner import JsOracle
 
 
 pytestmark = pytest.mark.js_oracle
-
-
-def _mid_stream_resync(oracle: JsOracle):
-    oracle.reset("basic")
-    oracle.run_step("hide-actor")
-    oracle.compare(step_name="hide-actor")
-
-    # Server-initiated resync without changing the scene: the broadcast's
-    # baseSeq=-1 can match no cursor, so the existing client re-pulls the
-    # snapshot at a fresh seq and converges.
-    oracle.request_resync()
-    oracle.compare(step_name="<after-mid-stream-resync>")
-
-    # Subsequent ops keep working after the resync.
-    oracle.run_step("set-pickable")
-    oracle.compare(step_name="set-pickable")
-
-
-def test_mid_stream_resync_local(oracle_local: JsOracle):
-    _mid_stream_resync(oracle_local)
-
-
-def test_mid_stream_resync_shared(oracle_shared: JsOracle):
-    _mid_stream_resync(oracle_shared)
 
 
 def _gap_recovery(oracle: JsOracle):

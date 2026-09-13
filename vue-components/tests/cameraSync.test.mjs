@@ -94,7 +94,6 @@ async function makeScene() {
       client: {},
       emit: (name, payload) => events.push({ name, payload }),
       getRenderWindow: () => renderWindow,
-      renderScene() {},
     },
     {
       createManagedSyncContext: () => ({

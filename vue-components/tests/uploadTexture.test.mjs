@@ -43,7 +43,6 @@ async function buildScene(renderWindow, onEngineReady = () => {}) {
       client: {},
       emit() {},
       getRenderWindow: () => renderWindow,
-      renderScene() {},
     },
     {
       createManagedSyncContext: () => ({

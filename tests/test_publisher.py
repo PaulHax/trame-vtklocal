@@ -382,7 +382,7 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
 
 
 # ----------------------------------------------------------------------
-# Batching: transaction(), settled(), auto-publish coalescing
+# Batching: transaction(), auto-publish coalescing
 # ----------------------------------------------------------------------
 
 
@@ -426,7 +426,7 @@ def test_dirty_marks_auto_publish_on_next_loop_tick():
             scene.handles["actor"].SetVisibility(False)
             scene.handles["actor"].GetProperty().SetOpacity(0.5)
             assert server.protocol.messages == []
-            await publisher.settled()
+            await asyncio.sleep(0)
             assert not publisher._tracker.has_pending()
         finally:
             publisher.cleanup()
@@ -437,7 +437,7 @@ def test_dirty_marks_auto_publish_on_next_loop_tick():
     assert messages[0][0] == OPS_TOPIC
 
 
-def test_settled_flushes_queued_commands():
+def test_queued_command_publishes_on_next_loop_tick():
     scene = make_basic_scene()
     server = _FakeServer()
 
@@ -447,7 +447,7 @@ def test_settled_flushes_queued_commands():
         )
         try:
             publisher.send_command("ping", None)
-            await publisher.settled()
+            await asyncio.sleep(0)
         finally:
             publisher.cleanup()
 
@@ -460,21 +460,6 @@ def test_settled_flushes_queued_commands():
 # ----------------------------------------------------------------------
 # Resync + protocol routing
 # ----------------------------------------------------------------------
-
-
-def test_resync_fires_on_client_resync_callbacks():
-    scene = make_basic_scene()
-    server = _FakeServer()
-    publisher = ScenePublisher(
-        server, scene.api, scene.render_window, scene.render_window_id
-    )
-    try:
-        seen = []
-        publisher.on_client_resync(seen.append)
-        publisher.resync([], client_id="client-7")
-        assert seen == ["client-7"]
-    finally:
-        publisher.cleanup()
 
 
 def test_retained_commands_are_replaced_cleared_and_replayed_on_resync():
@@ -612,7 +597,7 @@ def test_client_camera_authority_resync_snapshot_has_no_camera():
         publisher.cleanup()
 
 
-def test_commands_and_request_resync_ignore_camera_authority():
+def test_commands_ignore_camera_authority():
     scene = make_basic_scene()
     publisher, server = make_publisher(scene, camera_authority="client")
     try:
@@ -623,13 +608,6 @@ def test_commands_and_request_resync_ignore_camera_authority():
             {"name": "mapCamera", "payload": {"frame": 3}, "render": True}
         ]
         assert message["ops"] == []
-
-        seq_before = publisher.store.seq
-        publisher.request_resync()
-        ((_topic, message),) = server.protocol.drain()
-        assert message["baseSeq"] == -1
-        assert message["ops"] == []
-        assert message["seq"] == seq_before + 1
     finally:
         publisher.cleanup()
 

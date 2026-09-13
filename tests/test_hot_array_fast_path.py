@@ -29,7 +29,6 @@ from test_publisher import (
     _start_retention,
     _touch_point,
     make_points_cloud_scene,
-    run_coroutine,
 )
 from test_v2_oracle import MirrorClient
 from trame_vtklocal.widgets.dirty_batch import DirtyBatch
@@ -482,6 +481,6 @@ def test_dirty_but_unchanged_array_publishes_nothing(retained_points):
 
     assert server.protocol.drain() == []
     assert publisher.store.seq == seq_before
-    run_coroutine(publisher.settled())
+    publisher.sync()
     assert server.protocol.drain() == []
     assert publisher.store.seq == seq_before

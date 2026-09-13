@@ -15,15 +15,12 @@ Wire protocol v2:
 - RPC ``scene.resync(rw_id, known_refs)`` →
   ``{"v": 2, "rw", "seq", "root", "nodes", "blobs"}`` where ``blobs`` inlines
   only live refs the client did not report.
-- ``request_resync()`` broadcasts an empty-ops message with ``baseSeq = -1``:
-  no client cursor can equal -1 while the fresh ``seq`` is above every
-  cursor, so the client consistency rule lands on "resync" for all of them.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -72,14 +69,12 @@ if TYPE_CHECKING:
         OpsMessage,
         OpsPublisher,
         PushViewHost,
-        ResyncCallbackT,
         ResyncPayload,
         SceneCommand,
     )
 
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
-RESYNC_BASE_SEQ = -1
 
 
 def event_is_current(
@@ -150,7 +145,6 @@ class ScenePublisher:
         )
         self._pending_commands: list[SceneCommand] = []
         self._retained_commands: dict[str, SceneCommand] = {}
-        self._resync_callbacks: list[Callable[[str | None], object]] = []
         self._transaction_depth = 0
         self._publish_scheduled = False
         self._disposed = False
@@ -188,16 +182,6 @@ class ScenePublisher:
             return
         self._tracker.sweep()
         self._publish_tick()
-
-    async def settled(self) -> None:
-        """Wait until every pending change has been published."""
-        while not self._disposed and (
-            self._publish_scheduled
-            or self._pending_commands
-            or self._tracker.has_pending()
-        ):
-            self._publish_tick()
-            await asyncio.sleep(0)
 
     @contextmanager
     def transaction(self) -> Iterator[ScenePublisher]:
@@ -237,15 +221,7 @@ class ScenePublisher:
     def clear_retained_command(self, name: str) -> None:
         self._retained_commands.pop(str(name), None)
 
-    def on_client_resync(self, callback: ResyncCallbackT) -> ResyncCallbackT:
-        """Call ``callback(client_id)`` whenever ``scene.resync`` serves a
-        snapshot (``client_id`` may be None when unresolvable)."""
-        self._resync_callbacks.append(callback)
-        return callback
-
-    def resync(
-        self, known_refs: Iterable[str] | None = None, client_id: str | None = None
-    ) -> ResyncPayload:
+    def resync(self, known_refs: Iterable[str] | None = None) -> ResyncPayload:
         """Full snapshot for one client; blobs omit the client's known refs."""
         self.sync()
         snapshot = self._store.snapshot()
@@ -265,32 +241,7 @@ class ScenePublisher:
         if self._retained_commands:
             payload["commands"] = list(self._retained_commands.values())
         self._attach_binary(payload)
-        for callback in list(self._resync_callbacks):
-            callback(client_id)
         return payload
-
-    def request_resync(self) -> None:
-        """Force every client to resync.
-
-        Broadcasts an empty-ops message with ``baseSeq = -1``: it can never
-        match a client cursor, and its fresh ``seq`` is above every cursor,
-        so the client consistency rule resolves to "resync" everywhere.
-        """
-        protocol: OpsPublisher | None = getattr(self._server, "protocol", None)
-        if protocol is None or self._disposed:
-            return
-        _base_seq, seq = self._store.advance()
-        protocol.publish(
-            OPS_TOPIC,
-            {
-                "v": WIRE_VERSION,
-                "rw": self._rw_str,
-                "baseSeq": RESYNC_BASE_SEQ,
-                "seq": seq,
-                "ops": [],
-                "blobs": {},
-            },
-        )
 
     def last_seq_touching(self, node_id: str | int, strict: bool = True) -> int | None:
         return self._store.last_seq_touching(node_id, strict=strict)
@@ -320,7 +271,6 @@ class ScenePublisher:
         self._hot_arrays.clear()
         self._pending_commands.clear()
         self._retained_commands.clear()
-        self._resync_callbacks.clear()
         self._state_cache.clear()
         self._class_names.clear()
         self._streamed_scene_registry.cleanup()
@@ -333,7 +283,7 @@ class ScenePublisher:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                # No loop: a later sync()/settled()/resync() flushes.
+                # No loop: a later sync()/resync() flushes.
                 return
             self._loop = loop
         self._publish_scheduled = True

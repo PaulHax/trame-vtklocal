@@ -181,13 +181,5 @@ class JsOracle:
     # Recovery-path helpers
     # ------------------------------------------------------------------
 
-    def request_resync(self, *, wait: bool = True):
-        result = self.trigger("oracle.request_resync")
-        if wait:
-            baseline = result.get("baseline_seq", 0)
-            if baseline:
-                self.wait_for_seq(baseline)
-        return result
-
     def suppress_next_publish(self, count: int = 1):
         return self.trigger("oracle.suppress_next_publish", int(count))

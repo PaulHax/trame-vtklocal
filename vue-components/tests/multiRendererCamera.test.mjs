@@ -37,10 +37,6 @@ function makeRenderer(id, camera) {
     setActiveCamera(value) {
       this.camera = value;
     },
-    resetCameraCalls: 0,
-    resetCamera() {
-      this.resetCameraCalls += 1;
-    },
   };
 }
 
@@ -62,7 +58,6 @@ test("client camera authority shares one camera across renderer layers", async (
     client: {},
     emit() {},
     getRenderWindow: () => renderWindow,
-    renderScene() {},
     cameraAuthority: "client",
   });
 
@@ -88,22 +83,18 @@ test("server camera authority preserves independent renderer cameras", async () 
     client: {},
     emit() {},
     getRenderWindow: () => renderWindow,
-    renderScene() {},
     cameraAuthority: "server",
   });
 
-  scene.setCamera({ parallelScale: 4 });
   scene.setRenderedCamera({
     viewMatrix: Array(16).fill(1),
     projectionMatrix: Array(16).fill(2),
   });
-  scene.resetCamera();
 
   assert.equal(primary.getActiveCamera(), primaryCamera);
   assert.equal(underlay.getActiveCamera(), underlayCamera);
-  assert.equal(primaryCamera.parallelScale, 4);
-  assert.equal(underlayCamera.parallelScale, null);
-  assert.equal(primary.resetCameraCalls, 1);
+  assert.deepEqual(primaryCamera.viewMatrix, Array(16).fill(1));
+  assert.equal(underlayCamera.viewMatrix, null);
 });
 
 test("client camera authority binds initial, added, and replaced renderers before repaint", async () => {
@@ -122,7 +113,6 @@ test("client camera authority binds initial, added, and replaced renderers befor
       client: {},
       emit() {},
       getRenderWindow: () => renderWindow,
-      renderScene() {},
       cameraAuthority: "client",
     },
     {

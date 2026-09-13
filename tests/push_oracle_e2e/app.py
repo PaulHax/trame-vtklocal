@@ -17,7 +17,6 @@ Server-side RPC triggers (registered via ``server.trigger``):
 - ``oracle.reset(scene_name)`` → clear+populate+sync, return the store seq
 - ``oracle.run_step(step_name)`` → mutate + ``view.sync()``, return seq
 - ``oracle.shadow()`` → ``store.snapshot()`` plus inlined blob bytes
-- ``oracle.request_resync()`` → server-initiated mid-stream resync
 - ``oracle.suppress_next_publish(count)`` → drop the next ``count`` outgoing
   ``scene.ops`` broadcasts (test-app protocol wrapper; the websocket stays
   alive so the *next* delivered message exposes the seq gap)
@@ -251,10 +250,6 @@ class OracleApp:
         def shadow():
             return self.shadow()
 
-        @server.trigger("oracle.request_resync")
-        def request_resync():
-            return self.request_resync()
-
         @server.trigger("oracle.suppress_next_publish")
         def suppress_next_publish(count=1):
             self._ensure_publish_wrapper()
@@ -310,10 +305,6 @@ class OracleApp:
 
     def shadow(self):
         return shadow_payload(self.publisher)
-
-    def request_resync(self):
-        self.view_widget.request_resync()
-        return {"baseline_seq": int(self.publisher.store.seq)}
 
 
 def main():

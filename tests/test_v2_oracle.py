@@ -590,32 +590,5 @@ def test_oracle_sync_sweep_heals_missed_dirty_marks():
         publisher.cleanup()
 
 
-# ----------------------------------------------------------------------
-# request_resync
-# ----------------------------------------------------------------------
-
-
-def test_oracle_request_resync_broadcast_never_applies():
-    scene = make_basic_scene()
-    publisher, server = make_publisher(scene)
-    try:
-        client = MirrorClient()
-        client.resync(publisher)
-        seq_before = publisher.store.seq
-
-        publisher.request_resync()
-        ((topic, message),) = server.protocol.drain()
-        assert topic == OPS_TOPIC
-        assert message["baseSeq"] == -1
-        assert message["ops"] == []
-        assert message["seq"] == seq_before + 1
-        assert client.apply(message) == "resync"
-
-        client.resync(publisher, known_refs=set(client.blobs))
-        assert_client_matches_server(client, publisher)
-    finally:
-        publisher.cleanup()
-
-
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])

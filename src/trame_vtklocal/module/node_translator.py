@@ -11,9 +11,10 @@ Client-authority cameras never become nodes or refs.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Set
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from vtkmodules.vtkCommonCore import vtkCollection
+from vtkmodules.vtkRenderingCore import vtkPointGaussianMapper
 
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module import interaction as pick

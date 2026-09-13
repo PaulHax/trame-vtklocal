@@ -83,15 +83,19 @@ class VtkJsDemo:
 
     def _ui(self):
         with DivLayout(self.server) as layout:
-            with html.Div(
-                style="position: fixed; inset: 0;"
-            ):
+            with html.Div(style="position: fixed; inset: 0;"):
                 self.html_view = VtkJsLocalView(self.render_window)
 
             with html.Div(
-                style="position: absolute; top: 1rem; left: 1rem; z-index: 10; background: white; padding: 1rem; border-radius: 0.5rem;"
+                style=(
+                    "position: absolute; top: 1rem; left: 1rem; z-index: 10;"
+                    " background: white; padding: 1rem; border-radius: 0.5rem;"
+                )
             ):
-                html.Div("vtk.js Rendering Demo", style="font-weight: bold; margin-bottom: 0.5rem;")
+                html.Div(
+                    "vtk.js Rendering Demo",
+                    style="font-weight: bold; margin-bottom: 0.5rem;",
+                )
                 html.Label("Resolution: ")
                 html.Input(
                     type="range",

@@ -9,6 +9,7 @@ This uses trame-vtklocal's vtk.js rendering mode (not WASM).
 
 import math
 import asyncio
+import sys
 import time
 from urllib.parse import quote as url_quote
 
@@ -244,7 +245,10 @@ def update_trail(lng, lat, scale):
     x, y, z, _ = lng_lat_to_mercator(lng, lat)
     z_height = scale * 0.3
 
-    if trail_state["scale_factor"] is None or abs(trail_state["scale_factor"] - scale) > scale * 0.1:
+    if (
+        trail_state["scale_factor"] is None
+        or abs(trail_state["scale_factor"] - scale) > scale * 0.1
+    ):
         trail_state["scale_factor"] = scale
         trail_tube.SetRadius(scale * 0.25)
 
@@ -633,7 +637,9 @@ INIT_SCRIPT_JS = """
 """
 
 server.enable_module({"scripts": [f"data:text/javascript,{url_quote(INIT_SCRIPT_JS)}"]})
-server.enable_module({"styles": ["data:text/css,html { overflow-y: hidden !important; }"]})
+server.enable_module(
+    {"styles": ["data:text/css,html { overflow-y: hidden !important; }"]}
+)
 
 with SinglePageLayout(server) as layout:
     layout.title.set_text("MapLibre + VTK.js Geo Cones")
@@ -704,8 +710,6 @@ with SinglePageLayout(server) as layout:
             ctrl.view_sync = view.sync
             ctrl.view_send_command = view.send_command
 
-
-import sys
 
 if "--sync=false" in sys.argv or "--async" in sys.argv:
     state.sync_mode = False

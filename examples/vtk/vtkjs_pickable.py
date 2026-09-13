@@ -194,9 +194,7 @@ def on_retag():
 with DivLayout(server) as layout:
     layout.root.style = "width: 100vw; height: 100vh;"
     client.Style("body { margin: 0; font-family: sans-serif; }")
-    server.enable_module(
-        {"scripts": [f"data:text/javascript,{url_quote(JS_CODE)}"]}
-    )
+    server.enable_module({"scripts": [f"data:text/javascript,{url_quote(JS_CODE)}"]})
 
     with html.Div(style="position: absolute; inset: 0;"):
         view = VtkJsLocalView(

@@ -52,7 +52,9 @@ interactor.SetRenderWindow(render_window)
 interactor.GetInteractorStyle().SetCurrentStyleToTrackballCamera()
 
 with DivLayout(server) as layout:
-    html_view = VtkJsLocalView(render_window, sync_mode="push", style="position: fixed; inset: 0;")
+    html_view = VtkJsLocalView(
+        render_window, sync_mode="push", style="position: fixed; inset: 0;"
+    )
 
 
 async def loop():

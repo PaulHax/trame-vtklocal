@@ -135,7 +135,10 @@ with DivLayout(server) as layout:
             "border-radius: 0.75rem; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);"
         ),
     ):
-        html.Div("vtk.js Glyph Mapper Demo", style="font-weight: 700; margin-bottom: 0.35rem;")
+        html.Div(
+            "vtk.js Glyph Mapper Demo",
+            style="font-weight: 700; margin-bottom: 0.35rem;",
+        )
         html.Div("Three glyph centers move every second.")
 
 

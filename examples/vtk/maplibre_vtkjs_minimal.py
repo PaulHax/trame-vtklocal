@@ -7,7 +7,12 @@ from trame.widgets import html
 from trame.ui.html import DivLayout
 from trame_vtklocal.widgets import VtkJsSharedView
 from vtkmodules.vtkFiltersSources import vtkConeSource
-from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow, vtkPolyDataMapper, vtkActor
+from vtkmodules.vtkRenderingCore import (
+    vtkRenderer,
+    vtkRenderWindow,
+    vtkPolyDataMapper,
+    vtkActor,
+)
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 
 
@@ -54,13 +59,15 @@ server = get_server()
 server.client_type = "vue3"
 ctrl = server.controller
 
-server.enable_module({
-    "scripts": [
-        "https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.js",
-        "https://unpkg.com/gl-matrix@3.4.3/gl-matrix-min.js",
-    ],
-    "styles": ["https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.css"],
-})
+server.enable_module(
+    {
+        "scripts": [
+            "https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.js",
+            "https://unpkg.com/gl-matrix@3.4.3/gl-matrix-min.js",
+        ],
+        "styles": ["https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.css"],
+    }
+)
 
 JS_INIT = """
 (function() {
@@ -220,17 +227,21 @@ def find_camera_in_state(obj, path=""):
             return result
     return None
 
+
 @server.trigger("sync")
 def sync():
     import json
     from trame_vtklocal.module.vtkjs_translator import translate_scene
+
     render_window.Render()
     view.object_manager.UpdateStatesFromObjects()
     state = translate_scene(view.object_manager, view._window_id)
     camera_info = find_camera_in_state(state)
     if camera_info:
         print(f"[Python] Camera found at: {camera_info['path']}")
-        print(f"[Python] Camera properties: {json.dumps(camera_info['camera'].get('properties', {}), indent=2)}")
+        print(
+            f"[Python] Camera properties: {json.dumps(camera_info['camera'].get('properties', {}), indent=2)}"
+        )
     else:
         print("[Python] No camera found in state")
     ctrl.view_update()

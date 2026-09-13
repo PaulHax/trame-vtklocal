@@ -181,7 +181,7 @@ def test_config_is_copied_not_shared():
 def test_validation_errors():
     _api, _rw, mapper, _id = _make_scene()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         pick.make_pickable(mapper, grab_px=None)
     with pytest.raises(ValueError):
         pick.make_pickable(mapper, grab_px=0)

@@ -182,12 +182,20 @@ def _canonical_node(node_id: str, node: SceneNode) -> SceneNode:
     if not isinstance(node_type, str) or not node_type:
         raise ValueError(f"node {node_id!r} needs a non-empty string 'type'")
 
-    shallow: SceneNode = {**node}
-    result = copy.deepcopy(shallow)
-    if "refs" in node:
-        result["refs"] = _canonical_refs(node_id, node["refs"])
-    if "arrays" in node:
-        result["arrays"] = _canonical_arrays(node_id, node["arrays"])
+    refs = _canonical_refs(node_id, node["refs"]) if "refs" in node else None
+    arrays = _canonical_arrays(node_id, node["arrays"]) if "arrays" in node else None
+    # Empty placeholders keep the slots in key order so the single deep copy
+    # below never walks the refs and arrays already copied above.
+    rest: SceneNode = {**node}
+    if refs is not None:
+        rest["refs"] = {}
+    if arrays is not None:
+        rest["arrays"] = {}
+    result = copy.deepcopy(rest)
+    if refs is not None:
+        result["refs"] = refs
+    if arrays is not None:
+        result["arrays"] = arrays
     return result
 
 

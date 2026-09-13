@@ -130,8 +130,8 @@ max-line-length = 120
 convention = "google"
 
 [tool.mypy]
-# mypy no longer accepts a 3.9 target; every module uses postponed annotation
-# evaluation, so annotations stay valid on the 3.9 runtime floor.
+# mypy cannot target 3.9; every module uses postponed annotation evaluation, so
+# annotations stay valid on the 3.9 runtime floor.
 python_version = "3.10"
 files = ["src"]
 mypy_path = "src"

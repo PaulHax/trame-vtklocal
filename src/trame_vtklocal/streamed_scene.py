@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from numbers import Real
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, NoReturn, TypedDict, Union
+from typing import TYPE_CHECKING, NoReturn, Union
 
 from vtkmodules.vtkRenderingCore import vtkActor
 
@@ -22,7 +22,16 @@ from trame_vtklocal.module.streamed_scene_registry import (
 )
 
 if TYPE_CHECKING:
-    from typing_extensions import ReadOnly
+    from trame_vtklocal.streamed_scene_blocks import (
+        AdaptiveOptions,
+        AdaptiveOptionsDraft,
+        GeometricErrorScale,
+        PointCloudBlock,
+        Presentation,
+        SourceBlockCommon,
+        StreamedSceneBlock,
+        Tiles3DBlock,
+    )
 
 STREAMED_SCENE_TYPE = "vtkStreamedSceneActor"
 STREAMED_SCENE_BLOCK = "streamedScene"
@@ -41,79 +50,6 @@ AFFINE_ENTRY_ABS_TOL = 1e-12
 AFFINE_FIXED_ENTRIES = ((3, 0.0), (7, 0.0), (11, 0.0), (15, 1.0))
 # A linear block this close to singular has no usable inverse for picking.
 AFFINE_DETERMINANT_FLOOR = 1e-15
-
-GeometricErrorScale = Literal["maximum", "horizontal"]
-
-
-class FixedPresentation(TypedDict):
-    mode: ReadOnly[Literal["fixed"]]
-    diameterCssPx: ReadOnly[float]
-
-
-class AutoPresentation(TypedDict):
-    mode: ReadOnly[Literal["auto"]]
-    userScale: ReadOnly[float]
-    minDiameterCssPx: ReadOnly[float]
-    maxDiameterCssPx: ReadOnly[float]
-
-
-Presentation = Union[FixedPresentation, AutoPresentation]
-
-
-class AdaptiveOptions(TypedDict, total=False):
-    minBudget: ReadOnly[int]
-    maxBudget: ReadOnly[int]
-    interactionTargetMs: ReadOnly[float]
-    stationaryTargetMs: ReadOnly[float]
-
-
-class _AdaptiveOptionsDraft(TypedDict, total=False):
-    minBudget: int
-    maxBudget: int
-    interactionTargetMs: float
-    stationaryTargetMs: float
-
-
-class _SourceBlockCommon(TypedDict):
-    sourceAssetId: str
-    revision: str
-    endpoint: str
-
-
-class _PointCloudBlockRequired(TypedDict):
-    pointCount: int
-    presentation: Presentation
-    adaptive: bool
-
-
-class PointCloudBlock(_PointCloudBlockRequired, total=False):
-    adaptiveOptions: AdaptiveOptions
-    pointBudget: int
-    refinementCutoffPx: float
-
-
-class PointCloudSourceBlock(_SourceBlockCommon):
-    kind: Literal["pointCloud"]
-    pointCloud: PointCloudBlock
-
-
-class _Tiles3DBlockRequired(TypedDict):
-    tilesetToScene: list[float]
-    verticalExaggeration: float
-    verticalPivotZ: float
-    geometricErrorScale: GeometricErrorScale
-
-
-class Tiles3DBlock(_Tiles3DBlockRequired, total=False):
-    maximumScreenSpaceErrorPx: float
-
-
-class Tiles3DSourceBlock(_SourceBlockCommon):
-    kind: Literal["tiles3d"]
-    tiles3d: Tiles3DBlock
-
-
-StreamedSceneBlock = Union[PointCloudSourceBlock, Tiles3DSourceBlock]
 
 
 class _FrozenDict(dict[str, object]):
@@ -187,7 +123,7 @@ def _as_adaptive_options(value: object) -> AdaptiveOptions:
     if unknown:
         raise ValueError(f"unknown adaptive_options: {', '.join(sorted(unknown))}")
 
-    options: _AdaptiveOptionsDraft = {}
+    options: AdaptiveOptionsDraft = {}
     minimum = DEFAULT_ADAPTIVE_MIN_BUDGET
     if (raw := value.get("minBudget")) is not None:
         minimum = int(raw)
@@ -415,7 +351,7 @@ class StreamedSceneActor(vtkActor):
 
 def source_block(source: StreamedSource) -> StreamedSceneBlock:
     """Create the JSON-ready ``streamedScene`` block for a source."""
-    common: _SourceBlockCommon = {
+    common: SourceBlockCommon = {
         "sourceAssetId": source.source_asset_id,
         "revision": source.revision,
         "endpoint": source.endpoint,

@@ -7,18 +7,19 @@ import zipfile
 import base64
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, overload
+from typing import TYPE_CHECKING, overload
 from trame_client.widgets.core import AbstractElement
 from vtkmodules.vtkCommonCore import vtkObjectBase
-from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
 
 from trame_vtklocal import module
 
 from trame_common.exec.throttle import Throttle
 
 if TYPE_CHECKING:
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
+    from trame_vtklocal.host_types import UpdateThrottle
     from trame_vtklocal.module.protocol import ObjectManagerAPI
     from trame_vtklocal.module.vtkjs_translator import VtkRef
 
@@ -28,14 +29,6 @@ try:
     ZIP_COMPRESSION = zipfile.ZIP_DEFLATED
 except ImportError:
     ZIP_COMPRESSION = zipfile.ZIP_STORED
-
-
-class UpdateThrottle(Protocol):
-    """trame's ``Throttle`` around :meth:`LocalView.update`."""
-
-    rate: float
-
-    def __call__(self, *args: object, **kwargs: object) -> None: ...
 
 
 # trame_client ships no type information, so its base class is untyped here.
@@ -312,6 +305,8 @@ class LocalView(HtmlElement):
         **kwargs: object,
     ) -> None:
         """Reset camera by making the call on the client side"""
+        from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
         if renderer_or_render_window is None:
             renderer_or_render_window = self._render_window
 
@@ -319,8 +314,10 @@ class LocalView(HtmlElement):
             renderer_or_render_window = (
                 renderer_or_render_window.GetRenderers().GetFirstRenderer()
             )
+            if renderer_or_render_window is None:
+                raise RuntimeError("render window has no renderer to reset")
 
-        if isinstance(renderer_or_render_window, vtkRenderer):
+        if renderer_or_render_window.IsA("vtkRenderer"):
             id_to_reset_camera = self.get_wasm_id(renderer_or_render_window)
             self.server.js_call(self.__ref, "resetCamera", id_to_reset_camera)
 
@@ -374,9 +371,8 @@ class LocalView(HtmlElement):
     ) -> object:
         wasm_id = self.get_wasm_id(vtk_obj)
 
-        wasm_args: list[object]
         if is_vtk_version_newer(9, 5, 100):
-            wasm_args = list(map(self.get_wasm_obj_id, args))
+            wasm_args: list[object] = list(map(self.get_wasm_obj_id, args))
         else:
             wasm_args = list(map(self.get_wasm_id, args))
 

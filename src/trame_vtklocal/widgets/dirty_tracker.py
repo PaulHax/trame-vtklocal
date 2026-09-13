@@ -18,7 +18,6 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from vtkmodules.vtkCommonCore import vtkCommand
-from vtkmodules.vtkCommonDataModel import vtkFieldData
 from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
 from trame_vtklocal.module import distance_to_camera as dtc
@@ -56,9 +55,11 @@ def _iter_field_data_arrays(field_data: vtkObject | None) -> Iterator[vtkObject]
 
     yield field_data
 
-    if isinstance(field_data, vtkFieldData):
-        for index in range(field_data.GetNumberOfArrays()):
-            array = field_data.GetArray(index)
+    get_count = getattr(field_data, "GetNumberOfArrays", None)
+    get_array = getattr(field_data, "GetArray", None)
+    if get_count is not None and get_array is not None:
+        for index in range(get_count()):
+            array = get_array(index)
             if array is not None:
                 yield array
 

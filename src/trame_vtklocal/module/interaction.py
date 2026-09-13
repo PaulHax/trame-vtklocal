@@ -71,7 +71,8 @@ def make_pickable(
     mapper: vtkMapper,
     tags: Mapping[str, object] | None = None,
     ids: Iterable[object] | None = None,
-    grab_px: SupportsFloat | None = None,
+    *,
+    grab_px: SupportsFloat,
     priority: SupportsInt = 0,
     preview: PickPreview | None = None,
     plane: Mapping[str, Iterable[SupportsFloat]] | None = None,
@@ -86,14 +87,14 @@ def make_pickable(
     op); an unchanged config is a no-op, so callers can re-tag on every update
     without forcing spurious re-serialization.
     """
-    grab = float(grab_px) if grab_px is not None else float("nan")
+    grab = float(grab_px)
     if not math.isfinite(grab) or grab <= 0:
         raise ValueError("grab_px must be a positive number")
     if preview not in (None, "screen", "plane", "cloud"):
         raise ValueError("preview must be None, 'screen', 'plane', or 'cloud'")
     normalized_plane: PickPlane | None = None
     if plane is not None:
-        if not isinstance(plane, dict):
+        if not isinstance(plane, Mapping):
             raise ValueError("plane must contain origin and normal vectors")
         origin = [float(value) for value in plane.get("origin", ())]
         normal = [float(value) for value in plane.get("normal", ())]

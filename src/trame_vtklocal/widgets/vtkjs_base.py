@@ -5,7 +5,6 @@ from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar, Union
 
 from trame_client.widgets.core import AbstractElement
-from vtkmodules.vtkRenderingCore import vtkRenderer
 
 from trame_vtklocal import module
 from trame_vtklocal.module.distance_to_camera import (
@@ -18,7 +17,7 @@ from trame_vtklocal.module.camera_authority import (
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
-    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
     from trame_vtklocal.module.protocol import ObjectManagerAPI
@@ -255,11 +254,7 @@ class VtkJsBaseView(HtmlElement):
     # ------------------------------------------------------------------
 
     def get_renderer(self) -> vtkRenderer | None:
-        renderers = self._render_window.GetRenderers()
-        if renderers.GetNumberOfItems() > 0:
-            renderer = renderers.GetItemAsObject(0)
-            return renderer if isinstance(renderer, vtkRenderer) else None
-        return None
+        return self._render_window.GetRenderers().GetFirstRenderer()
 
     def _camera_params(self) -> CameraParams | None:
         renderer = self.get_renderer()

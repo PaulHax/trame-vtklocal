@@ -1,9 +1,6 @@
 import pathlib
 import vtk
-from addonModules.addonStyle import (
-    HighlightPickedActorStyle,
-    RegisterClasses_addonStyle,
-)  # type: ignore
+from addonModules.addonStyle import HighlightPickedActorStyle  # type: ignore
 
 from trame.app import get_server
 from trame.ui.html import DivLayout
@@ -110,7 +107,6 @@ class CustomInteractorStyleApp:
             with html.Div(style=FULL_SCREEN):
                 with vtklocal.LocalView(
                     self.render_window,
-                    addon_serdes_registrars=[RegisterClasses_addonStyle],
                     wasm_dir=WASM_DIR,
                     wasm_base_name=WASM_BASE_NAME,
                 ) as view:

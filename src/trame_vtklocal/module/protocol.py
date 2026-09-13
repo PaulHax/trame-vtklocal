@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import zipfile
 import json
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from types import ModuleType
-from typing import TYPE_CHECKING, Protocol, TypedDict, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from wslink import register as _wslink_register
 from wslink.websocket import LinkProtocol
 
@@ -22,7 +20,8 @@ from trame_vtklocal.store import ref_manager_hashes
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
 
-    from trame_vtklocal.wire import ResyncPayload
+    from trame_vtklocal.host_types import LinkProtocolRoot, ProtocolHostServer
+    from trame_vtklocal.wire import ObjectStatus, PushView, ResyncPayload
 
 try:
     import zlib  # noqa
@@ -54,54 +53,6 @@ def export_rpc(name: str) -> Callable[[_RpcT], _RpcT]:
     return decorate
 
 
-class NamedServer(Protocol):
-    """A trame server as far as per-server module state needs it."""
-
-    @property
-    def name(self) -> str: ...
-
-
-class LinkProtocolRoot(Protocol):
-    """The wslink server protocol handed to protocol configuration callbacks."""
-
-    def registerLinkProtocol(self, protocol: ObjectManagerAPI, /) -> object: ...
-
-
-class ProtocolHostServer(NamedServer, Protocol):
-    """A trame server that registers wslink protocols once it starts."""
-
-    def add_protocol_to_configure(
-        self, configure_protocol_fn: Callable[[LinkProtocolRoot], None], /
-    ) -> object: ...
-
-
-class ModuleHostServer(NamedServer, Protocol):
-    """A trame server that can enable a module definition."""
-
-    def enable_module(
-        self, module: ModuleType | dict[str, object], /, **kwargs: object
-    ) -> object: ...
-
-
-class PushView(Protocol):
-    """The publisher serving one render window's ``scene.resync``."""
-
-    def resync(
-        self, known_refs: Iterable[str] | None = None, client_id: str | None = None
-    ) -> ResyncPayload: ...
-
-
-class ObjectStatus(TypedDict):
-    """The ``vtklocal.get.status`` reply for one root object."""
-
-    ids: list[tuple[int, int]]
-    hashes: Sequence[str]
-    ignore_ids: list[int]
-    cameras: list[int]
-    force_push: list[int]
-    interactor: int | None
-
-
 def map_id_mtime(object_manager: vtkObjectManager, vtk_id: int) -> tuple[int, int]:
     vtk_obj = object_manager.GetObjectAtId(vtk_id)
     if vtk_obj is None:
@@ -121,23 +72,10 @@ def object_for_id(
 
 # wslink ships no type information, so its base class is untyped here.
 class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
-    def __init__(
-        self,
-        *args: object,
-        addon_serdes_registrars: Sequence[object] = (),
-        **kwargs: object,
-    ) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self.vtk_object_manager = vtkObjectManager()
         self.vtk_object_manager.Initialize()
-        if addon_serdes_registrars:
-            # VTK 9.6 exposes only the C registrar-array overload, which Python
-            # cannot call.
-            raise RuntimeError(
-                "addon_serdes_registrars needs "
-                "vtkObjectManager.InitializeExtensionModuleHandler, "
-                "which this VTK does not provide"
-            )
         self._subscriptions: dict[int, int] = {}
         self._widgets: dict[int, set[int]] = {}
         self._last_publish_states: dict[int, int] = {}
@@ -481,8 +419,6 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
                 ),
             )
             # Write states
-            if sys.version_info >= (3, 11):
-                zipf.mkdir("states")
             for vtk_id in all_ids:
                 zipf.writestr(
                     f"states/{vtk_id}",
@@ -490,8 +426,6 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
                 )
 
             # Write blobs
-            if sys.version_info >= (3, 11):
-                zipf.mkdir("blobs")
             for hash in hashes:
                 zipf.writestr(
                     f"blobs/{hash}",
@@ -500,14 +434,10 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
 
 
 class ObjectManagerHelper:
-    def __init__(
-        self,
-        trame_server: ProtocolHostServer,
-        addon_serdes_registrars: Sequence[object] = (),
-    ) -> None:
+    def __init__(self, trame_server: ProtocolHostServer) -> None:
         self.trame_server = trame_server
         self.root_protocol: LinkProtocolRoot | None = None
-        self.api = ObjectManagerAPI(addon_serdes_registrars=addon_serdes_registrars)
+        self.api = ObjectManagerAPI()
         self.trame_server.add_protocol_to_configure(self.configure_protocol)
 
     def configure_protocol(self, protocol: LinkProtocolRoot) -> None:

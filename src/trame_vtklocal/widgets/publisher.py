@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.camera_authority import (
@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from trame_vtklocal.wire import (
         OpsMessage,
         OpsPublisher,
+        PushViewHost,
         ResyncCallbackT,
         ResyncPayload,
         SceneCommand,
@@ -79,19 +80,6 @@ if TYPE_CHECKING:
 WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
 RESYNC_BASE_SEQ = -1
-
-
-class PushViewHost(Protocol):
-    """What a publisher needs from the object-manager API that hosts it."""
-
-    @property
-    def vtk_object_manager(self) -> vtkObjectManager: ...
-
-    def register_push_view(
-        self, rw_id: int, publisher: ScenePublisher, /
-    ) -> object: ...
-
-    def unregister_push_view(self, rw_id: int, /) -> object: ...
 
 
 def event_is_current(
@@ -181,8 +169,7 @@ class ScenePublisher:
             object_manager, self._rw_id, on_dirty=self._schedule_publish
         )
 
-        if object_manager_api is not None:
-            object_manager_api.register_push_view(self._rw_id, self)
+        object_manager_api.register_push_view(self._rw_id, self)
 
         # Populate the store eagerly so resync is a snapshot read, never a
         # fresh translation. Blob prune once at construction so stale blobs

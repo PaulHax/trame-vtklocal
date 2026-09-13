@@ -77,6 +77,8 @@ def register_wasm(serve_path: str, **kwargs: object) -> dict[str, object]:
 
     # get wasm directory from kwargs or environment variable
     wasm_dir = kwargs.get("wasm_dir", os.environ.get("VTK_WASM_DIR_OVERRIDE"))
+    if wasm_dir and not isinstance(wasm_dir, (str, os.PathLike)):
+        raise TypeError(f"wasm_dir must be a str or path, got {wasm_dir!r}")
     # if the wasm directory is provided, we copy the files from there
     if (
         isinstance(wasm_dir, (str, os.PathLike))
@@ -94,8 +96,14 @@ def register_wasm(serve_path: str, **kwargs: object) -> dict[str, object]:
     else:
         # get wasm version and url
         requested_url = kwargs.get("wasm_url", wasm_url)
-        if not isinstance(requested_url, (str, Path)):
-            raise TypeError("wasm_url must be a str or Path")
+
+        def download() -> None:
+            # Only a download reads wasm_url, so only a download validates it.
+            if not isinstance(requested_url, (str, Path)):
+                raise TypeError(
+                    f"wasm_url must be a str or Path, got {requested_url!r}"
+                )
+            run_async(setup_wasm_directory(dest_directory, requested_url))
 
         # if the required wasm files do not exist, we need to download them
         # Versions before 9.5.20250531 use different WASM file naming conventions.
@@ -106,7 +114,7 @@ def register_wasm(serve_path: str, **kwargs: object) -> dict[str, object]:
                 not dest_directory.joinpath("vtkWasmSceneManager.mjs").exists()
                 or not dest_directory.joinpath("vtkWasmSceneManager.wasm").exists()
             ):
-                run_async(setup_wasm_directory(dest_directory, requested_url))
+                download()
         else:
             if (
                 not dest_directory.joinpath(f"{wasm_base_name}WebAssembly.mjs").exists()
@@ -120,7 +128,7 @@ def register_wasm(serve_path: str, **kwargs: object) -> dict[str, object]:
                     f"{wasm_base_name}WebAssemblyAsync.wasm"
                 ).exists()
             ):
-                run_async(setup_wasm_directory(dest_directory, requested_url))
+                download()
 
     return dict(
         state={

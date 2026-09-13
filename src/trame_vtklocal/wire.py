@@ -1,4 +1,5 @@
-"""Push sync v2 message shapes shared by the publisher and its RPC host.
+"""Message shapes on the wslink wire, and the push sync v2 seams between the
+publisher and its RPC host.
 
 VTK-free like :mod:`trame_vtklocal.store`, whose node and op shapes the
 messages carry, so both ``module/`` and ``widgets/`` may import it.
@@ -6,10 +7,12 @@ messages carry, so both ``module/`` and ``widgets/`` may import it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Optional, Protocol, TypedDict, TypeVar, final
 
 if TYPE_CHECKING:
+    from vtkmodules.vtkSerializationManager import vtkObjectManager
+
     from trame_vtklocal.store import SceneNode, SceneOp, WirePayload
 
 # A ``scene.resync`` observer; it receives the requesting wslink client id.
@@ -61,3 +64,33 @@ class OpsPublisher(Protocol):
     """The wslink root protocol's broadcast entry point."""
 
     def publish(self, topic: str, data: OpsMessage, /) -> object: ...
+
+
+class PushView(Protocol):
+    """The publisher serving one render window's ``scene.resync``."""
+
+    def resync(
+        self, known_refs: Iterable[str] | None = None, client_id: str | None = None
+    ) -> ResyncPayload: ...
+
+
+class PushViewHost(Protocol):
+    """What a publisher needs from the object-manager API that hosts it."""
+
+    @property
+    def vtk_object_manager(self) -> vtkObjectManager: ...
+
+    def register_push_view(self, rw_id: int, publisher: PushView, /) -> object: ...
+
+    def unregister_push_view(self, rw_id: int, /) -> object: ...
+
+
+class ObjectStatus(TypedDict):
+    """The ``vtklocal.get.status`` reply for one root object."""
+
+    ids: list[tuple[int, int]]
+    hashes: Sequence[str]
+    ignore_ids: list[int]
+    cameras: list[int]
+    force_push: list[int]
+    interactor: int | None

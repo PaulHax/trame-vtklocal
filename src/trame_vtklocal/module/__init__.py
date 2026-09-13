@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from trame_vtklocal.module.protocol import ObjectManagerHelper
 
 if TYPE_CHECKING:
-    from trame_vtklocal.module.protocol import (
+    from trame_vtklocal.host_types import (
         ModuleHostServer,
         NamedServer,
         ProtocolHostServer,
@@ -53,12 +52,7 @@ def get_helper(server: NamedServer) -> ObjectManagerHelper | None:
     return HELPERS_PER_SERVER.get(server.name)
 
 
-def setup(
-    trame_server: ProtocolHostServer,
-    *,
-    addon_serdes_registrars: Sequence[object] = (),
-    **kwargs: object,
-) -> None:
+def setup(trame_server: ProtocolHostServer, **kwargs: object) -> None:
     global HELPERS_PER_SERVER
     # Pop wasm-specific kwargs so they don't interfere, but ignore them here.
     # WASM registration is deferred to setup_wasm() and only runs when
@@ -66,9 +60,7 @@ def setup(
     kwargs.pop("wasm_url", None)
     kwargs.pop("wasm_dir", None)
     kwargs.pop("wasm_base_name", None)
-    HELPERS_PER_SERVER[trame_server.name] = ObjectManagerHelper(
-        trame_server, addon_serdes_registrars=addon_serdes_registrars
-    )
+    HELPERS_PER_SERVER[trame_server.name] = ObjectManagerHelper(trame_server)
 
 
 def setup_wasm(trame_server: ModuleHostServer, **kwargs: object) -> None:

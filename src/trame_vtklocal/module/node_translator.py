@@ -21,7 +21,10 @@ from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
 from trame_vtklocal.module.point_gaussian import validate_simple_points
-from trame_vtklocal.module.node_arrays import polydata_array_entries
+from trame_vtklocal.module.node_arrays import (
+    glyph_mapper_array_props,
+    polydata_array_entries,
+)
 from trame_vtklocal.module.camera_authority import CameraAuthority
 from trame_vtklocal.module.state_cache import SceneReader
 from trame_vtklocal.module.streamed_scene_translation import translate_actor
@@ -296,18 +299,6 @@ def _distance_to_camera_block(
     return config
 
 
-def _glyph_mapper_array_props(vtk_mapper: vtkObjectBase) -> dict[str, str]:
-    """Recover vtkGlyph3DMapper array-name properties missing from VTK state."""
-    props: dict[str, str] = {}
-    scale_array = dtc.mapper_input_array_name(vtk_mapper, index=0)
-    if scale_array:
-        props["scaleArray"] = scale_array
-    orientation_array = dtc.mapper_input_array_name(vtk_mapper, index=3)
-    if orientation_array:
-        props["orientationArray"] = orientation_array
-    return props
-
-
 def _translate_mapper(
     reader: SceneReader, state: VtkState, vtkjs_type: str
 ) -> SceneNode:
@@ -321,7 +312,7 @@ def _translate_mapper(
     blocks: dict[str, Mapping[str, object]] = {}
 
     if vtkjs_type == "vtkGlyph3DMapper":
-        props.update(_glyph_mapper_array_props(vtk_mapper))
+        props.update(glyph_mapper_array_props(vtk_mapper))
 
     input_ids = _mapper_input_port_ids(reader, state)
     dtc_block = _distance_to_camera_block(reader, vtkjs_type, vtk_mapper)

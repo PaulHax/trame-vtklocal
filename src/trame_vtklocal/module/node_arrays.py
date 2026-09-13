@@ -16,6 +16,7 @@ import numpy as np
 from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from vtkmodules.vtkCommonCore import vtkBitArray
 
+from trame_vtklocal.module import distance_to_camera as dtc
 from trame_vtklocal.module.vtkjs_translator import (
     ATTRIBUTE_REGISTRATIONS,
     FIELD_DATA_GETTERS,
@@ -313,3 +314,15 @@ def polydata_array_entries(
             arrays[state_key.lower()] = entry
     arrays.update(_field_data_arrays(reader, state["Id"]))
     return arrays
+
+
+def glyph_mapper_array_props(vtk_mapper: vtkObjectBase) -> dict[str, str]:
+    """Recover vtkGlyph3DMapper array-name properties missing from VTK state."""
+    props: dict[str, str] = {}
+    scale_array = dtc.mapper_input_array_name(vtk_mapper, index=0)
+    if scale_array:
+        props["scaleArray"] = scale_array
+    orientation_array = dtc.mapper_input_array_name(vtk_mapper, index=3)
+    if orientation_array:
+        props["orientationArray"] = orientation_array
+    return props

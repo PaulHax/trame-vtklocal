@@ -19,8 +19,8 @@
 // A gate may hold an ops message whose resources (an external texture the
 // message names) have not arrived. Held messages keep their order, so later
 // messages wait behind them; each applies when the gate releases it, or at
-// its deadline regardless, so a resource that never arrives costs at most
-// one hold. Snapshots are never held.
+// its deadline regardless, so a resource that never arrives cannot stall the
+// view. Snapshots are never held.
 
 import { base64ToArrayBuffer } from "../sync/base64";
 
@@ -54,7 +54,10 @@ export function createSceneEngine({
 }) {
   const session = client.getConnection().getSession();
   const commandHandlers = new Map(); // name -> Set(callback)
-  const holdMs = gate?.holdMs ?? 250;
+  // The deadline bounds a resource that never arrives; a slow one must not
+  // hit it, so it sits well above any delivery the caller would still wait
+  // for (the caller asks for a resend long before this).
+  const holdMs = gate?.holdMs ?? 3000;
 
   let mySeq = -1;
   // The seq of the last message routed in order (applied or held); the

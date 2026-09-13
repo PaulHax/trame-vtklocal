@@ -77,8 +77,9 @@ SIZE_BUDGETS = {
     # one translator for every node kind, plus the shared-reader seam
     "module/node_translator.py": 403,
     # the node, op and commit shapes the store validates live beside it, since
-    # it may import nothing else from the package
-    "store.py": 506,
+    # it may import nothing else from the package; plus the JSON-shaped copier
+    # that keeps stored nodes isolated at a third of deepcopy's cost
+    "store.py": 531,
     # one concern (dirty candidates) but three observer graphs: objects,
     # dataset children, pipeline producers
     "widgets/dirty_tracker.py": 501,

@@ -14,12 +14,7 @@ from typing import TYPE_CHECKING, NoReturn, Union
 
 from vtkmodules.vtkRenderingCore import vtkActor
 
-from trame_vtklocal.module.streamed_scene_registry import (
-    _register_actor,
-    _registered_source,
-    _registration_for_actor,
-    _update_registered_source,
-)
+from trame_vtklocal.module.feature_blocks import set_block
 
 if TYPE_CHECKING:
     from trame_vtklocal.streamed_scene_blocks import (
@@ -317,36 +312,30 @@ def _is_vtk_reconstitution(value: object) -> bool:
 
 
 class StreamedSceneActor(vtkActor):
-    """A mapper-free VTK actor carrying one immutable streamed source."""
+    """A mapper-free VTK actor carrying one immutable streamed source.
+
+    The translator reads the source's block off the actor's property keys, so
+    it needs no Python object. ``source`` itself survives wrapper churn because
+    VTK restores a Python subclass's instance attributes with its wrapper.
+    """
 
     def __init__(self, source: StreamedSource) -> None:
         if _is_vtk_reconstitution(source):
-            # VTK's stub omits the wrapped-pointer constructor argument.
+            # VTK rebuilding a wrapper from its pointer; the ghost restores
+            # the instance attributes. The stub omits this constructor form.
             super().__init__(source)  # type: ignore[call-arg]
-            registration = _registration_for_actor(self)
-            if registration is None or not isinstance(
-                registration.source, _SOURCE_TYPES
-            ):
-                raise RuntimeError(
-                    "reconstituted StreamedSceneActor lost its streamed source"
-                )
-            self._source = registration.source
             return
-
         super().__init__()
-        self._source = _validate_source(source)
-        _register_actor(self, self._source)
+        self.source = source
 
     @property
     def source(self) -> StreamedSource:
-        registered = _registered_source(self)
-        return self._source if registered is None else registered
+        return self._source
 
     @source.setter
     def source(self, source: StreamedSource) -> None:
         self._source = _validate_source(source)
-        _update_registered_source(self, self._source)
-        self.Modified()
+        set_block(self, STREAMED_SCENE_BLOCK, source_block(self._source))
 
 
 def source_block(source: StreamedSource) -> StreamedSceneBlock:

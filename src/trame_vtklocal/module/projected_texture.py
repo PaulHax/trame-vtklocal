@@ -10,9 +10,10 @@ render time.
 
 from __future__ import annotations
 
-import weakref
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Final, Literal, SupportsFloat, TypedDict
+from typing import TYPE_CHECKING, Final, Literal, SupportsFloat, TypedDict, cast
+
+from trame_vtklocal.module.feature_blocks import get_block, set_block
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 ProjectedTextureMode = Literal["homography", "worldToClip"]
 
 PROJECTED_TEXTURE_TYPE: Final = "vtkProjectedTextureMapper"
+PROJECTED_TEXTURE_BLOCK: Final = "projectedTexture"
 MODE_HOMOGRAPHY: Final = "homography"
 MODE_WORLD_TO_CLIP: Final = "worldToClip"
 MODES: tuple[ProjectedTextureMode, ...] = (MODE_HOMOGRAPHY, MODE_WORLD_TO_CLIP)
@@ -35,11 +37,6 @@ class ProjectedTextureConfig(_ProjectedTextureConfigRequired, total=False):
     homographyArrayName: str
     homography: list[float]
     worldToClip: list[float]
-
-
-_MAPPER_CONFIGS: weakref.WeakKeyDictionary[vtkObjectBase, ProjectedTextureConfig] = (
-    weakref.WeakKeyDictionary()
-)
 
 
 def _as_matrix(
@@ -78,14 +75,13 @@ def mark_projected_texture(
     if homography_array_name:
         config["homographyArrayName"] = str(homography_array_name)
 
-    previous = _MAPPER_CONFIGS.get(mapper)
+    previous = projected_texture_config(mapper)
     if previous:
         for key in ("homography", "worldToClip"):
             if key in previous:
                 config[key] = previous[key]
 
-    _MAPPER_CONFIGS[mapper] = config
-    mapper.Modified()
+    set_block(mapper, PROJECTED_TEXTURE_BLOCK, config)
     return config
 
 
@@ -95,27 +91,21 @@ def set_projected_texture_matrix(
     world_to_clip: Iterable[SupportsFloat] | None = None,
 ) -> ProjectedTextureConfig:
     """Update the marked mapper's projection matrix (column-major values)."""
-    config = _MAPPER_CONFIGS.get(mapper)
+    config = projected_texture_config(mapper)
     if config is None:
         raise ValueError("mapper is not marked with mark_projected_texture")
 
-    updated = False
     matrix = _as_matrix(homography, 9, "homography")
     if matrix is not None:
         config["homography"] = matrix
-        updated = True
     matrix = _as_matrix(world_to_clip, 16, "world_to_clip")
     if matrix is not None:
         config["worldToClip"] = matrix
-        updated = True
-
-    if updated:
-        # The config rides the mapper's serialized state; bump its MTime so
-        # the push sync emits a delta for this mapper.
-        mapper.Modified()
+    set_block(mapper, PROJECTED_TEXTURE_BLOCK, config)
     return config
 
 
 def projected_texture_config(mapper: vtkObjectBase) -> ProjectedTextureConfig | None:
-    config = _MAPPER_CONFIGS.get(mapper)
-    return config.copy() if config else None
+    return cast(
+        "ProjectedTextureConfig | None", get_block(mapper, PROJECTED_TEXTURE_BLOCK)
+    )

@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
-    from trame_vtklocal.module.streamed_scene_registry import _StreamedSceneRegistry
     from trame_vtklocal.module.vtkjs_translator import VtkRef
 
 
@@ -91,11 +90,9 @@ class SceneReader:
         camera_authority: CameraAuthority = "server",
         state_cache: ParsedStateCache | None = None,
         class_names: Mapping[str, str] | None = None,
-        streamed_scene_registry: _StreamedSceneRegistry | None = None,
     ) -> None:
         self.object_manager = object_manager
         self.camera_authority = validate_camera_authority(camera_authority)
-        self.streamed_scene_registry = streamed_scene_registry
         self._states: dict[int, VtkState] = {}
         self._state_cache = state_cache
         self._class_names: Mapping[str, str] = class_names or {}

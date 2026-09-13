@@ -10,9 +10,10 @@ answers "what rendered glyph point is under (x, y)".
 from __future__ import annotations
 
 import math
-import weakref
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Literal, SupportsFloat, SupportsInt, TypedDict
+from typing import TYPE_CHECKING, Literal, SupportsFloat, SupportsInt, TypedDict, cast
+
+from trame_vtklocal.module.feature_blocks import get_block, set_block
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
@@ -40,31 +41,6 @@ class PickableConfig(_PickableFields, total=False):
     """The ``pickable`` block; ``plane`` is present only when one was given."""
 
     plane: PickPlane
-
-
-class _StoredPickableConfig(_PickableFields):
-    plane: PickPlane | None
-
-
-_PICKABLE_CONFIGS: weakref.WeakKeyDictionary[vtkObjectBase, _StoredPickableConfig] = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def _copy_config(config: _StoredPickableConfig) -> PickableConfig:
-    copied: PickableConfig = {
-        "tags": dict(config["tags"]),
-        "ids": list(config["ids"]) if config["ids"] is not None else None,
-        "grabPx": config["grabPx"],
-        "priority": config["priority"],
-        "preview": config["preview"],
-    }
-    if config["plane"] is not None:
-        copied["plane"] = {
-            "origin": list(config["plane"]["origin"]),
-            "normal": list(config["plane"]["normal"]),
-        }
-    return copied
 
 
 def make_pickable(
@@ -109,27 +85,22 @@ def make_pickable(
     if preview == "plane" and normalized_plane is None:
         raise ValueError("preview='plane' requires a plane")
 
-    config: _StoredPickableConfig = {
+    config: PickableConfig = {
         "tags": dict(tags) if tags else {},
         "ids": list(ids) if ids is not None else None,
         "grabPx": grab,
         "priority": int(priority),
         "preview": preview,
-        "plane": normalized_plane,
     }
-    if _PICKABLE_CONFIGS.get(mapper) != config:
-        _PICKABLE_CONFIGS[mapper] = config
-        mapper.Modified()
-    return _copy_config(config)
+    if normalized_plane is not None:
+        config["plane"] = normalized_plane
+    set_block(mapper, PICKABLE_STATE_KEY, config)
+    return config
 
 
 def clear_pickable(mapper: vtkMapper) -> None:
-    if _PICKABLE_CONFIGS.pop(mapper, None) is not None:
-        mapper.Modified()
+    set_block(mapper, PICKABLE_STATE_KEY, None)
 
 
 def pickable_config(mapper: vtkObjectBase | None) -> PickableConfig | None:
-    if mapper is None:
-        return None
-    config = _PICKABLE_CONFIGS.get(mapper)
-    return _copy_config(config) if config else None
+    return cast("PickableConfig | None", get_block(mapper, PICKABLE_STATE_KEY))

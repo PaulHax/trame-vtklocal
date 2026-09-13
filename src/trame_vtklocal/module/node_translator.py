@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
     from trame_vtklocal.module.state_cache import ParsedStateCache, VtkState
-    from trame_vtklocal.module.streamed_scene_registry import _StreamedSceneRegistry
     from trame_vtklocal.store import ArrayEntry, RefSlot, SceneNode
 
 
@@ -337,7 +336,7 @@ def _translate_mapper(
     projected_texture = ptx.projected_texture_config(vtk_mapper)
     if projected_texture:
         node_type = ptx.PROJECTED_TEXTURE_TYPE
-        blocks["projectedTexture"] = projected_texture
+        blocks[ptx.PROJECTED_TEXTURE_BLOCK] = projected_texture
     presentation = point_presentation.point_cloud_presentation_config(vtk_mapper)
     if presentation:
         blocks[point_presentation.POINT_CLOUD_PRESENTATION_BLOCK] = presentation
@@ -386,7 +385,6 @@ def scene_reader(
     camera_authority: CameraAuthority = "server",
     state_cache: ParsedStateCache | None = None,
     class_names: Mapping[str, str] | None = None,
-    streamed_scene_registry: _StreamedSceneRegistry | None = None,
 ) -> SceneReader:
     """A cached state reader, shareable across several ``translate_object``
     calls in one pass so referenced states are JSON-parsed once."""
@@ -395,7 +393,6 @@ def scene_reader(
         camera_authority,
         state_cache=state_cache,
         class_names=class_names,
-        streamed_scene_registry=streamed_scene_registry,
     )
 
 
@@ -423,7 +420,6 @@ def translate_scene(
     camera_authority: CameraAuthority = "server",
     state_cache: ParsedStateCache | None = None,
     class_names: Mapping[str, str] | None = None,
-    streamed_scene_registry: _StreamedSceneRegistry | None = None,
 ) -> dict[str, SceneNode]:
     """Translate every node reachable from ``root_id`` into ``{id: node}``.
 
@@ -436,7 +432,6 @@ def translate_scene(
         camera_authority,
         state_cache=state_cache,
         class_names=class_names,
-        streamed_scene_registry=streamed_scene_registry,
     )
     nodes: dict[str, SceneNode] = {}
     pending = [int(root_id)]

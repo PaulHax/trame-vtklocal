@@ -7,13 +7,9 @@ from typing import TYPE_CHECKING
 
 from vtkmodules.vtkRenderingCore import vtkActor
 
-from trame_vtklocal.module.streamed_scene_registry import streamed_scene_source
+from trame_vtklocal.module.feature_blocks import get_block
 from trame_vtklocal.module.vtkjs_translator import actor_user_matrix_property
-from trame_vtklocal.streamed_scene import (
-    STREAMED_SCENE_BLOCK,
-    STREAMED_SCENE_TYPE,
-    source_block,
-)
+from trame_vtklocal.streamed_scene import STREAMED_SCENE_BLOCK, STREAMED_SCENE_TYPE
 
 if TYPE_CHECKING:
     from trame_vtklocal.module.state_cache import SceneReader, VtkState
@@ -34,14 +30,7 @@ def translate_actor(
     if user_matrix is not None:
         props["userMatrix"] = user_matrix
 
-    source = streamed_scene_source(
-        actor, state["Id"], registry=reader.streamed_scene_registry
-    )
-    if source is None:
+    block = get_block(actor, STREAMED_SCENE_BLOCK)
+    if block is None:
         return "vtkActor", props, refs, {}
-    return (
-        STREAMED_SCENE_TYPE,
-        props,
-        {},
-        {STREAMED_SCENE_BLOCK: source_block(source)},
-    )
+    return STREAMED_SCENE_TYPE, props, {}, {STREAMED_SCENE_BLOCK: block}

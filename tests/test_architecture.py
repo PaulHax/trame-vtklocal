@@ -79,7 +79,7 @@ SIZE_BUDGETS = {
     "module/distance_to_camera.py": 431,
     # one translator for every node kind, plus the shared-reader seam and the
     # distance-to-camera block shape it emits
-    "module/node_translator.py": 460,
+    "module/node_translator.py": 450,
     # wslink RPC surface + push-view blob registry with debounced GC
     "module/protocol.py": 430,
     # the node, op and commit shapes the store validates live beside it, since
@@ -94,7 +94,7 @@ SIZE_BUDGETS = {
     # the hot-array fast-path dispatch in _commit_batch.
     # Next reduction: event_is_current() is a VTK-free, store-only predicate
     # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 569,
+    "widgets/publisher.py": 558,
 }
 
 

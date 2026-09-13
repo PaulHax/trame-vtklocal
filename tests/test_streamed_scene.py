@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import gc
 import json
-import subprocess
-import sys
 import weakref
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -18,7 +16,6 @@ import trame_vtklocal.streamed_scene as streamed_scene
 from trame_vtklocal import PointCloudSource, StreamedSceneActor, Tiles3DSource
 from trame_vtklocal.module.node_translator import translate_scene
 from trame_vtklocal.module.protocol import ObjectManagerAPI
-from trame_vtklocal.module import streamed_scene_registry
 from trame_vtklocal.widgets.publisher import ScenePublisher
 
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
@@ -103,11 +100,6 @@ def _source(**overrides):
 
 def _matrix_with(index, value):
     return (*IDENTITY[:index], value, *IDENTITY[index + 1 :])
-
-
-def _delete_observer_count(actor, limit=256):
-    """Count live observers. VTK exposes tags, not a count, so scan the tags."""
-    return sum(1 for tag in range(1, limit) if actor.GetCommand(tag) is not None)
 
 
 def _scene(actor):
@@ -391,44 +383,20 @@ def test_vtk_reconstituted_subclass_recovers_source_after_wrapper_dies():
     assert reconstructed.source == _source()
 
 
-def test_registered_source_stays_authoritative_for_stale_and_reconstituted_wrappers():
-    registry = streamed_scene_registry._StreamedSceneRegistry()
-    renderer = vtkRenderer()
-    original_source = _source()
-    current_source = _source(revision="current")
-    actor = StreamedSceneActor(original_source)
-    renderer.AddActor(actor)
-    registry.resolve(actor, "41")
-
-    actor.source = current_source
-    actor._source = original_source  # model a second wrapper's stale local cache
-    assert registry._associate(actor, "41", original_source) == current_source
-    assert actor.source == current_source
-    translated = streamed_scene.source_block(registry.resolve(actor, "41"))
-    assert translated["revision"] == "current"
-
-    pointer = actor.__this__
+def test_translation_reads_the_block_after_the_python_wrapper_dies():
+    actor = StreamedSceneActor(_source(revision="kept"))
+    api, _window, _renderer, root_id = _scene(actor)
     original = weakref.ref(actor)
     del actor
     gc.collect()
     assert original() is None
 
-    reconstructed = vtkActor(pointer)
-    assert reconstructed.source == current_source
+    block = _actor_node(api, root_id)["blocks"]["streamedScene"]
+
+    assert block["revision"] == "kept"
 
 
-def test_unrecoverable_streamed_subclass_source_loss_raises_loudly():
-    actor = StreamedSceneActor(_source())
-    address = streamed_scene_registry._actor_address(actor)
-    streamed_scene_registry._forget_registration(address)
-    del actor._source
-    api, _window, _renderer, root_id = _scene(actor)
-
-    with pytest.raises(RuntimeError, match="lost its streamed source"):
-        _actor_node(api, root_id)
-
-
-def test_publisher_full_init_and_structural_pass_retain_then_release_registry():
+def test_actor_leaving_and_rejoining_the_scene_keeps_translating_as_streamed():
     actor = StreamedSceneActor(_source())
     api, render_window, renderer, root_id = _scene(actor)
     publisher = ScenePublisher(_Server(), api, render_window, root_id)
@@ -440,83 +408,22 @@ def test_publisher_full_init_and_structural_pass_retain_then_release_registry():
         publisher.sync()
 
         assert publisher.store.get(actor_id) is None
-        assert actor_id not in publisher._streamed_scene_registry.object_ids()
 
         renderer.AddActor(actor)
         publisher.sync()
         actor_id = str(api.vtk_object_manager.GetId(actor))
         assert publisher.store.get(actor_id)["type"] == "vtkStreamedSceneActor"
-        assert actor_id in publisher._streamed_scene_registry.object_ids()
     finally:
         publisher.cleanup()
 
 
-def test_dead_unscoped_actor_leaves_no_address_tombstone():
+def test_replaced_source_is_not_retained():
     actor = StreamedSceneActor(_source())
-    address = streamed_scene_registry._actor_address(actor)
-    original = weakref.ref(actor)
-    del actor
-    gc.collect()
-
-    assert original() is None
-    assert not streamed_scene_registry._has_registration(address)
-
-
-def test_same_address_and_id_reuse_is_rejected_by_vtk_identity(monkeypatch):
-    forced_address = "forced-address"
-    monkeypatch.setattr(
-        streamed_scene_registry,
-        "_actor_address",
-        lambda _actor: forced_address,
-    )
-    registry = streamed_scene_registry._StreamedSceneRegistry()
-    old_actor = StreamedSceneActor(_source())
-    registry.resolve(old_actor, "17")
-    plain_replacement = vtkActor()
-
-    assert registry.resolve(plain_replacement, "17") is None
-    assert registry.object_ids() == frozenset()
-    assert not streamed_scene_registry._has_registration(forced_address)
-
-
-def test_registry_module_can_be_imported_before_public_streamed_scene_module():
-    code = """
-import trame_vtklocal.module.streamed_scene_registry
-from trame_vtklocal.streamed_scene import PointCloudSource, StreamedSceneActor
-source = PointCloudSource('asset', 'rev', '/endpoint', 1,
-                          {'mode': 'fixed', 'diameterCssPx': 1})
-assert StreamedSceneActor(source).source == source
-"""
-    subprocess.run([sys.executable, "-c", code], check=True)
-
-
-def test_scene_membership_cycles_do_not_pile_up_delete_observers():
-    actor = StreamedSceneActor(_source())
-    api, render_window, renderer, root_id = _scene(actor)
-    publisher = ScenePublisher(_Server(), api, render_window, root_id)
-    try:
-        baseline = _delete_observer_count(actor)
-
-        for _ in range(5):
-            renderer.RemoveActor(actor)
-            publisher.sync()
-            renderer.AddActor(actor)
-            publisher.sync()
-
-        assert _delete_observer_count(actor) == baseline
-    finally:
-        publisher.cleanup()
-
-
-def test_dropped_registration_stops_retaining_its_source():
-    actor = StreamedSceneActor(_source())
-    address = streamed_scene_registry._actor_address(actor)
     retired = _source(revision="retired")
     actor.source = retired
     reference = weakref.ref(retired)
     del retired
 
-    streamed_scene_registry._forget_registration(address)
     actor.source = _source(revision="current")
     gc.collect()
 
@@ -540,46 +447,23 @@ def test_fixed_affine_entries_share_one_absolute_tolerance(index, expected):
         Tiles3DSource(**values, tileset_to_scene=outside)
 
 
-def test_publisher_cleanup_releases_its_registry_scope():
-    actor = StreamedSceneActor(_source())
-    api, render_window, _renderer, root_id = _scene(actor)
-    publisher = ScenePublisher(_Server(), api, render_window, root_id)
-    actor_id = str(api.vtk_object_manager.GetId(actor))
-
-    publisher.cleanup()
-
-    assert actor_id not in publisher._streamed_scene_registry.object_ids()
-
-
 def test_two_publishers_release_shared_actor_independently():
     actor = StreamedSceneActor(_source())
-    address = streamed_scene_registry._actor_address(actor)
     api1, window1, renderer1, root1 = _scene(actor)
     api2, window2, renderer2, root2 = _scene(actor)
     publisher1 = ScenePublisher(_Server(), api1, window1, root1)
     publisher2 = ScenePublisher(_Server(), api2, window2, root2)
     try:
-        actor_id1 = str(api1.vtk_object_manager.GetId(actor))
         actor_id2 = str(api2.vtk_object_manager.GetId(actor))
-        assert actor_id1 in publisher1._streamed_scene_registry.object_ids()
-        assert actor_id2 in publisher2._streamed_scene_registry.object_ids()
 
         renderer1.RemoveActor(actor)
         publisher1.sync()
         publisher1.cleanup()
 
-        assert actor_id1 not in publisher1._streamed_scene_registry.object_ids()
-        assert actor_id2 in publisher2._streamed_scene_registry.object_ids()
-        assert streamed_scene_registry._has_registration(address)
-
         actor.source = _source(revision="shared-current")
         publisher2.sync()
         block = publisher2.store.get(actor_id2)["blocks"]["streamedScene"]
         assert block["revision"] == "shared-current"
-
-        renderer2.RemoveActor(actor)
-        publisher2.sync()
-        assert not streamed_scene_registry._has_registration(address)
     finally:
         publisher1.cleanup()
         publisher2.cleanup()

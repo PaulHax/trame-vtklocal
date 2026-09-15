@@ -12,6 +12,10 @@ import {
   POINT_CLOUD_PRESENTATION_BLOCK_KEY,
 } from "./pointCloudPresentation";
 import { STREAMED_SCENE_BLOCK_KEY } from "./streamedSceneHost";
+import {
+  createCoincidentTopologyHandler,
+  COINCIDENT_TOPOLOGY_BLOCK_KEY,
+} from "./coincidentTopology";
 
 const PROJECTED_TEXTURE_BLOCK_KEY = "projectedTexture";
 
@@ -26,6 +30,7 @@ export function registerBlockHandlers(
     ensureStreamedSceneHost,
   },
 ) {
+  const coincidentTopology = createCoincidentTopologyHandler();
   reconciler.registerBlockHandler(
     PICKABLE_BLOCK_KEY,
     (nodeId, block, instance) => {
@@ -54,6 +59,10 @@ export function registerBlockHandlers(
     },
   );
   reconciler.registerBlockHandler(
+    COINCIDENT_TOPOLOGY_BLOCK_KEY,
+    (_nodeId, block, instance) => coincidentTopology.apply(block, instance),
+  );
+  reconciler.registerBlockHandler(
     STREAMED_SCENE_BLOCK_KEY,
     (nodeId, block, instance) => {
       // No host and nothing to apply means there is also nothing to remove.
@@ -71,6 +80,7 @@ export function registerBlockHandlers(
         instance,
       ),
   );
+  return () => coincidentTopology.clear();
 }
 
 export default { registerBlockHandlers };

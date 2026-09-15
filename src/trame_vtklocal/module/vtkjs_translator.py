@@ -274,6 +274,7 @@ MAPPER_SKIP_PROPERTIES: set[str] = {
     # via instance.get(), so emitting them only creates dump/shadow drift.
     "relativeCoincidentTopologyLineOffsetParameters",
     "relativeCoincidentTopologyPolygonOffsetParameters",
+    "resolveCoincidentTopology",
     "resolveCoincidentTopologyLineOffsetParameters",
     "resolveCoincidentTopologyPolygonOffsetFaces",
     "resolveCoincidentTopologyPolygonOffsetParameters",

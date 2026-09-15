@@ -13,8 +13,8 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Set
 from typing import TYPE_CHECKING, cast
 
-from vtkmodules.vtkCommonCore import vtkCollection
-from vtkmodules.vtkRenderingCore import vtkPointGaussianMapper
+from vtkmodules.vtkCommonCore import reference, vtkCollection
+from vtkmodules.vtkRenderingCore import vtkMapper, vtkPointGaussianMapper
 
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import point_cloud_presentation as point_presentation
@@ -266,6 +266,27 @@ def _mapper_input_port_ids(reader: SceneReader, state: VtkState) -> list[int]:
     return port_ids
 
 
+def _coincident_topology_block(mapper: vtkMapper) -> dict[str, object] | None:
+    if mapper.GetResolveCoincidentTopology() != 1:
+        return None
+
+    line_factor, line_units = reference(0.0), reference(0.0)
+    polygon_factor, polygon_units = reference(0.0), reference(0.0)
+    mapper.GetRelativeCoincidentTopologyLineOffsetParameters(line_factor, line_units)
+    mapper.GetRelativeCoincidentTopologyPolygonOffsetParameters(
+        polygon_factor, polygon_units
+    )
+    if not any(
+        float(value)
+        for value in (line_factor, line_units, polygon_factor, polygon_units)
+    ):
+        return None
+    return {
+        "line": {"factor": float(line_factor), "offset": float(line_units)},
+        "polygon": {"factor": float(polygon_factor), "offset": float(polygon_units)},
+    }
+
+
 def _translate_mapper(
     reader: SceneReader, state: VtkState, vtkjs_type: str
 ) -> SceneNode:
@@ -277,6 +298,11 @@ def _translate_mapper(
     props = _scalar_props(state, vtkjs_type, extra_skips=MAPPER_SKIP_PROPERTIES)
     refs: dict[str, RefSlot] = {}
     blocks: dict[str, Mapping[str, object]] = {}
+
+    if isinstance(vtk_mapper, vtkMapper):
+        coincident_topology = _coincident_topology_block(vtk_mapper)
+        if coincident_topology is not None:
+            blocks["coincidentTopology"] = coincident_topology
 
     if vtkjs_type == "vtkGlyph3DMapper":
         props.update(glyph_mapper_array_props(vtk_mapper))

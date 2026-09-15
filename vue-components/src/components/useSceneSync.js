@@ -59,6 +59,7 @@ export function useSceneSync(
   let instances = null;
   let engine = null;
   let reconciler = null;
+  let clearCoincidentTopology = null;
   let mirror = null;
   let blobCache = null;
   let disposed = false;
@@ -343,6 +344,8 @@ export function useSceneSync(
     appliedCommands.clear();
     engine?.stop?.();
     engine = null;
+    clearCoincidentTopology?.();
+    clearCoincidentTopology = null;
     reconciler?.teardown?.();
     reconciler = null;
     mirror = null;
@@ -380,7 +383,7 @@ export function useSceneSync(
       rootInstance: getRenderWindow(),
     });
 
-    registerBlockHandlers(reconciler, {
+    clearCoincidentTopology = registerBlockHandlers(reconciler, {
       pickables,
       onPickableRemoved: (nodeId) => {
         gestures.cancelForNode(nodeId);

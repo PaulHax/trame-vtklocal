@@ -440,6 +440,63 @@ def test_pickable_retag_changes_only_the_mapper_pickable_block():
     assert before_blocks["pickable"]["tags"] == {"kind": "landmark"}
 
 
+def test_mapper_relative_depth_offsets_cross_into_the_scene_block():
+    scene = make_polyline_scene()
+    mapper = scene.handles["mapper"]
+    mapper_id = oid(scene, mapper)
+    _, sibling_mapper = add_actor(scene.handles["renderer"], scene.handles["polydata"])
+
+    mapper.SetResolveCoincidentTopologyToPolygonOffset()
+    mapper.SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -4.0)
+    mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(1.0, -2.0)
+    refresh(scene)
+    before = translate(scene)
+    sibling_id = oid(scene, sibling_mapper)
+    assert "resolveCoincidentTopology" not in before[mapper_id]["props"]
+    assert "resolveCoincidentTopology" not in before[sibling_id]["props"]
+    assert "coincidentTopology" not in before[sibling_id].get("blocks", {})
+    assert before[mapper_id]["blocks"]["coincidentTopology"] == {
+        "line": {"factor": 0.0, "offset": -4.0},
+        "polygon": {"factor": 1.0, "offset": -2.0},
+    }
+
+    mapper.SetRelativeCoincidentTopologyLineOffsetParameters(0.0, 3.0)
+    refresh(scene)
+    changed = translate(scene)
+    assert changed_ids(before, changed) == {mapper_id}
+    assert changed[mapper_id]["blocks"]["coincidentTopology"]["line"]["offset"] == 3.0
+
+    mapper.SetResolveCoincidentTopologyToOff()
+    refresh(scene)
+    after = translate(scene)
+    assert "coincidentTopology" not in after[mapper_id].get("blocks", {})
+    assert "resolveCoincidentTopology" not in after[mapper_id]["props"]
+
+
+def test_image_and_volume_mappers_do_not_receive_line_depth_offsets():
+    from importlib import import_module
+
+    import_module("vtkmodules.vtkRenderingOpenGL2")
+    from vtkmodules.vtkRenderingCore import vtkImageSliceMapper, vtkPolyDataMapper
+    from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
+
+    from trame_vtklocal.module.protocol import ObjectManagerAPI
+
+    polygon_mapper = vtkPolyDataMapper()
+    polygon_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+    try:
+        for mapper in (vtkImageSliceMapper(), vtkSmartVolumeMapper()):
+            api = ObjectManagerAPI()
+            mapper_id = api.vtk_object_manager.RegisterObject(mapper)
+            api.vtk_object_manager.UpdateStateFromObject(mapper_id)
+            node = translate_object(api.vtk_object_manager, mapper_id)
+            assert node is not None
+            assert "resolveCoincidentTopology" not in node["props"]
+            assert "coincidentTopology" not in node.get("blocks", {})
+    finally:
+        polygon_mapper.SetResolveCoincidentTopologyToOff()
+
+
 def test_add_then_remove_actor_round_trips_through_the_store():
     scene = make_basic_scene()
     renderer = scene.handles["renderer"]

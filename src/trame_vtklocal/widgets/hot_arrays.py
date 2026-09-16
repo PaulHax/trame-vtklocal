@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Tuple, Union
+from functools import partial
+from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
 
@@ -17,18 +19,14 @@ if TYPE_CHECKING:
 
     from trame_vtklocal.store import (
         ArrayEntry,
-        CommitResult,
         SceneNode,
-        SceneStore,
         SceneTransaction,
     )
     from trame_vtklocal.widgets.blob_payloads import LiveHotArray, NumericArray
-    from trame_vtklocal.widgets.dirty_batch import DirtyBatch
 
 # (element offset, element count) of one changed region
 Span = Tuple[int, int]
-# Points arrays keep the bare node id; other hot arrays add their key.
-_CacheKey = Union[str, Tuple[str, str]]
+_CacheKey = Tuple[str, str]
 
 HOT_ARRAY_KEY = "points"
 DEFAULT_HOT_ARRAY_KEYS = frozenset({HOT_ARRAY_KEY})
@@ -36,7 +34,7 @@ RETENTION_CAP_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_SPANS = 8
 DEFAULT_GAP_ELEMENTS = 3
 
-JS_ARRAY_DTYPE_MAP: dict[str, type[np.generic[int | float]]] = {
+JS_ARRAY_DTYPE_MAP: dict[str, type[np.generic]] = {
     "Int8Array": np.int8,
     "Uint8Array": np.uint8,
     "Int16Array": np.int16,
@@ -71,32 +69,6 @@ def live_dataset_array_sources(
     else:
         sources = ()
     return tuple(source for source in sources if source is not None)
-
-
-def live_dataset_array_containers(
-    object_manager: vtkObjectManager, node_id: str | int, key: str
-) -> tuple[vtkObject, ...]:
-    """Objects that only aggregate a supported dataset array's MTime.
-
-    ``vtkFieldData.GetMTime()`` is the maximum over the arrays it owns, so
-    editing an array's values moves its owning ``vtkPointData``'s MTime with
-    no ``ModifiedEvent`` of its own: the container shows up in a tick's
-    *swept* set. The container also carries state that is not any array's
-    values -- active-attribute assignments, array membership -- and those
-    edits do fire its ModifiedEvent, which keeps them out of the swept set.
-    That is the whole discriminator: a caller may excuse a dirty container
-    only when it was swept.
-
-    ``points`` needs no entry here: its ``vtkPoints`` fires its own event on
-    a coordinate edit and is already one of the array's sources.
-    """
-    vtk_object = object_manager.GetObjectAtId(int(node_id))
-    if vtk_object is None or not key.startswith("field:pointData:"):
-        return ()
-    point_data = (
-        vtk_object.GetPointData() if hasattr(vtk_object, "GetPointData") else None
-    )
-    return () if point_data is None else (point_data,)
 
 
 def live_dataset_array(
@@ -171,6 +143,7 @@ class HotArrayDiffer:
         # (node_id, key) -> unused fresh content ref
         self._orphaned_refs: dict[_CacheKey, str] = {}
         self._released_refs: set[str] = set()
+        self._staged: list[Callable[[], None]] | None = None
 
     @property
     def hot_keys(self) -> frozenset[str]:
@@ -181,19 +154,38 @@ class HotArrayDiffer:
         self._released_refs = set()
         return released
 
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Advance retained content only after the scene transaction commits."""
+        actions: list[Callable[[], None]] = []
+        self._staged = actions
+        try:
+            yield
+        except BaseException:
+            self._staged = None
+            raise
+        self._staged = None
+        for action in actions:
+            action()
+
+    def _stage(self, action: Callable[[], None]) -> None:
+        if self._staged is None:
+            action()
+        else:
+            self._staged.append(action)
+
     @staticmethod
     def _cache_key(node_id: str, key: str) -> _CacheKey:
-        # Keep the long-standing points-only inspection shape while namespacing
-        # additional configured arrays by key.
-        return str(node_id) if key == HOT_ARRAY_KEY else (str(node_id), key)
+        return (str(node_id), key)
 
     @staticmethod
     def _belongs_to(cache_key: _CacheKey, node_id: str) -> bool:
-        return cache_key == node_id or (
-            isinstance(cache_key, tuple) and cache_key[0] == node_id
-        )
+        return cache_key[0] == node_id
 
     def drop(self, node_id: str | int, key: str | None = None) -> None:
+        if self._staged is not None:
+            self._stage(lambda: self.drop(node_id, key))
+            return
         node_id = str(node_id)
         cache_keys = (
             [self._cache_key(node_id, str(key))]
@@ -217,6 +209,9 @@ class HotArrayDiffer:
         self._released_refs.clear()
 
     def _note_orphan(self, cache_key: _CacheKey, fresh_ref: str, used_ref: str) -> None:
+        if self._staged is not None:
+            self._stage(lambda: self._note_orphan(cache_key, fresh_ref, used_ref))
+            return
         previous = self._orphaned_refs.pop(cache_key, None)
         if previous and previous not in (fresh_ref, used_ref):
             self._released_refs.add(previous)
@@ -306,7 +301,11 @@ class HotArrayDiffer:
             # client's new content are the same read.
             values = current[offset : offset + length].copy()
             tx.patch_array(node_id, key, offset, values.tobytes(), data_type)
-            retained[offset : offset + length] = values
+            self._stage(
+                partial(
+                    retained.__setitem__, slice(offset, offset + values.size), values
+                )
+            )
 
     def apply_retained_patch(
         self, plan: HotArrayPatchPlan, tx: SceneTransaction
@@ -335,7 +334,8 @@ class HotArrayDiffer:
 
         fresh_ref = entry["ref"]
         if verdict is RESET or stored_entry is None:
-            self._retained[cache_key] = current.copy()
+            copied = current.copy()
+            self._stage(lambda: self._retained.__setitem__(cache_key, copied))
             self._note_orphan(cache_key, fresh_ref, fresh_ref)
             return
 
@@ -362,77 +362,3 @@ class HotArrayDiffer:
                 self.drop(node_id, key)
                 continue
             self._apply_key(node_id, key, entry, stored_arrays.get(key), tx)
-
-
-def commit_hot_array_batch(
-    batch: DirtyBatch,
-    object_manager: vtkObjectManager,
-    store: SceneStore,
-    hot_arrays: HotArrayDiffer,
-) -> CommitResult | None:
-    """Commit an array-only tick before VTK serializes the whole payload.
-
-    Any structural, pipeline, node, or unsupported-array dirtiness returns
-    ``None`` so the publisher uses its ordinary translation path.
-
-    The guard accepts a tick only when every dirty id is *explained* by a hot
-    array the plan re-validates. Explaining a dataset node itself relies on an
-    invariant of ``DirtyTracker``: every non-hot child of a supported dataset
-    (its ``vtkPoints``, ``vtkPointData``/``vtkCellData``/``vtkFieldData``, its
-    ``vtkCellArray`` children and every array they own) is observed, so a
-    change to one of them always contributes a dirty id this whitelist does
-    not cover and the tick falls back. ``test_hot_array_fast_path`` pins that
-    invariant — a child that stops being observed becomes silent data loss,
-    since the sweep only ever re-marks the dataset the guard then accepts.
-
-    Reads VTK but never mutates it; the publisher still enters its tracker's
-    ``suppress()`` around the call so that stays a contract rather than an
-    assumption.
-    """
-    if batch.structural or batch.producers or not batch.candidates:
-        return None
-
-    dirty_ids = {str(object_id) for object_id in batch.dirty_ids}
-    swept_ids = {str(object_id) for object_id in batch.swept_ids}
-    allowed_dirty_ids = {
-        str(node_id) for node_id in batch.candidates if str(node_id) in swept_ids
-    }
-    plans: list[HotArrayPatchPlan] = []
-    for node_id in batch.candidates:
-        node_id = str(node_id)
-        stored = store.get(node_id)
-        arrays = (stored.get("arrays") if stored else None) or {}
-        node_has_dirty_hot_array = False
-        for key in hot_arrays.hot_keys:
-            entry = arrays.get(key)
-            if entry is None:
-                continue
-            source_ids = {
-                str(object_manager.GetId(source))
-                for source in live_dataset_array_sources(object_manager, node_id, key)
-            }
-            container_ids = {
-                str(object_manager.GetId(container))
-                for container in live_dataset_array_containers(
-                    object_manager, node_id, key
-                )
-            }
-            allowed_dirty_ids.update(source_ids)
-            allowed_dirty_ids.update(container_ids & swept_ids)
-            if dirty_ids.isdisjoint(source_ids):
-                continue
-            plan = hot_arrays.plan_retained_patch(node_id, key, entry)
-            if plan is None:
-                return None
-            plans.append(plan)
-            node_has_dirty_hot_array = True
-        if not node_has_dirty_hot_array:
-            return None
-
-    if not dirty_ids.issubset(allowed_dirty_ids):
-        return None
-
-    tx = store.transact()
-    for plan in plans:
-        hot_arrays.apply_retained_patch(plan, tx)
-    return tx.commit()

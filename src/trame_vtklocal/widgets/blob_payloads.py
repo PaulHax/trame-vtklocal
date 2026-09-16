@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from trame_vtklocal.wire import OpsMessage, ResyncPayload
 
     # A dataset array of any numeric VTK scalar type, viewed through numpy.
-    NumericArray = npt.NDArray[np.generic[Union[int, float]]]
+    NumericArray = npt.NDArray[np.generic]
     LiveHotArray = Callable[[str, str], Union[NumericArray, None]]
 
 

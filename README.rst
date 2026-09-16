@@ -306,3 +306,18 @@ Point size comes from the actor property. The direct-cloud presentation block
 converts CSS pixels with the vtk.js ``pointSizeScale`` extension; it does not
 change ``scaleFactor``. Streamed scenes create their simple-point mappers in the
 browser, where the renderer also controls the resident-buffer draw prefix.
+
+Scene publication and recovery
+------------------------------
+
+For vtk.js views, ``view.transaction()`` batches ordinary VTK mutations and
+commands into one publication; ``view.sync()`` flushes pending changes. Replaced
+dependencies are tracked automatically, including shared datasets, properties,
+and pipeline connections. Pipeline and transform aggregate MTimes are checked
+at publication because some VTK operations do not emit ``ModifiedEvent``.
+
+After deliberately bypassing VTK modification notifications, call
+``view.recover()`` to scan observed MTimes and publish missed changes. Browser
+resynchronization performs this recovery before returning its snapshot.
+A failed pre-commit serialization preserves pending changes and command order
+for a later retry.

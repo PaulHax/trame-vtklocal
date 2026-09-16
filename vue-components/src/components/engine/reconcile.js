@@ -414,7 +414,7 @@ export function createReconciler({
       const privateLocal = isPrivateSlot(id, key);
       const ownsCache = !privateLocal && !bufferOwners.has(entry.ref);
       const values = ownsCache ? cached : cached.slice();
-      const array = bindArrayEntry(instance, entry, values);
+      const array = bindArrayEntry(instance, entry, values, prevArrays[key]);
       if (!nodeBindings) {
         nodeBindings = new Map();
         bindings.set(id, nodeBindings);

@@ -1,19 +1,4 @@
-"""Guard, bookkeeping and invariant coverage for the sparse-patch fast path.
-
-``commit_hot_array_batch`` short-circuits a publish tick whose only change is
-values inside an already-retained array: it commits ``patchArray`` ops before
-VTK serialization, hashing and blob registration ever run. Everything that
-tick did *not* look at is therefore never published, and nothing later heals
-it -- the sweep only re-marks the dataset, which the guard then accepts again.
-So each rejection condition is load-bearing, and each gets a test that fails
-when that condition alone is removed.
-
-Two conditions are deliberately tested against a synthetic batch instead of a
-real tick: ``batch.structural`` and ``batch.producers`` are defense in depth,
-subsumed in practice by the final subset check (a structural collection id and
-a ``pipeline:`` pseudo-id are both dirty ids that no whitelist covers). Only a
-hand-built batch isolates them.
-"""
+"""Eligibility and recovery regressions for retained-array publication."""
 
 from __future__ import annotations
 
@@ -32,8 +17,8 @@ from test_publisher import (
 )
 from test_v2_oracle import MirrorClient
 from trame_vtklocal.widgets.dirty_batch import DirtyBatch
+from trame_vtklocal.widgets.hot_array_batch import commit_hot_array_batch
 from trame_vtklocal.widgets.hot_arrays import (
-    commit_hot_array_batch,
     live_dataset_array,
 )
 from trame_vtklocal.widgets.publisher import ScenePublisher
@@ -72,7 +57,6 @@ def retained_points():
 
 def _pending_batch(publisher):
     """The batch one tick's mutations produced, without publishing it."""
-    publisher._tracker.sweep()
     return publisher._tracker.consume()
 
 
@@ -249,17 +233,12 @@ def test_guard_rejects_an_unexplained_dirty_id_on_a_patchable_node():
 
 
 def test_guard_rejects_a_swept_node_with_no_hot_array_at_all(retained_points):
-    """A node whose own MTime moved unobserved, and which has no hot array.
-
-    Swept candidates are whitelisted, so the subset check passes here; only
-    the "every candidate must have a dirty hot array" rule keeps the actor's
-    change from being dropped. Suppressing the observer reproduces the
-    false-negative the sweep exists to heal.
-    """
+    """Suppressed edits require recovery and cannot use the array fast path."""
     scene, publisher, _server = retained_points
 
     with publisher._tracker.suppress():
         scene.handles["actor"].SetVisibility(False)
+    publisher._tracker.sweep()
     batch = _pending_batch(publisher)
     actor_id = str(scene.api.vtk_object_manager.GetId(scene.handles["actor"]))
     assert batch.candidates == {actor_id}
@@ -328,12 +307,7 @@ def retained_heat():
 
 
 def test_field_array_value_edit_takes_the_fast_path(retained_heat):
-    """Editing a point-data array's values is exactly what the bypass is for.
-
-    Its owning ``vtkPointData`` lands in the tick's *swept* set (field data
-    aggregates its arrays' MTimes without firing its own event), so the guard
-    has to excuse it or this configuration never benefits.
-    """
+    """Observed array value edits qualify without polling field containers."""
     scene, publisher, _server = retained_heat
 
     scene.handles["heat"].SetValue(100, 7.0)
@@ -379,17 +353,7 @@ def test_field_array_sibling_edit_falls_back(retained_heat):
 
 
 def test_every_polydata_child_stays_observed():
-    """Tripwire: the guard is only sound while every dataset child is observed.
-
-    ``commit_hot_array_batch`` excuses a dirty ``vtkPolyData`` whose MTime the
-    sweep found moved, on the grounds that any change to a child it cannot
-    patch also dirties that child. A child that drops out of the tracker's
-    observed set turns that into silent, permanent client divergence: the
-    tick takes the fast path, the child's change is never serialized, and no
-    later tick heals it because the sweep only ever re-marks the polydata.
-
-    ``_classes`` is the tracker's record of what ``sync_observers`` observed.
-    """
+    """Every dataset child must be observed for ordinary publication."""
     scene = make_scalars_scene()
     publisher, _server = _make_publisher(scene)
     try:
@@ -421,9 +385,7 @@ def test_every_polydata_child_stays_observed():
         assert not unobserved, (
             "vtkPolyData children left the DirtyTracker's observed set: "
             + ", ".join(unobserved)
-            + ". commit_hot_array_batch excuses a swept dataset id on the "
-            "assumption that every child it cannot patch dirties itself; an "
-            "unobserved child makes that assumption silent data loss."
+            + ". Unobserved children cannot trigger ordinary publication."
         )
     finally:
         publisher.cleanup()
@@ -445,7 +407,7 @@ def test_fast_tick_advances_the_retained_copy_to_the_live_array(retained_points)
     assert [op["op"] for op in message["ops"]] == ["patchArray", "patchArray"]
 
     dataset_id = _dataset_id(scene)
-    retained = publisher._hot_arrays._retained[dataset_id]
+    retained = publisher._hot_arrays._retained[(dataset_id, "points")]
     live = live_dataset_array(scene.api.vtk_object_manager, dataset_id, "points")
     assert np.array_equal(retained, live)
     assert retained is not live  # a copy, not the live VTK view
@@ -484,3 +446,16 @@ def test_dirty_but_unchanged_array_publishes_nothing(retained_points):
     publisher.sync()
     assert server.protocol.drain() == []
     assert publisher.store.seq == seq_before
+
+
+def test_recovery_does_not_mistake_suppressed_metadata_for_aggregate_mtime(
+    retained_heat,
+):
+    scene, publisher, _server = retained_heat
+    with publisher._tracker.suppress():
+        scene.handles["polydata"].GetPointData().SetActiveScalars("Heat")
+        scene.handles["heat"].SetValue(100, 7.0)
+        scene.handles["heat"].Modified()
+    publisher.recover()
+    entry = publisher.store.get(_dataset_id(scene))["arrays"][HEAT_KEY]
+    assert entry["registration"] == "setScalars"

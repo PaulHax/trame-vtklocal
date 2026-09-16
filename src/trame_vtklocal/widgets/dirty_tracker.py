@@ -1,152 +1,70 @@
-"""Dirty-candidate tracking for the scene publisher.
+"""Event-driven dirty candidates and incremental observer ownership.
 
-Owns the ``ModifiedEvent`` observers over the render window's dependency
-graph, the dataset-children and pipeline-producer walkers, the structural
-collection observers, the suppress-dirty context manager, the live-ids
-filter, and the mtime snapshot sweep.
-
-The tracker's ONLY job is to produce *candidate* dirty ids per publish tick.
-False positives are cheap — the store's generic diff drops no-op upserts —
-and false negatives are healed by :meth:`DirtyTracker.sweep`, which compares
-live ``GetMTime`` values against the last snapshot.
+Normal publication consumes events. An explicit recovery sweep can discover
+MTime changes when callers deliberately bypass ModifiedEvent.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
 from trame_vtklocal.module.node_translator import is_node_class
+from trame_vtklocal.module.vtkjs_translator import map_class_name
+from trame_vtklocal.module.state_cache import ParsedStateCache
+from trame_vtklocal.widgets.dependency_graph import DependencyGraph, mtime
 from trame_vtklocal.widgets.dirty_batch import DirtyBatch
+from trame_vtklocal.widgets.vtk_dependencies import (
+    dataset_children,
+    owned_collections,
+    pipeline_producers,
+    transform_children,
+)
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObject, vtkObjectBase
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
-DATASET_PATCH_TYPES: set[str] = {"vtkPolyData", "vtkImageData"}
-
-
-# ---------------------------------------------------------------------------
-# VTK-side iteration helpers
-# ---------------------------------------------------------------------------
-
-
-def _iter_via_getters(obj: object, names: Iterable[str]) -> Iterator[vtkObject]:
-    """Yield each non-None result of calling obj.<name>() for each name."""
-    if obj is None:
-        return
-    for getter in names:
-        get = getattr(obj, getter, None)
-        if get is None:
-            continue
-        result = get()
-        if result is not None:
-            yield result
-
-
-def _iter_field_data_arrays(field_data: vtkObject | None) -> Iterator[vtkObject]:
-    if field_data is None:
-        return
-
-    yield field_data
-
-    get_count = getattr(field_data, "GetNumberOfArrays", None)
-    get_array = getattr(field_data, "GetArray", None)
-    if get_count is not None and get_array is not None:
-        for index in range(get_count()):
-            array = get_array(index)
-            if array is not None:
-                yield array
-
-    yield from _iter_via_getters(
-        field_data, ("GetScalars", "GetTCoords", "GetNormals", "GetVectors")
-    )
-
-
-def _iter_cell_array_children(cell_array: vtkObject | None) -> Iterator[vtkObject]:
-    if cell_array is None:
-        return
-
-    yield cell_array
-    # Not GetData(): it copies the whole connectivity per call, never a dependency.
-    getters = ("GetConnectivityArray", "GetOffsetsArray")
-    yield from _iter_via_getters(cell_array, getters)
-
-
-def _iter_dataset_dirty_children(dataset: vtkObjectBase | None) -> Iterator[vtkObject]:
-    if dataset is None:
-        return
-
-    points = dataset.GetPoints() if hasattr(dataset, "GetPoints") else None
-    if points is not None:
-        yield points
-        data = points.GetData() if hasattr(points, "GetData") else None
-        if data is not None:
-            yield data
-
-    for cell_array in _iter_via_getters(
-        dataset, ("GetVerts", "GetLines", "GetPolys", "GetStrips")
-    ):
-        yield from _iter_cell_array_children(cell_array)
-
-    for field_data in _iter_via_getters(
-        dataset, ("GetPointData", "GetCellData", "GetFieldData")
-    ):
-        yield from _iter_field_data_arrays(field_data)
-
-
-def _owned_collections(vtk_obj: vtkObjectBase | None) -> Iterator[vtkObject]:
-    """Structural collections owned by a node-worthy object.
-
-    ``AddActor``/``RemoveActor``/``AddRenderer`` fire ``ModifiedEvent`` on the
-    collection only — never on the renderer or window — so structural changes
-    are observed on the collection and attributed back to its owner node.
-    """
-    if vtk_obj is None or not hasattr(vtk_obj, "IsA"):
-        return
-    if vtk_obj.IsA("vtkRenderWindow"):
-        yield from _iter_via_getters(vtk_obj, ("GetRenderers",))
-    elif vtk_obj.IsA("vtkRenderer"):
-        yield from _iter_via_getters(vtk_obj, ("GetViewProps", "GetLights"))
+DATASET_PATCH_TYPES = {"vtkPolyData", "vtkImageData"}
 
 
 class DirtyTracker:
-    """Observes a render window's dependency graph for dirty candidates."""
+    """Own observers and dependency-to-node invalidation for one window."""
 
     def __init__(
         self,
         object_manager: vtkObjectManager,
         rw_id: int | str,
         on_dirty: Callable[[], None] | None = None,
+        state_cache: ParsedStateCache | None = None,
     ) -> None:
         self._object_manager = object_manager
         self._rw_id = int(rw_id)
         self._on_dirty = on_dirty
+        self._graph = DependencyGraph(
+            object_manager, self._rw_id, state_cache or ParsedStateCache()
+        )
+        self._classes = self._graph.classes
         self._dirty_ids: set[str] = set()
         self._swept_ids: set[str] = set()
-        self._owner_ids: dict[str, set[str]] = {}
-        self._pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
-        self._structural_ids: set[str] = set()
         self._observed_objects: dict[str, tuple[vtkObject, int]] = {}
-        self._observed_this_pass: set[str] | None = None  # None outside a sync
-        # Manager ids of the last sync's live wrappers by id(wrapper): VTK hands
-        # back the same wrapper for a live object, and holding them keeps ids unique.
-        self._live_objects: dict[str, vtkObject] = {}
-        self._ids_by_wrapper: dict[int, str] = {}
-        self._classes: dict[str, str] = {}
         self._mtimes: dict[str, int] = {}
+        self._polled_dependencies: set[str] = set()
+        # Live-only children and flattened dependencies have explicit owners.
+        self._owner_ids: dict[str, set[str]] = {}
+        self._children_by_owner: dict[str, set[str]] = {}
+        self._pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
+        self._pipeline_by_owner: dict[str, set[str]] = {}
+        self._structural_ids: set[str] = set()
         self._suppressed = False
         self._disposed = False
 
-    # -- dirty marks ---------------------------------------------------
-
     @contextmanager
     def suppress(self) -> Iterator[None]:
-        """Ignore ModifiedEvents fired by our own serialization/translation."""
         previous = self._suppressed
         self._suppressed = True
         try:
@@ -154,23 +72,13 @@ class DirtyTracker:
         finally:
             self._suppressed = previous
 
-    def _mark_dirty(self, object_id: str | int) -> None:
-        # Observers can fire during interpreter teardown when self.__dict__ is
-        # already cleared; default-True _disposed makes that a silent no-op.
+    def _mark_dirty(self, object_id: str) -> None:
         if getattr(self, "_disposed", True) or self._suppressed:
             return
-        self._dirty_ids.add(str(object_id))
-        self._swept_ids.discard(str(object_id))
-        if self._on_dirty is not None:
+        self._dirty_ids.add(object_id)
+        self._swept_ids.discard(object_id)
+        if self._on_dirty:
             self._on_dirty()
-
-    def _make_dirty_callback(self, object_id: str) -> Callable[[vtkObject, str], None]:
-        def on_modified(
-            _vtk_obj: vtkObject, _event: str, object_id: str = object_id
-        ) -> None:
-            self._mark_dirty(object_id)
-
-        return on_modified
 
     def has_pending(self) -> bool:
         return bool(self._dirty_ids)
@@ -178,323 +86,208 @@ class DirtyTracker:
     def classes(self) -> dict[str, str]:
         return self._classes
 
-    # -- observer graph ------------------------------------------------
-
-    def _drop_observers(self, object_ids: Iterable[str]) -> None:
-        for object_id in list(object_ids):
-            vtk_obj, observer_tag = self._observed_objects.pop(object_id)
-            try:
-                vtk_obj.RemoveObserver(observer_tag)
-            except (AttributeError, RuntimeError, ValueError):
-                pass
-
-    def _observe(self, object_id: str | int, vtk_obj: vtkObject | None) -> None:
-        if vtk_obj is None or not hasattr(vtk_obj, "AddObserver"):
+    def _observe(self, object_id: str, obj: vtkObjectBase) -> None:
+        if not hasattr(obj, "AddObserver"):
             return
-
-        object_id = str(object_id)
-        if self._observed_this_pass is not None:
-            self._observed_this_pass.add(object_id)
         observed = self._observed_objects.get(object_id)
-        if observed is not None and observed[0] is vtk_obj:
+        if observed is not None and observed[0] is obj:
             return
         if observed is not None:
-            try:
-                observed[0].RemoveObserver(observed[1])
-            except (AttributeError, RuntimeError, ValueError):
-                pass
+            self._drop_observer(object_id)
+        vtk_obj = cast("vtkObject", obj)
 
-        tag = vtk_obj.AddObserver(
-            vtkCommand.ModifiedEvent, self._make_dirty_callback(object_id)
-        )
+        def changed(_obj: vtkObject, _event: str) -> None:
+            self._mark_dirty(object_id)
+
+        tag = vtk_obj.AddObserver(vtkCommand.ModifiedEvent, changed)
         self._observed_objects[object_id] = (vtk_obj, tag)
+        self._mtimes[object_id] = mtime(obj)
+        if obj.IsA("vtkAbstractTransform") or object_id.startswith("pipeline:"):
+            self._polled_dependencies.add(object_id)
+
+    def _drop_observer(self, object_id: str) -> None:
+        observed = self._observed_objects.pop(object_id, None)
+        if observed:
+            observed[0].RemoveObserver(observed[1])
+        self._mtimes.pop(object_id, None)
+        self._polled_dependencies.discard(object_id)
+        self._dirty_ids.discard(object_id)
+        self._swept_ids.discard(object_id)
+        self._structural_ids.discard(object_id)
+
+    def _key(self, obj: vtkObjectBase) -> str:
+        known = self._graph.identifiers.get(id(obj))
+        if known is not None:
+            return known
+        identifier = self._object_manager.GetId(obj)
+        return str(identifier) if identifier else f"live:{id(obj)}"
+
+    def _replace_live_children(self, owner: str, obj: vtkObjectBase | None) -> None:
+        children: dict[str, vtkObjectBase] = {}
+        pipeline: set[str] = set()
+        if obj is not None:
+            if obj.GetClassName() in DATASET_PATCH_TYPES:
+                children.update(
+                    (self._key(child), child) for child in dataset_children(obj)
+                )
+            children.update(
+                (self._key(child), child) for child in transform_children(obj)
+            )
+            for child in owned_collections(obj):
+                child_id = self._key(child)
+                children[child_id] = child
+                self._structural_ids.add(child_id)
+            if isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName():
+                for producer in pipeline_producers(obj):
+                    child_id = f"pipeline:{id(producer)}"
+                    children[child_id] = producer
+                    children.update(
+                        (self._key(child), child)
+                        for child in transform_children(producer)
+                    )
+                    pipeline.add(child_id)
+                    self._pipeline_updates.setdefault(child_id, {})[int(owner)] = obj
+
+        previous = self._children_by_owner.pop(owner, set())
+        previous_pipeline = self._pipeline_by_owner.pop(owner, set())
+        for child_id in previous_pipeline - pipeline:
+            updates = self._pipeline_updates[child_id]
+            updates.pop(int(owner), None)
+            if not updates:
+                self._pipeline_updates.pop(child_id)
+        for child_id in previous - children.keys():
+            owners = self._owner_ids[child_id]
+            owners.discard(owner)
+            if not owners:
+                self._owner_ids.pop(child_id)
+                if child_id not in self._graph.objects:
+                    self._drop_observer(child_id)
+        for child_id, dependency in children.items():
+            self._owner_ids.setdefault(child_id, set()).add(owner)
+            self._observe(child_id, dependency)
+        if children:
+            self._children_by_owner[owner] = set(children)
+        if pipeline:
+            self._pipeline_by_owner[owner] = pipeline
+
+    def reconcile(self, refreshed_ids: Iterable[str]) -> set[str]:
+        """Reconcile refreshed objects and changed/new serialized descendants."""
+        with self.suppress():
+            changed, removed = self._graph.refresh(refreshed_ids)
+            for object_id in changed:
+                obj = self._graph.objects[object_id]
+                self._observe(object_id, obj)
+                self._replace_live_children(object_id, obj)
+            for object_id in removed:
+                self._replace_live_children(object_id, None)
+            for object_id in removed:
+                if object_id not in self._owner_ids:
+                    self._drop_observer(object_id)
+            if removed:
+                self._object_manager.PruneUnusedObjects()
+                self._object_manager.PruneUnusedStates()
+        return changed
 
     def sync_observers(self) -> None:
-        """Rebuild the observer graph from the current dependency set, keeping
-        observers on objects that stay live."""
-        object_manager = self._object_manager
-        with self.suppress():
-            ids = list(object_manager.GetAllDependencies(self._rw_id))
+        """Explicit full graph recovery; normal ticks use reconcile()."""
+        self.reconcile([str(self._rw_id), *self._graph.objects])
 
-        pending_dirty_ids = set(self._dirty_ids)
-        pending_swept_ids = set(self._swept_ids)
-        live_ids = {str(object_id) for object_id in ids}
-        self._observed_this_pass = set()
-
-        classes: dict[str, str] = {}
-        mtimes: dict[str, int] = {}
-        live_objects: dict[str, vtkObject] = {}
-        for object_id in live_ids:
-            vtk_obj = object_manager.GetObjectAtId(int(object_id))
-            if vtk_obj is None:
+    def _node_owners(self, object_id: str) -> set[str]:
+        result: set[str] = set()
+        pending = [object_id]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
                 continue
-            live_objects[object_id] = vtk_obj
-            self._observe(object_id, vtk_obj)
-            get_class_name = getattr(vtk_obj, "GetClassName", None)
-            class_name = (get_class_name() if get_class_name else "") or ""
-            if class_name:
-                classes[object_id] = class_name
-            if hasattr(vtk_obj, "GetMTime"):
-                mtimes[object_id] = vtk_obj.GetMTime()
-        self._classes = classes
-        self._mtimes = mtimes
-        self._live_objects = live_objects
-        self._ids_by_wrapper = {id(obj): oid for oid, obj in live_objects.items()}
+            seen.add(current)
+            pending.extend(self._owner_ids.get(current, ()))
+            if is_node_class(self._classes.get(current, "")):
+                result.add(current)
+            elif map_class_name(self._classes.get(current, "")) != "vtkCamera":
+                # Server cameras are intentionally absent from client scene
+                # nodes. Their matrices must not invalidate the whole renderer.
+                pending.extend(self._graph.parents.get(current, ()))
+        return result
 
-        owner_ids: dict[str, set[str]] = {}
-        pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
-        structural_ids: set[str] = set()
-        for object_id, vtk_obj in live_objects.items():
-            class_name = classes.get(object_id, "")
-            if class_name in DATASET_PATCH_TYPES:
-                self._sync_dataset_children(object_id, vtk_obj, owner_ids)
-            if "Mapper" in class_name:
-                self._sync_mapper_pipeline(
-                    object_id, vtk_obj, owner_ids, pipeline_updates
-                )
-            for collection in _owned_collections(vtk_obj):
-                collection_id = self._ids_by_wrapper.get(id(collection))
-                if collection_id is not None:
-                    structural_ids.add(collection_id)
-                    owner_ids.setdefault(collection_id, set()).add(object_id)
-
-        self._drop_observers(set(self._observed_objects) - self._observed_this_pass)
-        self._observed_this_pass = None
-
-        self._owner_ids = owner_ids
-        self._pipeline_updates = pipeline_updates
-        self._structural_ids = structural_ids
-        self._dirty_ids = {
-            object_id
-            for object_id in pending_dirty_ids
-            if object_id in live_ids
-            or object_id in owner_ids
-            or object_id in pipeline_updates
-        }
-        self._swept_ids = pending_swept_ids & self._dirty_ids
-
-    def _sync_dataset_children(
-        self,
-        dataset_id: str,
-        dataset: vtkObjectBase | None,
-        owner_ids: dict[str, set[str]] | None = None,
-    ) -> None:
-        if owner_ids is None:
-            owner_ids = self._owner_ids
-        for child in _iter_dataset_dirty_children(dataset):
-            # Transient wrappers are never dependencies; observing them would
-            # grow _observed_objects without bound.
-            child_id = self._ids_by_wrapper.get(id(child))
-            if child_id is None:
-                continue
-            owner_ids.setdefault(child_id, set()).add(str(dataset_id))
-            self._observe(child_id, child)
-
-    def refresh_dataset_children(self, dataset_ids: Iterable[str | int]) -> None:
-        """Re-observe children of just-published datasets (arrays get swapped)."""
-        object_manager = self._object_manager
-        for object_id in dataset_ids:
-            object_id = str(object_id)
-            if self._classes.get(object_id, "") not in DATASET_PATCH_TYPES:
-                continue
-            dataset = object_manager.GetObjectAtId(int(object_id))
-            self._sync_dataset_children(object_id, dataset)
-
-    def _sync_mapper_pipeline(
-        self,
-        mapper_id: str,
-        mapper: vtkObject | None,
-        owner_ids: dict[str, set[str]],
-        pipeline_updates: dict[str, dict[int, vtkAlgorithm]],
-    ) -> None:
-        if not isinstance(mapper, vtkAlgorithm):
-            return
-
-        try:
-            port_count = mapper.GetNumberOfInputPorts()
-        except (AttributeError, RuntimeError):
-            port_count = 1
-
-        for port_index in range(port_count):
-            try:
-                connection_count = mapper.GetNumberOfInputConnections(port_index)
-            except (AttributeError, RuntimeError):
-                connection_count = 1
-
-            for connection_index in range(connection_count):
-                owner_id = self._mapper_input_dataset_id(
-                    mapper, port_index, connection_index
-                )
-                if owner_id is None:
-                    continue
-
-                try:
-                    connection = mapper.GetInputConnection(port_index, connection_index)
-                except (AttributeError, RuntimeError):
-                    connection = None
-                if connection is None or not hasattr(connection, "GetProducer"):
-                    continue
-
-                producer = connection.GetProducer()
-                if producer is None:
-                    continue
-
-                self._observe_pipeline_producer(
-                    mapper_id,
-                    producer,
-                    owner_id,
-                    producer,
-                    owner_ids,
-                    pipeline_updates,
-                    set(),
-                )
-
-    def _mapper_input_dataset_id(
-        self,
-        mapper: vtkAlgorithm,
-        port_index: int,
-        connection_index: int,
-    ) -> str | None:
-        data_object = None
-        get_input_data = getattr(mapper, "GetInputDataObject", None)
-        if get_input_data is not None:
-            try:
-                data_object = get_input_data(port_index, connection_index)
-            except (TypeError, RuntimeError):
-                data_object = None
-
-        if data_object is None and port_index == 0 and connection_index == 0:
-            get_input = getattr(mapper, "GetInput", None)
-            if get_input is not None:
-                try:
-                    data_object = get_input()
-                except RuntimeError:
-                    data_object = None
-
-        if data_object is None:
-            return None
-
-        owner_id = self._ids_by_wrapper.get(id(data_object))
-        if owner_id is None or self._classes.get(owner_id) not in DATASET_PATCH_TYPES:
-            return None
-        return owner_id
-
-    def _observe_pipeline_producer(
-        self,
-        mapper_id: str,
-        producer: vtkAlgorithm,
-        owner_id: str,
-        terminal_producer: vtkAlgorithm,
-        owner_ids: dict[str, set[str]],
-        pipeline_updates: dict[str, dict[int, vtkAlgorithm]],
-        seen: set[int],
-    ) -> None:
-        producer_key = id(producer)
-        if producer_key in seen:
-            return
-        seen.add(producer_key)
-
-        dirty_id = f"pipeline:{mapper_id}:{owner_id}:{producer_key}"
-        owner_ids.setdefault(dirty_id, set()).add(str(owner_id))
-        pipeline_updates.setdefault(dirty_id, {})[id(terminal_producer)] = (
-            terminal_producer
-        )
-        self._observe(dirty_id, producer)
-
-        get_input_connection = getattr(producer, "GetInputConnection", None)
-        if get_input_connection is None:
-            return
-
-        try:
-            port_count = producer.GetNumberOfInputPorts()
-        except (AttributeError, RuntimeError):
-            port_count = 0
-
-        for port_index in range(port_count):
-            try:
-                connection_count = producer.GetNumberOfInputConnections(port_index)
-            except (AttributeError, RuntimeError):
-                connection_count = 0
-
-            for connection_index in range(connection_count):
-                try:
-                    connection = get_input_connection(port_index, connection_index)
-                except RuntimeError:
-                    continue
-                if connection is None or not hasattr(connection, "GetProducer"):
-                    continue
-
-                upstream = connection.GetProducer()
-                if upstream is None:
-                    continue
-                self._observe_pipeline_producer(
-                    mapper_id,
-                    upstream,
-                    owner_id,
-                    terminal_producer,
-                    owner_ids,
-                    pipeline_updates,
-                    seen,
-                )
-
-    # -- consuming -----------------------------------------------------
+    def candidates_for(self, object_ids: Iterable[str]) -> set[str]:
+        return self._map_dirty(object_ids).candidates
 
     def _map_dirty(
         self, dirty_ids: Iterable[str], swept_ids: Iterable[str] = ()
     ) -> DirtyBatch:
-        batch = DirtyBatch(
-            dirty_ids=set(dirty_ids),
-            swept_ids=set(swept_ids),
-        )
-        for object_id in dirty_ids:
-            owners = self._owner_ids.get(object_id, ())
+        batch = DirtyBatch(dirty_ids=set(dirty_ids), swept_ids=set(swept_ids))
+        for object_id in batch.dirty_ids:
+            owners = self._node_owners(object_id)
             batch.candidates.update(owners)
             batch.refresh_ids.update(owners)
             batch.producers.update(self._pipeline_updates.get(object_id, {}))
             if object_id in self._structural_ids:
                 batch.structural = True
-            if is_node_class(self._classes.get(object_id, "")):
-                batch.candidates.add(object_id)
-            if object_id in self._classes:
-                # Refresh every live dirty object's serialized state: array
-                # children re-hash their blobs (the owner dataset's node ref
-                # comes from the child state), and a structural collection
-                # refresh registers newly added members with the manager.
+            if owners and object_id in self._classes:
                 batch.refresh_ids.add(object_id)
+            for owner in owners:
+                obj = self._graph.objects.get(owner)
+                if isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName():
+                    batch.producers[int(owner)] = obj
         return batch
 
+    def _covered_input(self, object_id: str, obj: vtkObject) -> bool:
+        if not object_id.startswith("pipeline:") or not obj.IsA("vtkTrivialProducer"):
+            return False
+        producer = cast("vtkAlgorithm", obj)
+        data = producer.GetOutputDataObject(0)
+        data_id = self._graph.identifiers.get(id(data), "")
+        return self._classes.get(data_id) in DATASET_PATCH_TYPES and all(
+            data_id in self._graph.children.get(str(mapper_id), ())
+            for mapper_id in self._pipeline_updates.get(object_id, ())
+        )
+
     def consume(self) -> DirtyBatch:
-        """Take the pending dirty marks as a :class:`DirtyBatch`."""
-        dirty_ids = self._dirty_ids
-        swept_ids = self._swept_ids
-        self._dirty_ids = set()
-        self._swept_ids = set()
-        return self._map_dirty(dirty_ids, swept_ids)
+        # Transform concatenation and pipeline-owned implicit functions can
+        # change aggregate MTime without a producer ModifiedEvent. Poll these
+        # live dependencies, not every serialized object in the scene.
+        for object_id in self._polled_dependencies:
+            obj = self._observed_objects[object_id][0]
+            if mtime(obj) != self._mtimes[object_id] and not self._covered_input(
+                object_id, obj
+            ):
+                self._dirty_ids.add(object_id)
+        dirty, swept = self._dirty_ids, self._swept_ids
+        self._dirty_ids, self._swept_ids = set(), set()
+        return self._map_dirty(dirty, swept)
+
+    def restore(self, batch: DirtyBatch) -> None:
+        """Keep failed work and any events that arrived during publication."""
+        self._swept_ids.update(batch.swept_ids - self._dirty_ids)
+        self._dirty_ids.update(batch.dirty_ids | batch.candidates)
+
+    def acknowledge(self, object_ids: Iterable[str]) -> None:
+        """Advance only processed MTimes after the scene commit succeeds."""
+        for object_id in object_ids:
+            observed = self._observed_objects.get(object_id)
+            if observed is not None and object_id not in self._dirty_ids:
+                self._mtimes[object_id] = mtime(observed[0])
 
     def sweep(self) -> None:
-        """Fold ids whose live mtime moved since the last snapshot into the
-        pending dirty set — heals observer false negatives."""
-        object_manager = self._object_manager
-        for object_id, previous in list(self._mtimes.items()):
-            vtk_obj = object_manager.GetObjectAtId(int(object_id))
-            if vtk_obj is None or not hasattr(vtk_obj, "GetMTime"):
+        """Explicit recovery for changed objects whose event was missed."""
+        for object_id, previous in self._mtimes.items():
+            obj = self._observed_objects[object_id][0]
+            # A direct input's dataset and children are already observed.
+            # Intermediate pipeline inputs may not be serialized at all.
+            if self._covered_input(object_id, obj):
                 continue
-            mtime = vtk_obj.GetMTime()
-            if mtime != previous:
-                self._mtimes[object_id] = mtime
+            if mtime(obj) != previous:
                 if object_id not in self._dirty_ids:
                     self._swept_ids.add(object_id)
                 self._dirty_ids.add(object_id)
 
     def cleanup(self) -> None:
-        self._drop_observers(self._observed_objects)
-        self._live_objects = {}
-        self._ids_by_wrapper = {}
-        self._dirty_ids.clear()
-        self._swept_ids.clear()
-        self._owner_ids.clear()
-        self._pipeline_updates.clear()
-        self._structural_ids.clear()
-        self._classes = {}
-        self._mtimes = {}
         self._disposed = True
+        for object_id in list(self._observed_objects):
+            self._drop_observer(object_id)
+        self._owner_ids.clear()
+        self._children_by_owner.clear()
+        self._pipeline_updates.clear()
+        self._pipeline_by_owner.clear()
+        self._graph.clear()

@@ -13,9 +13,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Set
 from typing import TYPE_CHECKING, cast
 
-from vtkmodules.vtkCommonCore import reference, vtkCollection
+from vtkmodules.vtkCommonCore import vtkCollection
 from vtkmodules.vtkRenderingCore import vtkMapper, vtkPointGaussianMapper
 
+from trame_vtklocal.module.coincident_topology import coincident_topology_block
 from trame_vtklocal.module import interaction as pick
 from trame_vtklocal.module import point_cloud_presentation as point_presentation
 from trame_vtklocal.module import projected_texture as ptx
@@ -79,6 +80,7 @@ LIST_REF_SLOTS: dict[str, dict[str, str]] = {
 }
 
 TYPE_SKIP_PROPERTIES: dict[str, set[str]] = {
+    "vtkActor": {"estimatedRenderTime", "renderTimeMultiplier"},
     "vtkRenderWindow": RENDERWINDOW_SKIP_PROPERTIES,
     "vtkRenderer": RENDERER_SKIP_PROPERTIES,
     "vtkLookupTable": LOOKUPTABLE_SKIP_PROPERTIES,
@@ -232,11 +234,6 @@ def _scalar_props(
     return props
 
 
-# ---------------------------------------------------------------------------
-# Datasets
-# ---------------------------------------------------------------------------
-
-
 def _translate_polydata(
     reader: SceneReader, state: VtkState, vtkjs_type: str
 ) -> SceneNode:
@@ -266,27 +263,6 @@ def _mapper_input_port_ids(reader: SceneReader, state: VtkState) -> list[int]:
     return port_ids
 
 
-def _coincident_topology_block(mapper: vtkMapper) -> dict[str, object] | None:
-    if mapper.GetResolveCoincidentTopology() != 1:
-        return None
-
-    line_factor, line_units = reference(0.0), reference(0.0)
-    polygon_factor, polygon_units = reference(0.0), reference(0.0)
-    mapper.GetRelativeCoincidentTopologyLineOffsetParameters(line_factor, line_units)
-    mapper.GetRelativeCoincidentTopologyPolygonOffsetParameters(
-        polygon_factor, polygon_units
-    )
-    if not any(
-        float(value)
-        for value in (line_factor, line_units, polygon_factor, polygon_units)
-    ):
-        return None
-    return {
-        "line": {"factor": float(line_factor), "offset": float(line_units)},
-        "polygon": {"factor": float(polygon_factor), "offset": float(polygon_units)},
-    }
-
-
 def _translate_mapper(
     reader: SceneReader, state: VtkState, vtkjs_type: str
 ) -> SceneNode:
@@ -300,7 +276,7 @@ def _translate_mapper(
     blocks: dict[str, Mapping[str, object]] = {}
 
     if isinstance(vtk_mapper, vtkMapper):
-        coincident_topology = _coincident_topology_block(vtk_mapper)
+        coincident_topology = coincident_topology_block(vtk_mapper)
         if coincident_topology is not None:
             blocks["coincidentTopology"] = coincident_topology
 
@@ -332,11 +308,6 @@ def _translate_mapper(
         blocks[point_presentation.POINT_CLOUD_PRESENTATION_BLOCK] = presentation
 
     return _make_node(node_type, props, refs, {}, blocks)
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def _translate_generic(

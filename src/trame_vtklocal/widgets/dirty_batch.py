@@ -16,9 +16,8 @@ class DirtyBatch:
     ``dirty_ids`` is every id the tick marked dirty, before owner mapping —
     both the objects that emitted their own ``ModifiedEvent`` and the ones
     the healing sweep found with a moved ``GetMTime``. ``swept_ids`` is that
-    second group alone: ids whose MTime moved with no modification event of
-    their own, which for a container means the move propagated up from a
-    child rather than describing a change to the container itself.
+    second group alone. These may be aggregate child changes or suppressed
+    metadata events, so they require full translation during recovery.
     """
 
     candidates: set[str] = field(default_factory=set)

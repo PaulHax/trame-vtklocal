@@ -159,6 +159,11 @@ class VtkJsBaseView(HtmlElement):
     # Push sync v2 view API
     # ------------------------------------------------------------------
 
+    def recover(self) -> None:
+        """Recover scene edits made without VTK ModifiedEvent notifications."""
+        if self._publisher is not None:
+            self._publisher.recover()
+
     def sync(self) -> None:
         """Publish pending scene changes now."""
         if self._publisher:

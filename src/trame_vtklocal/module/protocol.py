@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import zipfile
 import json
 from collections.abc import Callable, Iterable, Sequence
@@ -12,13 +11,13 @@ from wslink.websocket import LinkProtocol
 from vtkmodules.vtkSerializationManager import vtkObjectManager
 from vtkmodules.vtkCommonCore import vtkVersion
 
-from trame_vtklocal.store import ref_manager_hashes
+from trame_vtklocal.module.push_views import PushViewRegistry
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
 
     from trame_vtklocal.host_types import LinkProtocolRoot, ProtocolHostServer
-    from trame_vtklocal.wire import ObjectStatus, PushView, ResyncPayload
+    from trame_vtklocal.wire import ObjectStatus, ResyncPayload
 
 try:
     import zlib  # noqa
@@ -26,19 +25,6 @@ try:
     ZIP_COMPRESSION = zipfile.ZIP_DEFLATED
 except ImportError:
     ZIP_COMPRESSION = zipfile.ZIP_STORED
-
-VTK_VERSION = vtkVersion()
-# Stale blobs are retired in batches: verifying a hash is truly dead walks the
-# whole shared object manager (GetAllDependencies(0) + GetBlobHashes), so a
-# per-commit sweep would pay a full-scene walk on every landmark-drag move.
-# Deferring only delays memory reclamation; protection is re-derived at flush
-# time, so a hash that came back alive meanwhile is simply kept.
-BLOB_GC_DEBOUNCE_SECONDS = 2.0
-API_NO_IDS_UPDATE = (
-    VTK_VERSION.GetVTKMajorVersion() <= 9
-    and VTK_VERSION.GetVTKMinorVersion() <= 4
-    and VTK_VERSION.GetVTKBuildVersion() < 20250509
-)  # mr90034
 
 _RpcT = TypeVar("_RpcT")
 
@@ -57,7 +43,7 @@ def map_id_mtime(object_manager: vtkObjectManager, vtk_id: int) -> tuple[int, in
 
 
 # wslink ships no type information, so its base class is untyped here.
-class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
+class ObjectManagerAPI(PushViewRegistry, LinkProtocol):  # type: ignore[misc, no-any-unimported]
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self.vtk_object_manager = vtkObjectManager()
@@ -67,120 +53,10 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
         self._last_publish_states: dict[int, int] = {}
         self._last_publish_hash: set[str] = set()
         self._push_camera = False
-        self._push_views: dict[int, PushView] = {}
-        self._push_view_blob_hashes: dict[int, set[str]] = {}
-        self._pending_stale_blob_hashes: set[str] = set()
-        self._blob_gc_handle: asyncio.TimerHandle | None = None
+        self._init_push_views()
 
         self._debug_state = False
         self._debug_state_counter = 1
-
-    def register_push_view(self, rw_id: int | str, publisher: PushView) -> None:
-        """Register the ScenePublisher serving one render window."""
-        rw_id = int(rw_id)
-        self._push_views[rw_id] = publisher
-        self._push_view_blob_hashes.setdefault(rw_id, set())
-
-    def unregister_push_view(self, rw_id: int | str) -> None:
-        rw_id = int(rw_id)
-        self._push_views.pop(rw_id, None)
-        self._push_view_blob_hashes.pop(rw_id, None)
-
-    def update_push_view_refs(
-        self, rw_id: int | str, live_refs: Iterable[str], refs_leaving: Iterable[str]
-    ) -> None:
-        """Queue retirement of vtkObjectManager blobs behind refs that left.
-
-        The publisher hands the store's live ref set plus the exact refs that
-        left it this commit (including hot-array refs it minted but never
-        adopted). Refs strip to raw manager hashes (``v:`` refs have none);
-        the stale hashes are batched and retired by a debounced
-        :meth:`flush_stale_blobs`.
-        """
-        rw_id = int(rw_id)
-        current = ref_manager_hashes(live_refs)
-        self._push_view_blob_hashes[rw_id] = current
-
-        stale = ref_manager_hashes(refs_leaving) - current
-        if not stale:
-            return
-        self._pending_stale_blob_hashes |= stale
-        self._schedule_blob_gc()
-
-    def _schedule_blob_gc(self) -> None:
-        if self._blob_gc_handle is not None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No loop (sync tests, teardown): an explicit flush_stale_blobs()
-            # or the next scheduling attempt under a loop flushes.
-            return
-        self._blob_gc_handle = loop.call_later(
-            BLOB_GC_DEBOUNCE_SECONDS, self._run_scheduled_blob_gc
-        )
-
-    def _run_scheduled_blob_gc(self) -> None:
-        self._blob_gc_handle = None
-        self.flush_stale_blobs()
-
-    def flush_stale_blobs(self) -> int:
-        """UnRegister pending stale blobs not protected at flush time.
-
-        Hashes still tracked by any push view or referenced by any live
-        dependency of the shared object manager are kept — protection is
-        computed here, not at queue time, so deferral can never retire a
-        blob that came back alive.
-        """
-        if self._blob_gc_handle is not None:
-            self._blob_gc_handle.cancel()
-            self._blob_gc_handle = None
-        stale = self._pending_stale_blob_hashes
-        self._pending_stale_blob_hashes = set()
-        if not stale:
-            return 0
-
-        stale -= self._all_tracked_push_blob_hashes()
-        if not stale:
-            return 0
-
-        # The object manager is shared with non-push subscriptions/widgets.
-        # Protect the globally live dependency set before unregistering.
-        stale -= self._active_object_blob_hashes()
-        if not stale:
-            return 0
-
-        unregister = getattr(self.vtk_object_manager, "UnRegisterBlob", None)
-        if unregister is None:
-            return 0
-
-        count = 0
-        for hash_value in sorted(stale):
-            try:
-                if unregister(hash_value):
-                    count += 1
-            except (RuntimeError, TypeError, ValueError):
-                pass
-        return count
-
-    def _all_tracked_push_blob_hashes(self) -> set[str]:
-        hashes: set[str] = set()
-        for live_hashes in self._push_view_blob_hashes.values():
-            hashes.update(live_hashes)
-        return hashes
-
-    def _active_object_blob_hashes(self) -> set[str]:
-        try:
-            active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
-        except (RuntimeError, TypeError, ValueError):
-            return set()
-        try:
-            return {
-                str(value)
-                for value in self.vtk_object_manager.GetBlobHashes(active_ids)
-            }
-        except (RuntimeError, TypeError, ValueError):
-            return set()
 
     def register_widget(self, root_obj: vtkObjectBase, dep_obj: vtkObjectBase) -> None:
         self.vtk_object_manager.RegisterObject(dep_obj)
@@ -213,16 +89,11 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
     ) -> None:
         self._push_camera = push_camera
 
-        if API_NO_IDS_UPDATE:  # <= 9.4.2
+        if obj_to_update is None:
             self.vtk_object_manager.UpdateStatesFromObjects()
-        else:  # > 9.4.2
-            if obj_to_update is None:
-                self.vtk_object_manager.UpdateStatesFromObjects()
-            else:
-                ids = [
-                    self.vtk_object_manager.GetId(vtk_obj) for vtk_obj in obj_to_update
-                ]
-                self.vtk_object_manager.UpdateStatesFromObjects(ids)
+        else:
+            ids = [self.vtk_object_manager.GetId(obj) for obj in obj_to_update]
+            self.vtk_object_manager.UpdateStatesFromObjects(ids)
 
         if self._debug_state:
             self.vtk_object_manager.Export(f"snapshot-{self._debug_state_counter}")
@@ -366,7 +237,7 @@ class ObjectManagerAPI(LinkProtocol):  # type: ignore[misc, no-any-unimported]
                 "vtk-wasm.json",
                 json.dumps(
                     {
-                        "vtk": VTK_VERSION.GetVTKVersion(),
+                        "vtk": vtkVersion.GetVTKVersion(),
                         "ids": wasm_ids,
                     }
                 ),

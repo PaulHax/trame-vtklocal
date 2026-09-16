@@ -63,17 +63,8 @@ function findPreviousArray(instance, entry) {
   return typeof instance[getter] === "function" ? instance[getter]() : null;
 }
 
-export function bindArrayEntry(instance, entry, values) {
+export function bindArrayEntry(instance, entry, values, previousEntry = null) {
   const previousArray = findPreviousArray(instance, entry);
-  if (previousArray) {
-    if (previousArray.getData() !== values) {
-      previousArray.setData(values, entry.numberOfComponents);
-      previousArray.modified?.();
-      instance.modified?.();
-    }
-    return previousArray;
-  }
-
   const regMethod = entry.registration || "addArray";
   const location = entry.location
     ? instance.getReferenceByName?.(entry.location)
@@ -83,6 +74,35 @@ export function bindArrayEntry(instance, entry, values) {
       `cannot register array (location=${entry.location}, ` +
         `registration=${regMethod})`,
     );
+  }
+
+  if (previousArray) {
+    // A registration change is independent of data/buffer identity. Clear
+    // only the attribute still owned by this array, preserving a new owner
+    // installed earlier in the same reconciliation pass.
+    const previousRegistration = previousEntry?.registration;
+    if (
+      entry.location &&
+      previousRegistration &&
+      previousRegistration !== regMethod &&
+      previousRegistration !== "addArray"
+    ) {
+      const getter = `get${previousRegistration.substring(3)}`;
+      if (location[getter]?.() === previousArray) {
+        location[previousRegistration](null);
+      }
+    }
+    if (
+      previousArray.getData() !== values ||
+      previousArray.getNumberOfComponents() !== entry.numberOfComponents
+    ) {
+      previousArray.setData(values, entry.numberOfComponents);
+      previousArray.modified?.();
+    }
+    location[regMethod](previousArray);
+    location.modified?.();
+    instance.modified?.();
+    return previousArray;
   }
 
   const vtkClass = entry.vtkClass || "vtkDataArray";

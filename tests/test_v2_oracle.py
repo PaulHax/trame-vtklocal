@@ -580,7 +580,7 @@ def test_oracle_sync_sweep_heals_missed_dirty_marks():
             scene.handles["actor"].SetVisibility(False)
         assert not publisher._tracker.has_pending()
 
-        publisher.sync()
+        publisher.recover()
         ((_topic, message),) = server.protocol.drain()
         assert client.apply(message) == "applied"
         assert_client_matches_server(client, publisher)
@@ -590,7 +590,7 @@ def test_oracle_sync_sweep_heals_missed_dirty_marks():
         publisher.cleanup()
 
 
-def test_oracle_transaction_exit_heals_missed_dirty_marks():
+def test_oracle_transaction_requires_explicit_recovery_for_suppressed_events():
     scene = make_basic_scene()
     publisher, server = make_publisher(scene)
     try:
@@ -602,6 +602,8 @@ def test_oracle_transaction_exit_heals_missed_dirty_marks():
                 scene.handles["actor"].SetVisibility(False)
             assert not publisher._tracker.has_pending()
 
+        assert server.protocol.drain() == []
+        publisher.recover()
         ((_topic, message),) = server.protocol.drain()
         assert client.apply(message) == "applied"
         assert_client_matches_server(client, publisher)

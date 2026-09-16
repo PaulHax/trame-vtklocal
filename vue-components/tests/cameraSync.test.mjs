@@ -66,9 +66,8 @@ function makeWindow() {
   };
 }
 
-async function makeScene() {
+async function makeScene(camera = makeCamera()) {
   const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const camera = makeCamera();
   const renderer = {
     get: () => ({}),
     getActiveCamera: () => camera,
@@ -320,4 +319,31 @@ test("gesture payload derives camera matrices from the live local camera", async
     viewMatrix: IDENTITY,
     projectionMatrix: IDENTITY,
   });
+});
+
+test("local gesture matrices put the real camera at the origin in column-major layout", async () => {
+  const { default: vtkCamera } = await loadModule(
+    "@kitware/vtk.js/Rendering/Core/Camera",
+  );
+  const camera = vtkCamera.newInstance();
+  camera.setPosition(0, -25, 30);
+  camera.setFocalPoint(0, 0, 0);
+  camera.setViewUp(0, 0, 1);
+  const { scene, events } = await makeScene(camera);
+  scene.emitTargetClick({ clientX: 10, clientY: 20 });
+  const { viewMatrix, projectionMatrix } = events.find(
+    (e) => e.name === "pointerEvent",
+  ).payload.camera;
+  const multiply = (m, p) =>
+    [0, 1, 2, 3].map((r) =>
+      [0, 1, 2, 3].reduce((sum, c) => sum + m[c * 4 + r] * p[c], 0),
+    );
+  const eye = multiply(viewMatrix, [0, -25, 30, 1]);
+  eye.forEach((value, i) =>
+    assert.ok(Math.abs(value - [0, 0, 0, 1][i]) < 1e-9),
+  );
+  const focal = multiply(projectionMatrix, multiply(viewMatrix, [0, 0, 0, 1]));
+  assert.ok(Math.abs(focal[0] / focal[3]) < 1e-9);
+  assert.ok(Math.abs(focal[1] / focal[3]) < 1e-9);
+  assert.ok(focal[3] > 0);
 });

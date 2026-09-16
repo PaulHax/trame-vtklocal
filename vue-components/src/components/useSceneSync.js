@@ -12,6 +12,7 @@ import { createSceneEngine } from "./engine/sceneEngine";
 import { dumpAppliedScene } from "./dumpAppliedScene";
 import { registerBlockHandlers } from "./blockHandlers";
 import { createCameraReports } from "./cameraReports";
+import { transposeMatrix } from "./cameraMatrix";
 import {
   createDistanceToCameraGlyphRegistry,
   describeDistanceToCameraGlyphRegistry,
@@ -641,8 +642,13 @@ export function useSceneSync(
     const projection = matrixCopy16(
       camera?.getProjectionMatrix?.(metrics?.aspect ?? 1, -1, 1),
     );
+    // vtk.js getters use transposed storage. Gesture payloads always use
+    // column-major matrices, matching setRenderedCamera's shared-view path.
     return view && projection
-      ? { viewMatrix: view, projectionMatrix: projection }
+      ? {
+          viewMatrix: transposeMatrix(view),
+          projectionMatrix: transposeMatrix(projection),
+        }
       : null;
   }
 

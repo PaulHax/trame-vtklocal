@@ -19,6 +19,7 @@ from trame_vtklocal.widgets import VtkJsLocalView, VtkJsSharedView
 from tsw_demo.fixtures import write_assets
 from tsw_demo.scene import DemoScene
 from tsw_demo.interaction import drag_point
+from tsw_demo.help import help_dialog
 
 
 class FeatureDemo:
@@ -62,7 +63,14 @@ class FeatureDemo:
             layout.root.style = "height:100vh;display:flex;flex-direction:column"
             client.Style("""
                 body { margin:0; font:14px system-ui; background:#18212d; color:#eee; }
-                button { margin:4px; padding:7px 10px; cursor:pointer; }
+                button, select { margin:4px; padding:7px 10px; cursor:pointer; }
+                #demo-help { max-width:640px; max-height:80vh; overflow:auto;
+                    background:#f8fafc; color:#172033; border:0; border-radius:10px; padding:24px; }
+                #demo-help::backdrop { background:#0009; }
+                #demo-help p, #demo-help li, #demo-help dd { line-height:1.5; }
+                #demo-help dt { font-weight:700; margin-top:12px; }
+                #demo-help dd { margin:4px 0 0; }
+                #cloud-pick-mode { color:#7de8ed; }
                 #controls { padding:8px; background:#263345; }
                 #map { flex:1; min-height:0; }
                 #inspector { position:absolute; right:12px; top:145px;
@@ -92,12 +100,32 @@ class FeatureDemo:
                     html.Button(
                         "Reload map style", click="window.tswDemo.reloadStyle()"
                     )
-                    html.Button("Arm cloud pick", click="window.tswDemo.armCloudPick()")
+                    html.Button(
+                        "Pick cloud point",
+                        id="cloud-pick-toggle",
+                        click="window.tswDemo.armCloudPick()",
+                    )
+                    html.Label("Basemap", for_="basemap")
+                    with html.Select(
+                        id="basemap",
+                        change="window.tswDemo.setBasemap($event.target.value)",
+                    ):
+                        html.Option(
+                            "Light · OpenFreeMap", value="positron", selected=True
+                        )
+                        html.Option("Dark · OpenFreeMap", value="dark")
+                        html.Option("Blank · offline", value="blank")
+                    html.Button(
+                        "Help / What am I seeing?",
+                        click="window.document.getElementById('demo-help').showModal()",
+                    )
+                html.Div("", id="cloud-pick-mode")
                 html.Small(
                     "Drag red landmarks. Gold: direct cloud; cyan: HTTP cloud; "
                     "orange: streamed mesh. Two numbered planes share a video texture."
                 )
                 html.Div("{{ pointer }}", id="pointer-status")
+            help_dialog()
             html.Div(id="map")
             with html.Div(id="inspector"):
                 local = VtkJsLocalView(
@@ -187,6 +215,10 @@ class FeatureDemo:
         solve = event.get("cloud_solve")
         if solve:
             self.state.pointer += f" · cloud {solve.get('status')}"
+            if solve.get("status") == "hit" and solve.get("world"):
+                self.state.pointer += (
+                    " at (" + ", ".join(f"{v:.2f}" for v in solve["world"]) + ")"
+                )
         if event.get("type") == "target.drag.start":
             self.state.playing = False
         world = drag_point(event)

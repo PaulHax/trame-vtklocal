@@ -3,8 +3,8 @@
 This updates the MapLibre partial-update example into a synthetic scene for
 checking the library features used by TeleSculptor-Web. It needs no TSW checkout,
 project, video, COPC file, or tile service. The server generates a tiny cloud and
-textured mesh in a temporary directory. The basemap is an empty MapLibre style;
-the map still owns the canvas, camera and interaction.
+textured mesh in a temporary directory. The default basemap is OpenFreeMap Positron, with dark and blank options.
+Use ?basemap=blank for offline map data. MapLibre owns the canvas, camera and interaction.
 
 From the trame-vtklocal checkout, with its VTK and trame dependencies installed:
 
@@ -31,8 +31,10 @@ versions. Rebuild the library's served UMD before exercising modified JS.
 - Drag the red screen-sized landmarks in either view. Client previews are
   confirmed by a server update shared by both views; stale picks are rejected.
   Glyph centers are scene-space coordinates, as in TSW.
-- **Arm cloud pick**, then click the cyan cloud. The feedback reports the
-  asset-scoped depth solve.
+- **Pick cloud point**, then click the cyan cloud. Feedback reports the
+  asset-scoped depth solve and hit coordinates. This persistent mode does not
+  add a landmark; **Stop cloud picking** turns it off.
+- **Help / What am I seeing?** opens the in-page object and control guide.
 - **Reload map style** removes/re-adds the custom layer while retaining the
   external GL context. **Reset cameras** exercises ordered map-camera and
   owned-view camera commands.

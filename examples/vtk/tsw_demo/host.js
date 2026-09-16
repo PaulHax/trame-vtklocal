@@ -33,7 +33,7 @@
     1,
   ]);
   let styleGeneration = 0;
-  const style = () => ({
+  const blankStyle = () => ({
     version: 8,
     sources: {},
     layers: [
@@ -46,9 +46,36 @@
       },
     ],
   });
+  const basemapUrls = {
+    positron: "https://tiles.openfreemap.org/styles/positron",
+    dark: "https://tiles.openfreemap.org/styles/dark",
+  };
+  const requested = new URLSearchParams(location.search).get("basemap");
+  let basemap =
+    requested === "blank" || requested in basemapUrls ? requested : "positron";
+  let basemapNotice = "";
+  let basemapRequest = 0;
+  async function basemapStyle(name) {
+    if (name === "blank") return blankStyle();
+    const response = await fetch(basemapUrls[name], {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok)
+      throw new Error("Basemap request failed: " + response.status);
+    return response.json();
+  }
+  let initialStyle;
+  try {
+    initialStyle = await basemapStyle(basemap);
+  } catch {
+    basemap = "blank";
+    basemapNotice = "Online basemap unavailable; using blank background.";
+    initialStyle = blankStyle();
+  }
+  document.getElementById("basemap").value = basemap;
   const map = new maplibregl.Map({
     container: "map",
-    style: style(),
+    style: initialStyle,
     center: [-74.006, 40.7128],
     zoom: 20,
     pitch: 45,
@@ -61,6 +88,8 @@
   let currentMapCamera = { bearing: 0, pitch: 45 };
   let initialized = false;
   let error = null;
+  let cloudPickArmed = false;
+  let pickGeneration = 0;
   const detach = [];
   const decodedFrames = new Map();
   const timers = new Map();
@@ -170,7 +199,8 @@
         frame +
         " · painted texture " +
         (texture?.token?.frame ?? "–") +
-        "\nDrag to orbit · scroll to zoom · inset shares the same actors";
+        "\nDrag to pan · scroll to zoom · right-drag to rotate" +
+        (basemapNotice ? "\n" + basemapNotice : "");
   }
   shared.setRepaintCallback(() => map.triggerRepaint());
   shared.onRenderRequested(() => map.triggerRepaint());
@@ -261,16 +291,42 @@
     setTextureDelay(ms) {
       textureDelayMs = Math.max(0, Math.min(5000, ms));
     },
+    async setBasemap(name) {
+      if (name !== "blank" && !(name in basemapUrls)) return;
+      const request = ++basemapRequest;
+      let nextStyle;
+      try {
+        nextStyle = await basemapStyle(name);
+        if (request !== basemapRequest) return;
+        basemapNotice = "";
+      } catch {
+        if (request !== basemapRequest) return;
+        name = "blank";
+        nextStyle = blankStyle();
+        basemapNotice = "Online basemap unavailable; using blank background.";
+      }
+      basemap = name;
+      document.getElementById("basemap").value = name;
+      map.setStyle(nextStyle);
+      updateStatus();
+    },
     reloadStyle() {
       styleGeneration += 1;
-      map.setStyle(style());
+      return this.setBasemap(basemap);
     },
     armCloudPick() {
+      cloudPickArmed = !cloudPickArmed;
       shared.setArmedCloudPick({
-        generation: Date.now(),
-        asset_id: "demo-cloud",
-        token: "demo",
+        generation: ++pickGeneration,
+        asset_id: cloudPickArmed ? "demo-cloud" : null,
+        token: cloudPickArmed ? "demo" : null,
       });
+      document.getElementById("cloud-pick-toggle").textContent = cloudPickArmed
+        ? "Stop cloud picking"
+        : "Pick cloud point";
+      document.getElementById("cloud-pick-mode").textContent = cloudPickArmed
+        ? "Cloud picking ON — click the cyan cloud in the main map. No landmark is added."
+        : "";
     },
     resetCamera() {
       map.jumpTo(currentMapCamera);

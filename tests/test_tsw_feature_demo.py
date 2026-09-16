@@ -86,7 +86,7 @@ def test_feature_demo_lifecycle_and_frames(demo_server, page):
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     with page.expect_response(lambda r: "trame_vtklocal.umd.js" in r.url) as served:
-        page.goto(demo_server)
+        page.goto(demo_server + "?basemap=blank")
     bundle = ROOT / "src/trame_vtklocal/module/serve/js/trame_vtklocal.umd.js"
     assert (
         hashlib.sha256(served.value.body()).digest()
@@ -137,7 +137,7 @@ def test_feature_demo_lifecycle_and_frames(demo_server, page):
     page.get_by_role("button", name="Correction transform", exact=True).click()
     page.wait_for_function("""() => window.tswDemo.diagnostics().map.streamedScene.members
       .find(m=>m.kind==='pointCloud').anchorUserMatrix[13] === 1""")
-    page.get_by_role("button", name="Arm cloud pick", exact=True).click()
+    page.get_by_role("button", name="Pick cloud point", exact=True).click()
     point = project(page, "demoMap", [8, 1, 1 + math.sin(8) / 2])
     page.mouse.click(point["x"], point["y"])
     page.wait_for_function(
@@ -182,7 +182,7 @@ def project(page, view, point):
 
 
 def test_feature_demo_drag_round_trip(demo_server, page):
-    page.goto(demo_server)
+    page.goto(demo_server + "?basemap=blank")
     wait_painted(page)
     for key in ("demoMap", "demoLocal"):
         before = page.evaluate(

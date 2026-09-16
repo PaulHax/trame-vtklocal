@@ -93,6 +93,32 @@ class DemoScene:
         mark_screen_size_glyphs(self.glyph_mapper, 16)
         self.actors["landmarks"] = actor_for(self.glyph_mapper, (1, 0.2, 0.3))
         self.tag_landmarks()
+        # Feedback is scene geometry so the independent inset confirms its depth.
+        self.pick_data = polydata([(0, 0, 0)])
+        pick_mapper = vtk.vtkGlyph3DMapper()
+        pick_mapper.SetInputData(self.pick_data)
+        pick_mapper.SetSourceConnection(source.GetOutputPort())
+        pick_mapper.ScalarVisibilityOff()
+        pick_mapper.OrientOff()
+        mark_screen_size_glyphs(pick_mapper, 12)
+        self.actors["pick-marker"] = actor_for(pick_mapper, (1, 1, 1))
+        self.actors["pick-marker"].PickableOff()
+        self.actors["pick-marker"].VisibilityOff()
+        orbit_source = vtk.vtkSphereSource()
+        orbit_source.SetRadius(0.8)
+        orbit_source.SetThetaResolution(24)
+        orbit_source.SetPhiResolution(16)
+        orbit_mapper = vtk.vtkPolyDataMapper()
+        orbit_mapper.SetInputConnection(orbit_source.GetOutputPort())
+        self.actors["orbit"] = actor_for(orbit_mapper, (0.1, 0.6, 1))
+        self.actors["orbit"].SetPosition(*self.orbit_position())
+        self.trail_data = polydata([self.orbit_position()] * 120)
+        lines = vtk.vtkCellArray()
+        lines.InsertNextCell(120, list(range(120)))
+        self.trail_data.SetLines(lines)
+        trail_mapper = vtk.vtkPolyDataMapper()
+        trail_mapper.SetInputData(self.trail_data)
+        self.actors["trail"] = actor_for(trail_mapper, (0.1, 0.6, 1))
         self.transform = vtk.vtkTransform()
         self.planes = []
         for index, mode in enumerate(("homography", "worldToClip")):
@@ -148,18 +174,28 @@ class DemoScene:
             for name, actor in self.actors.items():
                 target = (
                     annotations
-                    if name == "landmarks"
+                    if name in ("landmarks", "pick-marker")
                     else (video if name.startswith("projection-") else world)
                 )
                 target.AddActor(actor)
             camera = annotations.GetActiveCamera()
-            camera.SetPosition(0, -25, 30)
+            camera.SetPosition(0, -38, 46)
             camera.SetFocalPoint(0, 0, 0)
             camera.SetViewUp(0, 0, 1)
             for renderer in layers:
                 renderer.SetActiveCamera(camera)
             self.windows.append(window)
             self.renderers.append(world)
+
+    def orbit_position(self):
+        angle = self.frame * math.pi / 100
+        return (16 * math.cos(angle), 12 * math.sin(angle), 4)
+
+    def show_pick(self, world):
+        self.actors["pick-marker"].SetVisibility(world is not None)
+        if world is not None:
+            self.pick_data.GetPoints().SetPoint(0, *world)
+            self.pick_data.GetPoints().Modified()
 
     def tag_landmarks(self):
         make_pickable(
@@ -173,6 +209,12 @@ class DemoScene:
 
     def advance(self):
         self.frame += 1
+        self.actors["orbit"].SetPosition(*self.orbit_position())
+        points = self.trail_data.GetPoints()
+        for index in range(119):
+            points.SetPoint(index, *points.GetPoint(index + 1))
+        points.SetPoint(119, *self.orbit_position())
+        points.Modified()
         # Only one point changes out of 4096: subsequent ticks should patch bytes.
         x, y, _ = self.cloud_data.GetPoint(200)
         self.cloud_data.GetPoints().SetPoint(200, x, y, 0.5 + math.sin(self.frame / 4))

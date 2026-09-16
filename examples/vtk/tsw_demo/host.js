@@ -72,7 +72,7 @@
     basemapNotice = "Online basemap unavailable; using blank background.";
     initialStyle = blankStyle();
   }
-  document.getElementById("basemap").value = basemap;
+  window.trame.trigger("demo.basemap_selected", [basemap]);
   const map = new maplibregl.Map({
     container: "map",
     style: initialStyle,
@@ -186,6 +186,15 @@
       map.jumpTo(payload);
     }),
   );
+  detach.push(
+    shared.onCommand("demo.follow", ({ position }) => {
+      const center = new maplibregl.MercatorCoordinate(
+        origin.x + position[0] * scale,
+        origin.y - position[1] * scale,
+      ).toLngLat();
+      map.jumpTo({ center });
+    }),
+  );
   function updateStatus() {
     const el = document.getElementById("status");
     if (!el) return;
@@ -233,7 +242,13 @@
       const inverse = new Float64Array(16);
       const projection = new Float64Array(16);
       const combined = new Float64Array(16);
-      mat4.lookAt(view, toScene(cameraMerc), toScene(target), [0, 0, 1]);
+      // Horizontal map-up remains independent of the viewing direction at nadir.
+      const bearing = (map.getBearing() * Math.PI) / 180;
+      mat4.lookAt(view, toScene(cameraMerc), toScene(target), [
+        Math.sin(bearing),
+        Math.cos(bearing),
+        0,
+      ]);
       mat4.invert(inverse, view);
       mat4.multiply(combined, args.defaultProjectionData.mainMatrix, model);
       mat4.multiply(projection, combined, inverse);
@@ -306,7 +321,7 @@
         basemapNotice = "Online basemap unavailable; using blank background.";
       }
       basemap = name;
-      document.getElementById("basemap").value = name;
+      window.trame.trigger("demo.basemap_selected", [name]);
       map.setStyle(nextStyle);
       updateStatus();
     },
@@ -316,14 +331,14 @@
     },
     armCloudPick() {
       cloudPickArmed = !cloudPickArmed;
+      window.trame.trigger("demo.clear_pick");
       shared.setArmedCloudPick({
         generation: ++pickGeneration,
         asset_id: cloudPickArmed ? "demo-cloud" : null,
         token: cloudPickArmed ? "demo" : null,
       });
-      document.getElementById("cloud-pick-toggle").textContent = cloudPickArmed
-        ? "Stop cloud picking"
-        : "Pick cloud point";
+      document.querySelector("#cloud-pick-toggle .v-btn__content").textContent =
+        cloudPickArmed ? "Stop cloud picking" : "Pick cloud point";
       document.getElementById("cloud-pick-mode").textContent = cloudPickArmed
         ? "Cloud picking ON — click the cyan cloud in the main map. No landmark is added."
         : "";

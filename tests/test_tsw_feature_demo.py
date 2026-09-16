@@ -27,9 +27,7 @@ def demo_server(xprocess):
     for name in ("maplibre-gl.js", "maplibre-gl.css", "gl-matrix-min.js"):
         assert (Path(vendor) / name).is_file(), f"Missing {name} in {vendor}"
     helper = FixtureHelper(ROOT)
-    name, starter, monitor = helper.get_xprocess_args(
-        "examples/vtk/maplibre_vtkjs_partial.py"
-    )
+    name, starter, monitor = helper.get_xprocess_args("examples/vtk/maplibre_vtkjs.py")
     # xprocess changes cwd; a relative PYTHONPATH would silently test an installed wheel.
     starter.env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
     logfile = xprocess.ensure(name, starter)
@@ -143,6 +141,10 @@ def test_feature_demo_lifecycle_and_frames(demo_server, page):
     page.wait_for_function(
         "document.getElementById('pointer-status').textContent.includes('cloud hit')"
     )
+    page.get_by_role("button", name="Correction transform", exact=True).click()
+    page.wait_for_function(
+        "document.getElementById('pointer-status').textContent==='No pick yet'"
+    )
     page.get_by_role("button", name="Opacity", exact=True).click()
     page.get_by_role("button", name="Recover", exact=True).click()
     page.get_by_role("button", name="Reset cameras", exact=True).click()
@@ -220,3 +222,92 @@ def test_feature_demo_drag_round_trip(demo_server, page):
         end = project(page, key, [values[3], values[4], values[5]])
         assert end["x"] == pytest.approx(start["x"] + 20, abs=2)
         assert end["y"] == pytest.approx(start["y"], abs=2)
+
+
+def test_nadir_pick_feedback_and_follow(demo_server, page):
+    page.goto(demo_server + "?basemap=blank")
+    wait_painted(page)
+    wait_streamed(page)
+    # The map's top-down view used to give lookAt a parallel up vector.
+    for bearing in (0, 90, 180):
+        page.evaluate(
+            "bearing => window.tswDemo.map.jumpTo({pitch:0,bearing})", bearing
+        )
+        page.wait_for_timeout(150)
+        image = Image.open(io.BytesIO(page.screenshot())).convert("RGB")
+        point = project(page, "demoMap", [-7, 0, 2])
+        assert math.isfinite(point["x"]) and math.isfinite(point["y"])
+        assert image.getpixel((round(point["x"]), round(point["y"]))) == pytest.approx(
+            (255, 51, 77), abs=12
+        )
+
+    page.evaluate("window.tswDemo.map.jumpTo({pitch:0,bearing:0})")
+    page.wait_for_timeout(150)
+    # Search beyond the cloud edge for an outer-bucket hit; verify the result
+    # is on the cursor ray, not snapped to the distant supporting vertex.
+    candidate = page.evaluate("""() => {
+      const d=window.tswDemo, canvas=d.map.getCanvas(), rect=canvas.getBoundingClientRect();
+      for (let x=rect.width-1;x>rect.width/2;x-=3) {
+        const y=Math.floor(rect.height/2);
+        const hit=d.views.demoMap.pickCloudPoint('demo-cloud',x,y);
+        if(hit?.status==='hit' && hit.distance_px>30)
+          return {x:x+rect.left,y:y+rect.top,hit};
+      }
+      return null;
+    }""")
+    assert candidate is not None
+    assert 30 < candidate["hit"]["distance_px"] <= 100
+    projected = project(page, "demoMap", candidate["hit"]["world"])
+    assert projected["x"] == pytest.approx(candidate["x"], abs=1)
+    assert projected["y"] == pytest.approx(candidate["y"], abs=1)
+    page.get_by_role("button", name="Pick cloud point", exact=True).click()
+    page.mouse.click(candidate["x"], candidate["y"])
+    page.wait_for_function(
+        "document.getElementById('pointer-status').textContent.includes('supporting vertex')"
+    )
+    for key in ("demoMap", "demoLocal"):
+        page.wait_for_function(
+            """({key,expected}) => Object.values(window.tswDemo.views[key].getAppliedSceneState().nodes)
+            .some(n=>n.arrays?.points?.size===3 &&
+              Array.from(new Float32Array(Uint8Array.from(atob(n.arrays.points.content),
+                c=>c.charCodeAt(0)).buffer)).every((v,i)=>Math.abs(v-expected[i])<0.001))""",
+            arg={"key": key, "expected": candidate["hit"]["world"]},
+        )
+        marker = project(page, key, candidate["hit"]["world"])
+        image = Image.open(io.BytesIO(page.screenshot())).convert("RGB")
+        assert image.getpixel(
+            (round(marker["x"]), round(marker["y"]))
+        ) == pytest.approx((255, 255, 255), abs=12)
+    page.get_by_role("button", name="Stop cloud picking", exact=True).click()
+    page.wait_for_function(
+        "document.getElementById('pointer-status').textContent==='No pick yet'"
+    )
+    page.get_by_label("Follow sphere", exact=True).check()
+    frame = step(page)
+    center = page.evaluate("""() => {
+      const c=maplibregl.MercatorCoordinate.fromLngLat(window.tswDemo.map.getCenter());
+      const origin=maplibregl.MercatorCoordinate.fromLngLat([-74.006,40.7128]);
+      const scale=origin.meterInMercatorCoordinateUnits();
+      return [(c.x-origin.x)/scale, -(c.y-origin.y)/scale];
+    }""")
+    assert center == pytest.approx(
+        [16 * math.cos(frame * math.pi / 100), 12 * math.sin(frame * math.pi / 100)],
+        abs=0.001,
+    )
+    page.get_by_label("Follow sphere", exact=True).uncheck()
+    # Disabled following must not leave a command that replays on reconnect.
+    page.reload()
+    wait_painted(page)
+    assert not page.get_by_label("Follow sphere", exact=True).is_checked()
+    center = page.evaluate("window.tswDemo.map.getCenter().toArray()")
+    assert center == pytest.approx([-74.006, 40.7128], abs=1e-7)
+    page.get_by_role("button", name="Help / What am I seeing?", exact=True).click()
+    assert page.locator("#demo-help").evaluate("(el)=>el.open && el.scrollTop===0")
+    page.keyboard.press("Escape")
+    page.locator(".v-select").click()
+    page.get_by_role("option", name="Blank · offline", exact=True).click()
+    page.get_by_role("button", name="Play", exact=True).click()
+    page.wait_for_function(
+        "f=>window.tswDemo.diagnostics().frames.demoMap.frame>f+1", arg=frame
+    )
+    page.get_by_role("button", name="Pause", exact=True).click()

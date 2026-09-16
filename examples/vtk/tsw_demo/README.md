@@ -1,6 +1,7 @@
-# TSW feature exerciser
+# MapLibre + VTK.js feature demo
 
-This updates the MapLibre partial-update example into a synthetic scene for
+This consolidates the original MapLibre orbit/follow example and partial-update
+example into one Vuetify app, with a synthetic scene for
 checking the library features used by TeleSculptor-Web. It needs no TSW checkout,
 project, video, COPC file, or tile service. The server generates a tiny cloud and
 textured mesh in a temporary directory. The default basemap is OpenFreeMap Positron, with dark and blank options.
@@ -8,15 +9,23 @@ Use ?basemap=blank for offline map data. MapLibre owns the canvas, camera and in
 
 From the trame-vtklocal checkout, with its VTK and trame dependencies installed:
 
-    PYTHONPATH="$PWD/src" python examples/vtk/maplibre_vtkjs_partial.py --server
+    PYTHONPATH="$PWD/src" python examples/vtk/maplibre_vtkjs.py --server
 
 The browser loads pinned MapLibre 5.16.0 and gl-matrix 3.4.3 from unpkg. For an
 offline run, place maplibre-gl.js, maplibre-gl.css and gl-matrix-min.js in a
 directory and pass --vendor-dir /absolute/path/to/directory. Use those same
 versions. Rebuild the library's served UMD before exercising modified JS.
 
+The partial-update entrypoint remains an alias to the same app. The sphere now
+orbits the local scene in meters; the original continent-wide city navigation
+is replaced by this shared feature scene so both streamed and direct geometry
+can be inspected together.
+
 ## What to try
 
+- **Follow sphere** tracks the blue orbiting sphere and its trail as frames
+  advance. Play/pause and the speed slider control animation. Turn following
+  off to freely pan and tilt, including all the way to nadir.
 - **Step / Play** publishes geometry and a retained frame command in one
   transaction per view, followed by TSW's extra sync. One of 4096 cloud points
   changes; later updates use sparse array patches. The cone pipeline and its
@@ -32,7 +41,11 @@ versions. Rebuild the library's served UMD before exercising modified JS.
   confirmed by a server update shared by both views; stale picks are rejected.
   Glyph centers are scene-space coordinates, as in TSW.
 - **Pick cloud point**, then click the cyan cloud. Feedback reports the
-  asset-scoped depth solve and hit coordinates. This persistent mode does not
+  asset-scoped depth solve and hit coordinates. A white marker appears in both
+  views. Search radii expand through 10, 20 and 100 CSS pixels; the frontmost
+  vertex in the smallest nonempty radius supplies depth. The returned point
+  lies on the cursor ray at that depth, not on the supporting vertex. The
+  distance readout is to that vertex; hits outside the visible cloud are expected. This persistent mode does not
   add a landmark; **Stop cloud picking** turns it off.
 - **Help / What am I seeing?** opens the in-page object and control guide.
 - **Reload map style** removes/re-adds the custom layer while retaining the
@@ -69,7 +82,9 @@ The test runs headless. It verifies the served UMD matches the checkout's built
 file; both streams submit; both projected planes paint the expected pixels;
 delayed geometry waits for its texture; replacement/edit and removal/re-add
 preserve client array bytes; both views commit drags at the released position;
-cloud picking, correction transforms, style reload and reconnect work.
+cloud picking, correction transforms, style reload and reconnect work. Additional
+checks inspect rendered pixels at nadir with several bearings, a pick near the
+100-pixel search boundary, its visible marker in both views, and sphere following.
 
 This is a library integration fixture, not a replacement for TSW E2E tests.
 Real video decoding/delivery, MapLibre terrain/globe modes, large COPC trees,

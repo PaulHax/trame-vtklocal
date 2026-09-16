@@ -23,6 +23,8 @@ def help_dialog():
                 "Cyan points: a cloud loaded over HTTP, using the streaming renderer.",
                 "Orange triangle: a streamed, textured 3D Tiles mesh.",
                 "Green cone: a live VTK pipeline and transform.",
+                "Blue sphere and trail: the orbiting marker. Play animates it; "
+                "Follow sphere moves the map camera with it.",
                 "Red dots: landmarks that stay the same size on screen. Drag one in either view; "
                 "the other view receives the confirmed edit. Dragging pauses playback.",
                 "Numbered planes: two ways to project the same synthetic video frame. "
@@ -35,7 +37,13 @@ def help_dialog():
         html.P(
             "Pick cloud point turns on a persistent mode for the main map. "
             "Click the cyan cloud to find a 3D point along the cursor ray. "
-            "The feedback reports a hit, miss, or unavailable result and coordinates on a hit. "
+            "A white marker in both views shows the returned 3D position. "
+            "The search tries 10, 20, then 100 CSS-pixel radii and uses the frontmost "
+            "vertex in the smallest nonempty radius to choose depth. The marker lies on "
+            "the cursor ray at that depth; it is not snapped to that vertex. "
+            "The reported pixel distance is to the supporting vertex, not to the marker. "
+            "This deliberately permits hits outside the visible cloud. Misses and scene "
+            "corrections clear the marker. "
             "It does not add or move a landmark or perform registration; it demonstrates "
             "the depth-picking input that TSW uses for registration. "
             "Stop cloud picking returns to ordinary clicks. Landmark dragging still works."
@@ -51,7 +59,7 @@ def help_dialog():
                 (
                     "Step / Play",
                     "Advance one frame or animate at roughly ten frames per second. "
-                    "Play / pause stops and resumes animation.",
+                    "The speed slider scales playback; Follow sphere tracks the blue marker.",
                 ),
                 (
                     "Replace dependencies",

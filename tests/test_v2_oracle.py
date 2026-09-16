@@ -590,5 +590,26 @@ def test_oracle_sync_sweep_heals_missed_dirty_marks():
         publisher.cleanup()
 
 
+def test_oracle_transaction_exit_heals_missed_dirty_marks():
+    scene = make_basic_scene()
+    publisher, server = make_publisher(scene)
+    try:
+        client = MirrorClient()
+        client.resync(publisher)
+
+        with publisher.transaction():
+            with publisher._tracker.suppress():
+                scene.handles["actor"].SetVisibility(False)
+            assert not publisher._tracker.has_pending()
+
+        ((_topic, message),) = server.protocol.drain()
+        assert client.apply(message) == "applied"
+        assert_client_matches_server(client, publisher)
+        actor_id = str(scene.api.vtk_object_manager.GetId(scene.handles["actor"]))
+        assert client.nodes[actor_id]["props"]["visibility"] == 0
+    finally:
+        publisher.cleanup()
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])

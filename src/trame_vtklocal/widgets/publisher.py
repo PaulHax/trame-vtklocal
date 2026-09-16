@@ -186,6 +186,7 @@ class ScenePublisher:
         finally:
             self._transaction_depth -= 1
             if self._transaction_depth == 0 and not self._disposed:
+                self._tracker.sweep()
                 self._publish_tick()
 
     def send_command(

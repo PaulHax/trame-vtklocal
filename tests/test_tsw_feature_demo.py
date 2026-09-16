@@ -311,3 +311,30 @@ def test_nadir_pick_feedback_and_follow(demo_server, page):
         "f=>window.tswDemo.diagnostics().frames.demoMap.frame>f+1", arg=frame
     )
     page.get_by_role("button", name="Pause", exact=True).click()
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_background_click_does_not_reapply_follow(demo_server, page, armed):
+    page.goto(demo_server + "?basemap=blank")
+    wait_painted(page)
+    page.get_by_label("Follow sphere", exact=True).check()
+    step(page)
+    if armed:
+        page.get_by_role("button", name="Pick cloud point", exact=True).click()
+    page.evaluate(
+        "window.tswDemo.map.jumpTo({center:[-74.0059,40.7129],bearing:28,pitch:20})"
+    )
+    before = page.evaluate("""() => {
+      const map=window.tswDemo.map;
+      return {center:map.getCenter().toArray(),bearing:map.getBearing(),pitch:map.getPitch()};
+    }""")
+    seq = page.evaluate("window.tswDemo.diagnostics().map.mySeq")
+    rect = page.locator("#map canvas").bounding_box()
+    page.mouse.click(rect["x"] + 100, rect["y"] + 100)
+    page.wait_for_function("seq=>window.tswDemo.diagnostics().map.mySeq>seq", arg=seq)
+    after = page.evaluate("""() => {
+      const map=window.tswDemo.map;
+      return {center:map.getCenter().toArray(),bearing:map.getBearing(),pitch:map.getPitch()};
+    }""")
+    assert after == before
+    page.get_by_label("Follow sphere", exact=True).uncheck()

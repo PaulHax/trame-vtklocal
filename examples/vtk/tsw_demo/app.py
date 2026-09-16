@@ -225,12 +225,12 @@ class FeatureDemo:
             view.send_command("demo.frame", self.payload(), retain=True)
             view.set_pointer_context(self.payload())
 
-    def publish(self, mutation):
+    def publish(self, mutation, *, follow=False):
         with ExitStack() as stack:
             for view in self.views:
                 stack.enter_context(view.transaction())
             mutation()
-            if self.state.follow_sphere:
+            if follow and self.state.follow_sphere:
                 self.views[0].send_command(
                     "demo.follow",
                     {"position": self.scene.orbit_position()},
@@ -261,7 +261,7 @@ class FeatureDemo:
                     self.state.pointer = "No pick yet"
                 actions[action]()
 
-            self.publish(mutate)
+            self.publish(mutate, follow=action == "step")
         elif action == "recover":
             for view in self.views:
                 view.recover()

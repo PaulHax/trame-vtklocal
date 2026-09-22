@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
+from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
+
 from trame_vtklocal.module.vtkjs_translator import get_ref_id
 
 if TYPE_CHECKING:
@@ -54,10 +56,23 @@ class DependencyGraph:
         self.children: dict[str, set[str]] = {}
         self.parents: dict[str, set[str]] = {}
         self._state_mtimes: dict[str, int] = {}
+        self._needs_prune = False
 
     def refresh(self, roots: Iterable[str]) -> tuple[set[str], set[str]]:
+        try:
+            return self._refresh(roots)
+        except Exception:
+            # A failed descendant refresh must remain reachable on retry even
+            # if its ancestors' MTimes were already recorded during this walk.
+            self._state_mtimes.clear()
+            self._needs_prune = True
+            raise
+
+    def _refresh(self, roots: Iterable[str]) -> tuple[set[str], set[str]]:
         changed: set[str] = set()
-        removed_edges = False
+        removed_edges = self._needs_prune
+        # The first walk follows the publisher's eager full serialization.
+        refresh_entering = bool(self.objects)
         pending = [(str(root), True) for root in roots]
         seen: set[str] = set()
         while pending:
@@ -67,6 +82,19 @@ class DependencyGraph:
             obj = self.manager.GetObjectAtId(int(object_id))
             if obj is None:
                 continue
+            if refresh_entering and object_id not in self.objects:
+                # Objects outside this graph have no observers. Their recorded
+                # state can predate edits, even when their identity is retained.
+                if isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName():
+                    obj.Update()
+                    for port in range(obj.GetNumberOfInputPorts()):
+                        for index in range(obj.GetNumberOfInputConnections(port)):
+                            data = obj.GetInputDataObject(port, index)
+                            data_id = self.manager.GetId(data) if data else 0
+                            if data_id:
+                                self.manager.UpdateStateFromObject(data_id)
+                                self.cache.drop(str(data_id))
+                self.manager.UpdateStateFromObject(int(object_id))
             stamp = mtime(obj)
             if not force and self._state_mtimes.get(object_id) == stamp:
                 continue
@@ -89,6 +117,7 @@ class DependencyGraph:
             pending.extend((child, False) for child in children)
 
         removed = self._prune() if removed_edges else set()
+        self._needs_prune = False
         return changed - removed, removed
 
     def _prune(self) -> set[str]:
@@ -114,6 +143,7 @@ class DependencyGraph:
         return removed
 
     def clear(self) -> None:
+        self._needs_prune = False
         self.objects.clear()
         self.identifiers.clear()
         self.classes.clear()

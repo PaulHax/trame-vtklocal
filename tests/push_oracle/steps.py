@@ -69,6 +69,22 @@ def _quad_set_color(scene: OracleScene):
     scene.handles["actor"].GetProperty().SetColor(0.5, 0.25, 0.75)
 
 
+def _remove_actor(scene: OracleScene):
+    scene.handles["renderer"].RemoveActor(scene.handles["actor"])
+
+
+def _return_actor(scene: OracleScene):
+    scene.handles["renderer"].AddActor(scene.handles["actor"])
+
+
+def _quad_translate(scene: OracleScene):
+    points = scene.handles["points"]
+    for index in range(points.GetNumberOfPoints()):
+        x, y, z = points.GetPoint(index)
+        points.SetPoint(index, x + 2, y, z)
+    points.Modified()
+
+
 def _quad_change_tcoords(scene: OracleScene):
     set_float_array_values(
         scene.handles["tcoords"],
@@ -170,6 +186,9 @@ REGISTRY: dict[str, dict[str, E2EStep]] = {
         "move-points": E2EStep("move-points", _basic_move_points),
     },
     "quad": {
+        "remove-actor": E2EStep("remove-actor", _remove_actor),
+        "return-actor": E2EStep("return-actor", _return_actor),
+        "translate": E2EStep("translate", _quad_translate),
         "set-color": E2EStep("set-color", _quad_set_color),
         "change-tcoords": E2EStep("change-tcoords", _quad_change_tcoords),
         "change-homography": E2EStep("change-homography", _quad_change_homography),

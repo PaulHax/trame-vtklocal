@@ -110,3 +110,61 @@ def test_patch_array_matrix_local(oracle_local: JsOracle, scene, steps):
 @pytest.mark.parametrize("scene,steps", PATCH_ARRAY_FIXTURES)
 def test_patch_array_matrix_shared(oracle_shared: JsOracle, scene, steps):
     _walk(oracle_shared, scene, steps)
+
+
+def test_returning_actor_renders_geometry_edited_while_absent(oracle_local: JsOracle):
+    import io
+    import numpy as np
+    from PIL import Image
+
+    oracle = oracle_local
+    oracle.page.set_viewport_size({"width": 400, "height": 300})
+    oracle.reset("quad")
+    oracle.page.evaluate("""() => {
+        const ref = window.trame.refs.vtkView;
+        const view = ref.getRenderer ? ref : ref.$.exposed;
+        const container = document.querySelector('canvas').parentElement;
+        container.style.width = '400px';
+        container.style.height = '300px';
+        view.resize();
+        view.getRenderer().setBackground(0, 0, 0);
+        const camera = view.getRenderer().getActiveCamera();
+        camera.setParallelProjection(true);
+        camera.setPosition(1.5, 0.5, 5);
+        camera.setFocalPoint(1.5, 0.5, 0);
+        camera.setViewUp(0, 1, 0);
+        camera.setParallelScale(1);
+        view.getRenderer().resetCameraClippingRange();
+        view.render();
+    }""")
+
+    def bright_center():
+        # render() completes the current scene's draw before capturing pixels.
+        oracle.page.evaluate("""() => {
+            const ref = window.trame.refs.vtkView;
+            (ref.render ? ref : ref.$.exposed).render();
+        }""")
+        pixels = np.asarray(
+            Image.open(io.BytesIO(oracle.page.locator("canvas").screenshot())).convert(
+                "RGB"
+            )
+        )
+        y, x = np.nonzero(np.min(pixels, axis=2) > 200)
+        assert len(x) > 100, "the quad must be visible"
+        return float(x.mean()), pixels.shape[1]
+
+    before, width = bright_center()
+    oracle.run_step("remove-actor")
+    oracle.run_step("translate")
+    oracle.run_step("return-actor")
+    after, _ = bright_center()
+    assert after - before > width * 0.2
+    # Coordinates come from the browser's actual mapper input, independent
+    # of the server shadow that can agree with stale serialization.
+    points = oracle.page.evaluate("""() => {
+        const ref = window.trame.refs.vtkView;
+        const view = ref.getRenderer ? ref : ref.$.exposed;
+        return Array.from(view.getRenderer().getActors()[0]
+            .getMapper().getInputData().getPoints().getData());
+    }""")
+    assert points == [2, 0, 0, 3, 0, 0, 3, 1, 0, 2, 1, 0]

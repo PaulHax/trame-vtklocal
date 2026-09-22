@@ -84,7 +84,8 @@ class PushViewRegistry:
         Hashes still tracked by any push view or referenced by any live
         dependency of the shared object manager are kept — protection is
         computed here, not at queue time, so deferral can never retire a
-        blob that came back alive.
+        blob that came back alive. Dependency-protected hashes stay queued
+        and are checked again by the next flush.
         """
         if self._blob_gc_handle is not None:
             self._blob_gc_handle.cancel()
@@ -99,8 +100,14 @@ class PushViewRegistry:
             return 0
 
         # The object manager is shared with non-push subscriptions/widgets.
-        # Protect the globally live dependency set before unregistering.
-        stale -= self._active_object_blob_hashes()
+        # Protect the globally live dependency set before unregistering. A
+        # dependency's state can keep naming a blob after the ref behind it
+        # left (a hot-array patch leaves it until the next serialization), and
+        # nothing queues the hash again when that state moves on, so it stays
+        # queued for a later flush.
+        protected = stale & self._active_object_blob_hashes()
+        self._pending_stale_blob_hashes |= protected
+        stale -= protected
         if not stale:
             return 0
 

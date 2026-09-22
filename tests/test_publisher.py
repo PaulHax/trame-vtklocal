@@ -927,6 +927,37 @@ def test_deferred_blob_gc_keeps_hashes_that_return_alive():
         publisher.cleanup()
 
 
+def test_a_patched_away_blob_retires_once_serialization_stops_naming_it(
+    publisher_env,
+):
+    """A patch leaves the VTK state naming the content it replaced.
+
+    That state protects the replaced blob from the flush that follows the
+    patch, so the blob stays queued until a serialization moves the state on,
+    and retires then.
+    """
+    scene, publisher, server = publisher_env
+    object_manager = scene.api.vtk_object_manager
+    message = _start_retention(scene, publisher, server)
+    (hash_value,) = ref_manager_hashes(
+        [message["ops"][0]["node"]["arrays"]["points"]["ref"]]
+    )
+
+    _touch_point(scene, 42, (1.0, 2.0, 3.0))
+    publisher.sync()
+    ((_topic, patched),) = server.protocol.drain()
+    assert [op["op"] for op in patched["ops"]] == ["patchArray"]
+    scene.api.flush_stale_blobs()
+    assert blob_size(object_manager, hash_value)
+
+    points = scene.handles["points"]
+    points.InsertNextPoint(0.0, 0.0, 0.0)
+    points.Modified()
+    publisher.sync()
+    scene.api.flush_stale_blobs()
+    assert not blob_size(object_manager, hash_value)
+
+
 def test_ref_manager_hashes_strips_namespaces():
     assert ref_manager_hashes(["c:abc", "c2:conn:off", "v:5:points:3", "c:abc"]) == {
         "abc",

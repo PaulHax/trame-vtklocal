@@ -348,6 +348,41 @@ def test_oracle_small_array_rewrites():
             assert len(bytes(op["data"])) == 4 * 3 * 4
 
 
+def _remove_actor(scene):
+    scene.handles["renderer"].RemoveActor(scene.handles["actor"])
+
+
+def _add_actor(scene):
+    scene.handles["renderer"].AddActor(scene.handles["actor"])
+
+
+def _run_reentry_after(patch):
+    """Patch a retained array, then take its actor out and back in.
+
+    The patch reaches the client without re-serializing the dataset, and the
+    re-added dataset is translated afresh from its serialized state, a tick
+    after the one that removed it. Both paths must land the patched content,
+    not what the dataset held before the patch.
+    """
+    run_v2_oracle_both_paths(
+        make_quad_scene,
+        [
+            ("prime-retention", _move_point(0, (0.25, 0.25, 0.0))),
+            ("patch", patch),
+            ("remove-actor", _remove_actor),
+            ("readd-actor", _add_actor),
+        ],
+    )
+
+
+def test_oracle_sparse_patched_array_reenters_the_scene():
+    _run_reentry_after(_move_point(1, (1.5, 0.0, 0.0)))
+
+
+def test_oracle_rewritten_small_array_reenters_the_scene():
+    _run_reentry_after(_move_every_point(0.5))
+
+
 def _mutate_tcoords(scene):
     set_float_array_values(
         scene.handles["tcoords"],

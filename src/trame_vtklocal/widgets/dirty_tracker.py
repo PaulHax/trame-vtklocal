@@ -60,6 +60,13 @@ class DirtyTracker:
         self._pipeline_updates: dict[str, dict[int, vtkAlgorithm]] = {}
         self._pipeline_by_owner: dict[str, set[str]] = {}
         self._structural_ids: set[str] = set()
+        # Ids whose object-manager state a committed tick left describing
+        # content it has since published: the hot-array fast path patches
+        # without re-serializing. The manager serves an already-serialized
+        # dependency from its recorded state, so a node translated from one of
+        # these, such as one re-entering the scene, would cite the replaced
+        # blob until the state is refreshed.
+        self._deferred_refresh_ids: set[str] = set()
         self._suppressed = False
         self._disposed = False
 
@@ -269,6 +276,34 @@ class DirtyTracker:
             if observed is not None and object_id not in self._dirty_ids:
                 self._mtimes[object_id] = mtime(observed[0])
 
+    def defer_refresh(self, object_ids: Iterable[str]) -> None:
+        """Record ids whose state a committed tick did not refresh."""
+        self._deferred_refresh_ids.update(object_ids)
+
+    def refresh_deferred(
+        self, refreshed_ids: Iterable[str], refresh: Callable[[set[str]], None]
+    ) -> set[str]:
+        """Refresh deferred ids the reconciled scene holds; reconcile them.
+
+        ``refreshed_ids`` were refreshed this tick and stop being deferred.
+        An object out of the scene stays deferred until it re-enters:
+        refreshing it now would register a blob nothing retires if it never
+        returns. Manager ids are never reused, so a dead object's id is dropped.
+        """
+        deferred = self._deferred_refresh_ids
+        deferred.difference_update(refreshed_ids)
+        due = self._classes.keys() & deferred
+        deferred -= {
+            object_id
+            for object_id in deferred - due
+            if self._object_manager.GetObjectAtId(int(object_id)) is None
+        }
+        if not due:
+            return set()
+        refresh(due)
+        deferred -= due
+        return self.reconcile(due)
+
     def sweep(self) -> None:
         """Explicit recovery for changed objects whose event was missed."""
         for object_id, previous in self._mtimes.items():
@@ -290,4 +325,5 @@ class DirtyTracker:
         self._children_by_owner.clear()
         self._pipeline_updates.clear()
         self._pipeline_by_owner.clear()
+        self._deferred_refresh_ids.clear()
         self._graph.clear()

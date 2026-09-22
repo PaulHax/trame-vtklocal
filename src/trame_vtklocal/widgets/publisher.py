@@ -301,12 +301,16 @@ class ScenePublisher:
                 batch, self._object_manager, self._store, self._hot_arrays
             )
         if fast_result is not None:
+            self._tracker.defer_refresh(batch.refresh_ids)
             return fast_result
         # Every VTK touch below is serialization work.
         with self._tracker.suppress():
             batch.refresh_ids.update(self._update_pipeline_producers(batch.producers))
             self._refresh_object_states(batch.refresh_ids)
             changed = self._tracker.reconcile(batch.refresh_ids)
+            changed |= self._tracker.refresh_deferred(
+                batch.refresh_ids, self._refresh_object_states
+            )
             batch.refresh_ids.update(changed)
             batch.candidates.update(self._tracker.candidates_for(changed))
             nodes = self._translate_candidates(batch.candidates)

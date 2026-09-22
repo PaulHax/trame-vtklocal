@@ -57,8 +57,17 @@ def commit_hot_array_batch(
                 continue
             sources = live_dataset_array_sources(object_manager, node_id, key)
             array = sources[-1] if sources else None
+            serialized_ids = {
+                str(dependency)
+                for dependency in object_manager.GetAllDependencies(int(node_id))
+            }
             if (
                 not isinstance(array, vtkDataArray)
+                # A live source the node's last serialization did not record,
+                # such as an array ``vtkPoints.SetData`` swapped in, is not
+                # observed either: only serializing the node makes its later
+                # edits visible.
+                or not source_ids <= serialized_ids
                 or array.GetNumberOfComponents() != entry.get("numberOfComponents", 1)
                 or (array.GetName() or "") != (entry.get("name") or "")
             ):

@@ -273,6 +273,47 @@ def test_guard_rejects_a_structural_tick_end_to_end(retained_points):
     assert "patchArray" in kinds
 
 
+@pytest.mark.parametrize(
+    ("point_count", "moved"),
+    [(4, 4), (POINT_COUNT, 1)],
+    ids=["small-array-rewrite", "sparse-patch"],
+)
+def test_edits_to_a_swapped_in_points_array_reach_the_client(point_count, moved):
+    """``vtkPoints.SetData`` fires only the points, a patchable dirty source.
+
+    The array it swaps in is new to the node's state and to the tracker, so a
+    later edit made to that array alone must still reach a following client.
+    """
+    scene = make_points_cloud_scene(point_count=point_count)
+    publisher, server = _make_publisher(scene)
+    try:
+        _start_retention(scene, publisher, server)
+        client = MirrorClient()
+        client.resync(publisher)
+        object_manager = scene.api.vtk_object_manager
+        dataset_id = _dataset_id(scene)
+
+        values = live_dataset_array(object_manager, dataset_id, "points").copy()
+        values[: 3 * moved] += 1.0
+        replacement = numpy_to_vtk(values.reshape(-1, 3), deep=True)
+        scene.handles["points"].SetData(replacement)
+        publisher.sync()
+        replacement.SetTuple3(point_count - 1, 7.0, 7.0, 7.0)
+        replacement.Modified()
+        publisher.sync()
+        for _topic, message in server.protocol.drain():
+            assert client.apply(message) == "applied"
+
+        entry = client.nodes[dataset_id]["arrays"]["points"]
+        shown = np.frombuffer(client.blobs[entry["ref"]], dtype=np.float32)
+        assert shown[-3:].tolist() == [7.0, 7.0, 7.0]
+        assert np.array_equal(
+            shown, live_dataset_array(object_manager, dataset_id, "points")
+        )
+    finally:
+        publisher.cleanup()
+
+
 # ----------------------------------------------------------------------
 # Field-array hot keys reach the fast path (and still fall back correctly)
 # ----------------------------------------------------------------------

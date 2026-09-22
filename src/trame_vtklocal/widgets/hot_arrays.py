@@ -33,6 +33,12 @@ DEFAULT_HOT_ARRAY_KEYS = frozenset({HOT_ARRAY_KEY})
 RETENTION_CAP_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_SPANS = 8
 DEFAULT_GAP_ELEMENTS = 3
+# At or below this size a retained array that mostly changed is rewritten by
+# one whole-array patch. It carries the bytes a resend would, and on the fast
+# path it spares the node a re-serialization, which dominates a tick this
+# small. Past it the bytes dominate either way, and a resend keeps the array
+# content-addressed and its object-manager state current.
+SMALL_REWRITE_BYTES = 16 * 1024
 
 JS_ARRAY_DTYPE_MAP: dict[str, type[np.generic]] = {
     "Int8Array": np.int8,
@@ -132,12 +138,14 @@ class HotArrayDiffer:
         cap_bytes: int = RETENTION_CAP_BYTES,
         max_spans: int = DEFAULT_MAX_SPANS,
         gap_elements: int = DEFAULT_GAP_ELEMENTS,
+        small_rewrite_bytes: int = SMALL_REWRITE_BYTES,
     ) -> None:
         self._live_array = live_array_getter
         self._hot_keys = frozenset(str(key) for key in hot_keys)
         self._cap_bytes = cap_bytes
         self._max_spans = max_spans
         self._gap_elements = gap_elements
+        self._small_rewrite_bytes = small_rewrite_bytes
         # (node_id, key) -> last-sent flat numpy copy
         self._retained: dict[_CacheKey, NumericArray] = {}
         # (node_id, key) -> unused fresh content ref
@@ -250,15 +258,21 @@ class HotArrayDiffer:
         if changed.size == 0:
             return NO_OP
         # Spans only widen the patch beyond the changed elements, so half the
-        # array changed already decides full-resend without assembling spans.
+        # array changed already decides a rewrite without assembling spans.
         if changed.size * 2 >= current.size:
-            return RESET
+            return self._rewrite(current)
 
         spans = tuple(_changed_spans(changed, self._gap_elements))
         patched_size = sum(length for _offset, length in spans)
         if len(spans) > self._max_spans or patched_size * 2 >= current.size:
-            return RESET
+            return self._rewrite(current)
         return Patch(spans)
+
+    def _rewrite(self, current: NumericArray) -> Verdict | Patch:
+        """A comparable array too changed for sparse spans."""
+        if current.nbytes <= self._small_rewrite_bytes:
+            return Patch(((0, int(current.size)),))
+        return RESET
 
     def plan_retained_patch(
         self, node_id: str | int, key: str, stored_entry: ArrayEntry | None

@@ -18,6 +18,7 @@ from push_oracle.scenes import (
     make_line_polydata,
 )
 from trame_vtklocal.store import ref_manager_hashes
+from trame_vtklocal.widgets.hot_arrays import SMALL_REWRITE_BYTES, live_dataset_array
 from trame_vtklocal.widgets.publisher import (
     OPS_TOPIC,
     ScenePublisher,
@@ -262,6 +263,106 @@ def test_registered_named_point_data_array_uses_region_patches():
         patches = [op for op in message["ops"] if op["op"] == "patchArray"]
         assert [op["key"] for op in patches] == [key, key]
         assert [op["offset"] for op in patches] == [10, 900]
+    finally:
+        publisher.cleanup()
+
+
+def test_moving_a_single_point_patches_it_without_reserializing():
+    """A one-point dataset always rewrites most of its array when it moves.
+
+    Every move of the sole point changes most of its three components, which
+    for a large array would mean a full resend. A small array is rewritten in
+    place by one whole-array patch instead, so its node is not re-serialized.
+    """
+    scene = make_points_cloud_scene(point_count=1)
+    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    scene.api.vtk_object_manager = counting
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        _start_retention(scene, publisher, server)
+        counting.update_state_calls.clear()
+
+        for step in range(1, 4):
+            _touch_point(scene, 0, (float(step), 2.0 * step, -1.0 * step))
+            publisher.sync()
+
+            ((_topic, message),) = server.protocol.drain()
+            (op,) = message["ops"]
+            assert op["op"] == "patchArray"
+            assert op["offset"] == 0
+            assert np.frombuffer(bytes(op["data"]), dtype=np.float32).tolist() == [
+                float(step),
+                2.0 * step,
+                -1.0 * step,
+            ]
+            assert message["blobs"] == {}
+        assert counting.update_state_calls == []
+    finally:
+        publisher.cleanup()
+
+
+def test_scattered_edits_to_a_small_array_patch_it_whole():
+    """Too many spans to patch sparsely, on an array small enough to rewrite.
+
+    Nine separated points is past the span cap while most of the array is
+    unchanged, and the one whole-array patch carries the live content.
+    """
+    scene = make_points_cloud_scene(point_count=100)
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        _start_retention(scene, publisher, server)
+
+        for index in range(9):
+            scene.handles["points"].SetPoint(index * 10, float(index), 1.0, 2.0)
+        scene.handles["points"].Modified()
+        publisher.sync()
+
+        ((_topic, message),) = server.protocol.drain()
+        (op,) = message["ops"]
+        assert (op["op"], op["offset"]) == ("patchArray", 0)
+        live = live_dataset_array(
+            scene.api.vtk_object_manager, _dataset_id(scene), "points"
+        )
+        assert np.array_equal(np.frombuffer(bytes(op["data"]), dtype=np.float32), live)
+        assert message["blobs"] == {}
+    finally:
+        publisher.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("point_count", "expected_op"),
+    [
+        (SMALL_REWRITE_BYTES // 12, "patchArray"),
+        (SMALL_REWRITE_BYTES // 12 + 1, "upsert"),
+    ],
+    ids=["within-the-small-array-limit", "past-the-small-array-limit"],
+)
+def test_a_rewrite_patches_in_place_only_up_to_the_small_array_limit(
+    point_count, expected_op
+):
+    """The most float32 points that fit the limit patch; one more resends."""
+    scene = make_points_cloud_scene(point_count=point_count)
+    server = _FakeServer()
+    publisher = ScenePublisher(
+        server, scene.api, scene.render_window, scene.render_window_id
+    )
+    try:
+        _start_retention(scene, publisher, server)
+
+        points = scene.handles["points"]
+        for index in range(point_count):
+            points.SetPoint(index, float(index), 0.5, -0.5)
+        points.Modified()
+        publisher.sync()
+
+        ((_topic, message),) = server.protocol.drain()
+        assert [op["op"] for op in message["ops"]] == [expected_op]
     finally:
         publisher.cleanup()
 

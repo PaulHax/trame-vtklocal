@@ -182,7 +182,7 @@ def test_guard_rejects_more_spans_than_the_cap(retained_points):
 
 
 def test_guard_rejects_a_majority_rewrite(retained_points):
-    """Past half the array, patching costs more than resending it.
+    """Past half of an array above the small-array limit, the tick resends it.
 
     Two conditions enforce this (a changed-element short circuit before spans
     are assembled, and a patched-size check after); the test pins the outcome,

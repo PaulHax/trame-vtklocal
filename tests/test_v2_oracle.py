@@ -170,14 +170,17 @@ def run_v2_oracle(scene_factory, mutators, fast_path=True):
             client.resync(publisher)
             assert_client_matches_server(client, publisher)
 
+            ops_by_step = {}
             for name, mutate in mutators:
                 mutate(scene)
                 publisher.sync()
+                ops_by_step[name] = []
                 for topic, message in server.protocol.drain():
                     assert topic == OPS_TOPIC
                     assert client.apply(message) == "applied", (name, message["seq"])
+                    ops_by_step[name].extend(message["ops"])
                 assert_client_matches_server(client, publisher)
-            return scene, publisher, server, client
+            return scene, publisher, server, client, ops_by_step
         finally:
             publisher.cleanup()
 
@@ -190,16 +193,20 @@ def run_v2_oracle_both_paths(scene_factory, mutators):
     nodes, the same seq, and byte-identical blob content -- the fast path
     skips serialization, so anything it fails to notice shows up here as a
     divergence from the run that serialized everything.
+
+    Returns each run's ops by step name, the fast-path run first.
     """
     runs = []
+    ops = []
     for fast_path in (True, False):
-        _scene, _publisher, _server, client = run_v2_oracle(
+        _scene, _publisher, _server, client, ops_by_step = run_v2_oracle(
             scene_factory, mutators, fast_path=fast_path
         )
         runs.append((client.seq, client.nodes, client.blobs))
+        ops.append(ops_by_step)
     fast, full = runs
     assert fast == full
-    return fast
+    return ops
 
 
 # ----------------------------------------------------------------------
@@ -302,6 +309,43 @@ def test_oracle_repeated_point_moves():
             ("move-0-again", _move_point(0, (5.5, 1.25, 0.0))),
         ],
     )
+
+
+def _move_every_point(offset):
+    def mutate(scene):
+        points = scene.handles["points"]
+        for index in range(points.GetNumberOfPoints()):
+            x, y, z = points.GetPoint(index)
+            points.SetPoint(index, x + offset, y - offset, z + offset)
+        points.Modified()
+
+    return mutate
+
+
+def test_oracle_small_array_rewrites():
+    """Whole-array rewrites of a small retained array, run both ways.
+
+    Each move changes every component, which is the rewrite a small array
+    patches in place. Both paths must send it as one patch over the whole
+    array and land the same patched content under the same refs.
+    """
+    both_runs = run_v2_oracle_both_paths(
+        make_quad_scene,
+        [
+            ("prime-retention", _move_point(0, (0.25, 0.25, 0.0))),
+            ("rewrite-1", _move_every_point(0.5)),
+            ("rewrite-2", _move_every_point(-1.25)),
+            ("set-opacity", _set_opacity),
+            ("rewrite-after-a-node-change", _move_every_point(2.0)),
+        ],
+    )
+    for ops_by_step in both_runs:
+        for step in ("rewrite-1", "rewrite-2", "rewrite-after-a-node-change"):
+            (op,) = ops_by_step[step]
+            assert op["op"] == "patchArray", step
+            assert (op["key"], op["offset"]) == ("points", 0)
+            # All four quad points, three float32 components each.
+            assert len(bytes(op["data"])) == 4 * 3 * 4
 
 
 def _mutate_tcoords(scene):

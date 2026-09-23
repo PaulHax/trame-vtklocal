@@ -222,6 +222,7 @@ class Tiles3DSource:
     geometric_error_scale: GeometricErrorScale = "maximum"
     opacity: float = 1.0
     texture_blend: float = 1.0
+    overlay_order: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -262,6 +263,8 @@ class Tiles3DSource:
             )
         object.__setattr__(self, "tileset_to_scene", matrix)
 
+        if type(self.overlay_order) is not int or not 0 <= self.overlay_order <= 10000:
+            raise ValueError("overlay_order must be an integer within 0..10000")
         for name in ("opacity", "texture_blend"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or not 0 <= value <= 1:
@@ -372,6 +375,8 @@ def source_block(source: StreamedSource) -> StreamedSceneBlock:
         "verticalPivotZ": source.vertical_pivot_z,
         "geometricErrorScale": source.geometric_error_scale,
     }
+    if source.overlay_order:
+        tiles3d_config["overlayOrder"] = source.overlay_order
     if source.opacity != 1.0:
         tiles3d_config["opacity"] = source.opacity
     if source.texture_blend != 1.0:

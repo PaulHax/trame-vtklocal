@@ -291,6 +291,11 @@ function normalizeTiles3d(value) {
     );
   }
   const appearance = {};
+  if (value.overlayOrder !== undefined) {
+    if (!Number.isInteger(value.overlayOrder) || value.overlayOrder < 0 || value.overlayOrder > 10000)
+      throw new RangeError("overlayOrder must be an integer within 0..10000");
+    appearance.overlayOrder = value.overlayOrder;
+  }
   for (const key of ["opacity", "textureBlend"]) {
     if (value[key] === undefined) continue;
     if (!Number.isFinite(value[key]) || value[key] < 0 || value[key] > 1)

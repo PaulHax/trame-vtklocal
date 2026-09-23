@@ -15,8 +15,8 @@ export function createMeshAppearanceRenderer(renderer, readAppearance) {
       };
       originals.set(actor, original);
     }
-    const { opacity = 1, textureBlend = 1 } = readAppearance();
-    const key = `${opacity}:${textureBlend}`;
+    const { opacity = 1, textureBlend = 1, overlayOrder = 0 } = readAppearance();
+    const key = `${opacity}:${textureBlend}:${overlayOrder}`;
     if (original.key === key) return;
     original.key = key;
     const extra = [];
@@ -24,6 +24,11 @@ export function createMeshAppearanceRenderer(renderer, readAppearance) {
       shaderType, originalValue: marker,
       replacementValue: `${marker}\n${code}`, replaceFirst, replaceAll: false,
     });
+    if (overlayOrder > 0) {
+      // Break depth ties between flat rasters without changing their elevations.
+      extra.push(replacement("Vertex", "//VTK::PositionVC::Impl",
+        `gl_Position.z -= ${(overlayOrder * 0.000001).toFixed(6)} * gl_Position.w;`));
+    }
     if (textureBlend < 1) {
       extra.push(
         { shaderType: "Vertex", originalValue: "uniform mat4 MCVCMatrix;",

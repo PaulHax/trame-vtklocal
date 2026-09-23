@@ -77,6 +77,7 @@ class Tiles3DBlock(_Tiles3DBlockRequired, total=False):
     maximumScreenSpaceErrorPx: float
     opacity: float
     textureBlend: float
+    overlayOrder: int
 
 
 class Tiles3DSourceBlock(SourceBlockCommon):

@@ -75,6 +75,8 @@ class _Tiles3DBlockRequired(TypedDict):
 
 class Tiles3DBlock(_Tiles3DBlockRequired, total=False):
     maximumScreenSpaceErrorPx: float
+    opacity: float
+    textureBlend: float
 
 
 class Tiles3DSourceBlock(SourceBlockCommon):

@@ -1146,7 +1146,10 @@ test("tiles members receive live capabilities, offline assets, and rebuild after
   };
   host.beforeRender(context);
   assert.equal(firstMember.calls.at(-1)[0], "dispose");
-  assert.equal(fallbackMember.factoryContext.renderer, hostRenderer);
+  assert.equal(
+    fallbackMember.factoryContext.renderer.getActiveCamera,
+    hostRenderer.getActiveCamera,
+  );
   assert.equal(
     host.describe().textureCapabilities.capabilityKey,
     "compressed-texture-v1:rgba",

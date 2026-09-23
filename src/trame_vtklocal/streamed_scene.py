@@ -220,6 +220,8 @@ class Tiles3DSource:
     vertical_exaggeration: float = 1.0
     vertical_pivot_z: float = 0.0
     geometric_error_scale: GeometricErrorScale = "maximum"
+    opacity: float = 1.0
+    texture_blend: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -259,6 +261,11 @@ class Tiles3DSource:
                 "tileset_to_scene must have an invertible linear transform"
             )
         object.__setattr__(self, "tileset_to_scene", matrix)
+
+        for name in ("opacity", "texture_blend"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"{name} must be finite and within 0..1")
 
         if self.maximum_screen_space_error_px is not None:
             if isinstance(self.maximum_screen_space_error_px, bool) or not isinstance(
@@ -365,6 +372,10 @@ def source_block(source: StreamedSource) -> StreamedSceneBlock:
         "verticalPivotZ": source.vertical_pivot_z,
         "geometricErrorScale": source.geometric_error_scale,
     }
+    if source.opacity != 1.0:
+        tiles3d_config["opacity"] = source.opacity
+    if source.texture_blend != 1.0:
+        tiles3d_config["textureBlend"] = source.texture_blend
     if source.maximum_screen_space_error_px is not None:
         tiles3d_config["maximumScreenSpaceErrorPx"] = (
             source.maximum_screen_space_error_px

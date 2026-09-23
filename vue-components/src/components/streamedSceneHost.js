@@ -16,6 +16,8 @@ import {
 } from "pointcloud-lod/vtk";
 import { getCompressedTextureCapabilities } from "@kitware/vtk.js/Rendering/OpenGL/Texture/compressedFormats";
 
+import { createMeshAppearanceRenderer } from "./meshAppearance";
+
 import { getWorldToClipMatrix } from "./cameraMatrix";
 import { isLiveInstance, isPositiveFinite } from "./predicates";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
@@ -288,7 +290,15 @@ function normalizeTiles3d(value) {
       "geometricErrorScale must be 'maximum' or 'horizontal'",
     );
   }
+  const appearance = {};
+  for (const key of ["opacity", "textureBlend"]) {
+    if (value[key] === undefined) continue;
+    if (!Number.isFinite(value[key]) || value[key] < 0 || value[key] > 1)
+      throw new RangeError(`${key} must be finite and within 0..1`);
+    appearance[key] = value[key];
+  }
   return {
+    ...appearance,
     tilesetToScene: value.tilesetToScene.map(Number),
     verticalExaggeration,
     verticalPivotZ,
@@ -581,6 +591,7 @@ function releaseEntry(entry) {
   entry.registration?.release();
   entry.registration = null;
   entry.member = null;
+  entry.appearance = null;
   entry.hostRenderer = null;
   entry.anchorVersion = null;
   entry.active = false;
@@ -849,10 +860,13 @@ export function createStreamedSceneHost(options = {}) {
         renderer,
         getDevicePixelRatio(),
       );
+      if (entry.config.kind === "tiles3d") {
+        entry.appearance = createMeshAppearanceRenderer(renderer, () => entry.config.kindConfig);
+      }
       try {
         entry.member = factories.create(
           entry.config.kind,
-          contextForMember,
+          entry.appearance ? { ...contextForMember, renderer: entry.appearance.renderer } : contextForMember,
           memberConfig(entry),
         );
       } catch (error) {
@@ -877,6 +891,7 @@ export function createStreamedSceneHost(options = {}) {
       });
       entry.configDirty = false;
     }
+    entry.appearance?.update();
     entry.active = active;
     entry.registration.setActive(active);
     if (entry.configDirty) {

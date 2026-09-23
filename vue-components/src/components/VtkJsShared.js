@@ -46,6 +46,7 @@ export default {
       getOpenGLRenderWindow: () => externalRenderWindow,
       tiles3dTexturePolicy: props.tiles3dTexturePolicy,
       tiles3dQualityPolicy: props.tiles3dQualityPolicy,
+      streamedMemoryBudgetBytes: props.streamedMemoryBudgetBytes,
     });
 
     const scheduleRender = createRafScheduler(() => {

@@ -49,6 +49,7 @@ export default {
       getOpenGLRenderWindow: () => openGLRenderWindow,
       tiles3dTexturePolicy: props.tiles3dTexturePolicy,
       tiles3dQualityPolicy: props.tiles3dQualityPolicy,
+      streamedMemoryBudgetBytes: props.streamedMemoryBudgetBytes,
     });
 
     // State applies in the websocket handler; only rendering rides rAF (a

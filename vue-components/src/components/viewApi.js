@@ -24,6 +24,12 @@ export const VIEW_PROPS = Object.freeze({
     default: "auto",
     validator: (value) => ["auto", "native", "rgba"].includes(value),
   },
+  streamedMemoryBudgetBytes: {
+    type: Number,
+    default: null,
+    validator: (value) =>
+      value == null || (Number.isSafeInteger(value) && value > 0),
+  },
   tiles3dQualityPolicy: {
     type: String,
     default: "adaptive",

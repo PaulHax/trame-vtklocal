@@ -44,6 +44,7 @@ export function useSceneSync(
     getOpenGLRenderWindow,
     tiles3dTexturePolicy = "auto",
     tiles3dQualityPolicy = "adaptive",
+    streamedMemoryBudgetBytes = null,
   },
   dependencies = {},
 ) {
@@ -113,6 +114,7 @@ export function useSceneSync(
         scheduleRender: () => renderRequestCallback?.(),
         tiles3dTexturePolicy,
         tiles3dQualityPolicy,
+        streamedMemoryBudgetBytes,
       });
       if (cameraReports.isInteracting()) {
         streamedSceneHost.beginInteraction();

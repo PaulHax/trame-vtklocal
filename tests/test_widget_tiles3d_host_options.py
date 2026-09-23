@@ -38,6 +38,7 @@ def test_vtkjs_views_forward_explicit_tiles3d_host_policies(view_type):
         _render_window(),
         tiles3d_texture_policy="rgba",
         tiles3d_quality_policy="fixed",
+        streamed_memory_budget_bytes=4 * 1024**3,
         trame_server=server,
     )
     try:
@@ -46,6 +47,9 @@ def test_vtkjs_views_forward_explicit_tiles3d_host_policies(view_type):
         )
         assert view._attributes["tiles3d_quality_policy"] == (
             'tiles3d-quality-policy="fixed"'
+        )
+        assert view._attributes["streamed_memory_budget_bytes"] == (
+            ':streamed-memory-budget-bytes="4294967296"'
         )
     finally:
         view.cleanup()
@@ -56,6 +60,9 @@ def test_vtkjs_views_forward_explicit_tiles3d_host_policies(view_type):
     [
         ("tiles3d_texture_policy", "compressed"),
         ("tiles3d_quality_policy", "manual"),
+        ("streamed_memory_budget_bytes", -1),
+        ("streamed_memory_budget_bytes", 0),
+        ("streamed_memory_budget_bytes", 0.5),
     ],
 )
 def test_vtkjs_views_reject_unknown_tiles3d_host_policies(keyword, value):

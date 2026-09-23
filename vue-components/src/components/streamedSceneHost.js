@@ -25,8 +25,22 @@ export const STREAMED_SCENE_BLOCK_KEY = "streamedScene";
 // All views draw through the same page/GPU, so they must divide one residency
 // budget rather than each claiming a full-sized pool.
 let pageMemoryPool = null;
-function getPageMemoryPool() {
-  if (!pageMemoryPool) pageMemoryPool = createMemoryPool();
+function getPageMemoryPool(totalBytes) {
+  if (
+    totalBytes != null &&
+    (!Number.isSafeInteger(totalBytes) || totalBytes <= 0)
+  ) {
+    throw new Error(
+      "streamedMemoryBudgetBytes must be a positive safe integer",
+    );
+  }
+  if (!pageMemoryPool)
+    pageMemoryPool = createMemoryPool({ totalBytes: totalBytes ?? undefined });
+  if (totalBytes != null && pageMemoryPool.stats().totalBytes !== totalBytes) {
+    throw new Error(
+      "All views on a page must use the same streamedMemoryBudgetBytes",
+    );
+  }
   return pageMemoryPool;
 }
 
@@ -650,6 +664,8 @@ export function createStreamedSceneHost(options = {}) {
     : "auto";
   const tiles3dQualityPolicy =
     options.tiles3dQualityPolicy === "fixed" ? "fixed" : "adaptive";
+  const memory =
+    options.memory ?? getPageMemoryPool(options.streamedMemoryBudgetBytes);
   const workerLease = options.workers ? null : acquirePageWorkers();
   const workers = options.workers ?? workerLease.workers;
   const textureCapabilities = {
@@ -659,7 +675,6 @@ export function createStreamedSceneHost(options = {}) {
   let webglRenderer = { vendor: null, renderer: null, version: null };
   let rgbaReason = null;
   let probedGl = null;
-  const memory = options.memory ?? getPageMemoryPool();
   const coordinator = (
     options.createCoordinator ?? createStreamedSceneCoordinator
   )({

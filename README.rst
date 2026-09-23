@@ -334,3 +334,13 @@ and reproducible headless checks.
 
 Gesture ``pointer_event`` camera matrices use column-major layout for both
 local and shared views, matching ``setRenderedCamera``.
+
+Streamed memory allowance
+-------------------------
+
+``VtkJsLocalView`` and ``VtkJsSharedView`` accept
+``streamed_memory_budget_bytes`` at construction. All views on a page share
+one allowance; pass the same value to each view. Omit it to use the
+browser-derived default. This controls resident streamed geometry and textures,
+not total browser memory, and does not detect or reserve GPU memory. Changing
+the allowance requires a page reload.

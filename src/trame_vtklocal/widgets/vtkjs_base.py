@@ -70,6 +70,7 @@ class VtkJsBaseView(HtmlElement):
         render_window: vtkRenderWindow,
         tiles3d_texture_policy: Tiles3DTexturePolicy = "auto",
         tiles3d_quality_policy: Tiles3DQualityPolicy = "adaptive",
+        streamed_memory_budget_bytes: int | None = None,
         **kwargs: object,
     ) -> None:
         self._tiles3d_texture_policy = _validate_policy(
@@ -82,7 +83,17 @@ class VtkJsBaseView(HtmlElement):
             tiles3d_quality_policy,
             TILES3D_QUALITY_POLICIES,
         )
+        if streamed_memory_budget_bytes is not None and (
+            isinstance(streamed_memory_budget_bytes, bool)
+            or not isinstance(streamed_memory_budget_bytes, int)
+            or not 0 < streamed_memory_budget_bytes <= 2**53 - 1
+        ):
+            raise ValueError("streamed_memory_budget_bytes must be a positive safe integer")
         super().__init__(_elem_name, **kwargs)
+        if streamed_memory_budget_bytes is not None:
+            self._attributes["streamed_memory_budget_bytes"] = (
+                f':streamed-memory-budget-bytes="{streamed_memory_budget_bytes}"'
+            )
 
         self._attributes["tiles3d_texture_policy"] = (
             f'tiles3d-texture-policy="{self._tiles3d_texture_policy}"'

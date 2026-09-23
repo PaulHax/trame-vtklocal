@@ -26,8 +26,11 @@ export function createMeshAppearanceRenderer(renderer, readAppearance) {
     });
     if (textureBlend < 1) {
       extra.push(
+        { shaderType: "Vertex", originalValue: "uniform mat4 MCVCMatrix;",
+          replacementValue: "", replaceFirst: false, replaceAll: true },
+        replacement("Vertex", "uniform mat4 MCPCMatrix;", "uniform mat4 MCVCMatrix;", false),
         replacement("Vertex", "//VTK::PositionVC::Dec", "varying vec3 terrainPosition;"),
-        replacement("Vertex", "//VTK::PositionVC::Impl", "terrainPosition = vertexMC.xyz;"),
+        replacement("Vertex", "//VTK::PositionVC::Impl", "terrainPosition = (MCVCMatrix * vertexMC).xyz;"),
         replacement("Fragment", "//VTK::PositionVC::Dec", "varying vec3 terrainPosition;"),
         replacement("Fragment", "//VTK::UniformFlow::Impl",
           "vec3 terrainNormal = normalize(cross(dFdx(terrainPosition), dFdy(terrainPosition)));"),
@@ -53,10 +56,10 @@ export function createMeshAppearanceRenderer(renderer, readAppearance) {
     actor.setForceTranslucent(opacity < 1 ? true : original.translucent);
   }
   return {
-    renderer: Object.assign(Object.create(renderer), {
+    renderer: { ...renderer,
       addActor(actor) { actors.add(actor); apply(actor); renderer.addActor(actor); },
       removeActor(actor) { actors.delete(actor); renderer.removeActor(actor); },
-    }),
+    },
     update() { for (const actor of actors) apply(actor); },
   };
 }

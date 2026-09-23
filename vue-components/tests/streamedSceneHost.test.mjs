@@ -1050,7 +1050,7 @@ test("tiles members receive live capabilities, offline assets, and rebuild after
   );
   const log = coordinatorLog();
   const anchor = actor();
-  const hostRenderer = renderer();
+  const hostRenderer = Object.freeze(renderer());
   const context = sceneContext(
     new Map([["mesh", { actor: anchor, renderer: hostRenderer }]]),
   );

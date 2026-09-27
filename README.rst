@@ -21,7 +21,7 @@ Installation
 
     # to install VTK yourself
     pip install trame-vtklocal
-    pip install "vtk>=9.4,<9.5"
+    pip install "vtk>=9.6,<9.7"
 
 
 Development

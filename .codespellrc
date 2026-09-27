@@ -1,4 +1,4 @@
 [codespell]
-skip = **/package-lock.json,CHANGELOG.md
+skip = **/package-lock.json
 # LOD is level-of-detail throughout the point-cloud client, not a misspelling.
 ignore-words-list = lod

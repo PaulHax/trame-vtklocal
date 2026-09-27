@@ -408,10 +408,6 @@ export function useSceneSync(
         beforeSnapshot() {
           appliedCommands.clear();
           dragPreview.end();
-          if (!disposed) emit?.("beforeSceneLoaded");
-        },
-        afterSnapshot() {
-          if (!disposed) emit?.("afterSceneLoaded");
         },
         onSnapshotApplied(snapshot) {
           if (disposed) return;

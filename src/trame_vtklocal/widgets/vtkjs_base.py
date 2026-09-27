@@ -58,8 +58,6 @@ class VtkJsBaseView(HtmlElement):
         "updated",
         "camera",
         ("on_ready", "onReady"),
-        ("before_scene_loaded", "beforeSceneLoaded"),
-        ("after_scene_loaded", "afterSceneLoaded"),
         ("pointer_event", "pointerEvent"),
     ]
 

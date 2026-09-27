@@ -82,21 +82,21 @@ export function applyPickableBlock(registry, nodeId, block, instance) {
     return registry;
   }
 
-  const live = isLiveInstance(instance) ? instance : null;
+  // The reconciler hands a block over only with the node's live mapper, and
+  // hands it again whenever it replaces that mapper.
   const signature = configSignature(config);
   const previous = registry.get(id);
   if (previous && previous.signature === signature) {
-    // Config unchanged; just refresh (re)resolution of the mapper instance.
-    if (previous.mapper !== live) previous.projectionCache = null;
-    previous.mapper = live;
-    previous.pending = !live;
+    if (previous.mapper !== instance) {
+      previous.mapper = instance;
+      previous.projectionCache = null;
+    }
     return registry;
   }
 
   registry.set(id, {
     id,
-    mapper: live,
-    pending: !live,
+    mapper: instance,
     projectionCache: null,
     signature,
     ...config,
@@ -130,17 +130,8 @@ function projectWorldToCss(out, worldToClip, x, y, z, width, height) {
   return Number.isFinite(out[0]) && Number.isFinite(out[1]);
 }
 
-export function resolvePickableMapper(entry, instances) {
-  if (isLiveInstance(entry.mapper)) {
-    return entry.mapper;
-  }
-  const resolved = instances?.getInstance?.(entry.id);
-  if (isLiveInstance(resolved)) {
-    entry.mapper = resolved;
-    entry.pending = false;
-    return resolved;
-  }
-  return null;
+export function resolvePickableMapper(entry) {
+  return isLiveInstance(entry.mapper) ? entry.mapper : null;
 }
 
 // Nearest live glyph point of one pickable within its grab radius, or null.
@@ -265,7 +256,7 @@ export function pickAt(
     const declarationOrder = order;
     order += 1;
 
-    const mapper = resolvePickableMapper(entry, instances);
+    const mapper = resolvePickableMapper(entry);
     if (!mapper) {
       // Instance was deleted (or never resolvable); drop it. A live view
       // re-registers it on the next full/patch sync.
@@ -348,7 +339,6 @@ export function describePickableRegistry(registry) {
   for (const [id, entry] of registry) {
     entries.push({
       id,
-      pending: !!entry.pending,
       grabPx: entry.grabPx,
       priority: entry.priority,
       preview: entry.preview,

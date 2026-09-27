@@ -34,11 +34,11 @@ class OracleScene:
 
 
 class _ObjectManagerApiNoAttachments:
-    """Minimal API stand-in that skips attachment serialization.
+    """Minimal API stand-in whose attachments are plain bytes.
 
-    Exposes no ``addAttachment`` so publishers keep raw bytes in payloads —
-    tests inspect blob content directly. Blob GC delegates to the real
-    ``ObjectManagerAPI`` so targeted ``UnRegisterBlob`` behavior is exercised.
+    Its ``addAttachment`` returns bytes, so tests inspect blob content
+    directly. Blob GC delegates to the real ``ObjectManagerAPI`` so targeted
+    ``UnRegisterBlob`` behavior is exercised.
     """
 
     def __init__(self):
@@ -57,6 +57,9 @@ class _ObjectManagerApiNoAttachments:
 
     def flush_stale_blobs(self):
         return self._api.flush_stale_blobs()
+
+    def addAttachment(self, payload):
+        return bytes(payload)
 
 
 def set_float_array_values(vtk_array, values):

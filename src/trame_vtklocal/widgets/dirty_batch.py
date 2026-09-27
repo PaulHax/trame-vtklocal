@@ -22,12 +22,13 @@ class DirtyBatch:
 
     candidates: set[str] = field(default_factory=set)
     refresh_ids: set[str] = field(default_factory=set)
-    producers: dict[int, vtkAlgorithm] = field(default_factory=dict)
+    # Mappers whose pipelines must execute before their inputs serialize.
+    mappers: dict[int, vtkAlgorithm] = field(default_factory=dict)
     structural: bool = False
     dirty_ids: set[str] = field(default_factory=set)
     swept_ids: set[str] = field(default_factory=set)
 
     def __bool__(self) -> bool:
         return bool(
-            self.candidates or self.refresh_ids or self.producers or self.structural
+            self.candidates or self.refresh_ids or self.mappers or self.structural
         )

@@ -98,12 +98,12 @@ def test_guard_rejects_a_structural_tick(retained_points):
     assert _try_fast_path(publisher, batch) is None
 
 
-def test_guard_rejects_a_producer_tick(retained_points):
+def test_guard_rejects_a_mapper_tick(retained_points):
     scene, publisher, _server = retained_points
 
     _touch_point(scene, 1234, (5.0, 6.0, 7.0))
     batch = _pending_batch(publisher)
-    batch.producers = {id(scene.handles["mapper"]): scene.handles["mapper"]}
+    batch.mappers = {id(scene.handles["mapper"]): scene.handles["mapper"]}
 
     assert _try_fast_path(publisher, batch) is None
 

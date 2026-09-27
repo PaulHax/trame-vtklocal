@@ -36,7 +36,7 @@ def commit_hot_array_batch(
     ``suppress()`` around the call so that stays a contract rather than an
     assumption.
     """
-    if batch.structural or batch.producers or batch.swept_ids or not batch.candidates:
+    if batch.structural or batch.mappers or batch.swept_ids or not batch.candidates:
         return None
 
     dirty_ids = {str(object_id) for object_id in batch.dirty_ids}

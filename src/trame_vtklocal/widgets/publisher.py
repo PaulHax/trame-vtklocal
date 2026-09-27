@@ -42,6 +42,7 @@ from trame_vtklocal.widgets.blob_payloads import (
 from trame_vtklocal.widgets.dirty_tracker import DirtyTracker
 from trame_vtklocal.widgets.scene_events import event_is_current
 from trame_vtklocal.widgets.hot_array_batch import commit_hot_array_batch
+from trame_vtklocal.widgets.vtk_dependencies import updated_mapper_inputs
 from trame_vtklocal.widgets.hot_arrays import (
     HOT_ARRAY_KEY,
     HotArrayDiffer,
@@ -279,7 +280,7 @@ class ScenePublisher:
             return fast_result
         # Every VTK touch below is serialization work.
         with self._tracker.suppress():
-            batch.refresh_ids.update(self._update_pipeline_producers(batch.producers))
+            batch.refresh_ids.update(self._update_mappers(batch.mappers))
             self._refresh_object_states(batch.refresh_ids)
             changed = self._tracker.reconcile(batch.refresh_ids)
             changed |= self._tracker.refresh_deferred(
@@ -396,21 +397,15 @@ class ScenePublisher:
             object_manager.UpdateStateFromObject(object_id)
             self._state_cache.drop(object_id)
 
-    def _update_pipeline_producers(
-        self, producers: Mapping[int, vtkAlgorithm]
-    ) -> set[str]:
+    def _update_mappers(self, mappers: Mapping[int, vtkAlgorithm]) -> set[str]:
+        # A mapper's own MTime need not move when its pipeline executes, so
+        # its input datasets are serialized as well.
         refreshed: set[str] = set()
-        for producer in producers.values():
-            producer.Update()
-            # The mapper's own MTime need not move when its producer executes.
-            # Explicitly serialize its output datasets as well.
-            for port in range(producer.GetNumberOfInputPorts()):
-                for index in range(producer.GetNumberOfInputConnections(port)):
-                    dataset = producer.GetInputDataObject(port, index)
-                    if dataset is not None:
-                        object_id = self._object_manager.GetId(dataset)
-                        if object_id:
-                            refreshed.add(str(object_id))
+        for mapper in mappers.values():
+            for dataset in updated_mapper_inputs(mapper):
+                object_id = self._object_manager.GetId(dataset)
+                if object_id:
+                    refreshed.add(str(object_id))
         return refreshed
 
     # ------------------------------------------------------------------

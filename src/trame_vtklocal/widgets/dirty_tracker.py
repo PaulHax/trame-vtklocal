@@ -21,6 +21,7 @@ from trame_vtklocal.widgets.dirty_batch import DirtyBatch
 from trame_vtklocal.widgets.vtk_dependencies import (
     dataset_children,
     owned_collections,
+    is_mapper,
     pipeline_producers,
     transform_children,
 )
@@ -138,7 +139,7 @@ class DirtyTracker:
                 child_id = self._key(child)
                 children[child_id] = child
                 self._structural_ids.add(child_id)
-            if isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName():
+            if is_mapper(obj):
                 for producer in pipeline_producers(obj):
                     child_id = f"pipeline:{id(producer)}"
                     children[child_id] = producer
@@ -222,15 +223,15 @@ class DirtyTracker:
             owners = self._node_owners(object_id)
             batch.candidates.update(owners)
             batch.refresh_ids.update(owners)
-            batch.producers.update(self._pipeline_updates.get(object_id, {}))
+            batch.mappers.update(self._pipeline_updates.get(object_id, {}))
             if object_id in self._structural_ids:
                 batch.structural = True
             if owners and object_id in self._classes:
                 batch.refresh_ids.add(object_id)
             for owner in owners:
                 obj = self._graph.objects.get(owner)
-                if isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName():
-                    batch.producers[int(owner)] = obj
+                if is_mapper(obj):
+                    batch.mappers[int(owner)] = obj
         return batch
 
     def _covered_input(self, object_id: str, obj: vtkObject) -> bool:

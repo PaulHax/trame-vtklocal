@@ -47,9 +47,3 @@ export function viewAsTypedArray(data, dataType, { copy = false } = {}) {
   }
   return new Ctor(data);
 }
-
-export default {
-  base64ToArrayBuffer,
-  createTypedArray,
-  viewAsTypedArray,
-};

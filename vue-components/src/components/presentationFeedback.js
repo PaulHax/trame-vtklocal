@@ -188,5 +188,3 @@ export function createPresentationFeedback({
     describe,
   };
 }
-
-export default { createPresentationFeedback };

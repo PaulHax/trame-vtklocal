@@ -98,5 +98,3 @@ export function createCameraReports({
     isInteracting: () => interactionStack.length > 0,
   };
 }
-
-export default { createCameraReports };

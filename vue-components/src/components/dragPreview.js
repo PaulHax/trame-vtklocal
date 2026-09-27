@@ -280,5 +280,3 @@ export function createDragPreview({
 
   return { start, move, reapply, end, targets, isActive: () => !!active };
 }
-
-export default { createDragPreview };

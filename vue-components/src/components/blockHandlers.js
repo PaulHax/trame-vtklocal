@@ -82,5 +82,3 @@ export function registerBlockHandlers(
   );
   return () => coincidentTopology.clear();
 }
-
-export default { registerBlockHandlers };

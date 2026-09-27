@@ -359,11 +359,3 @@ export function describePickableRegistry(registry) {
   }
   return { size: registry.size, entries };
 }
-
-export default {
-  createPickableRegistry,
-  applyPickableBlock,
-  resolvePickableMapper,
-  pickAt,
-  describePickableRegistry,
-};

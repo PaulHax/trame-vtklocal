@@ -17,5 +17,3 @@ export function buildInstance(type) {
   const factory = SYNTHETIC_FACTORIES[type];
   return factory ? factory() : (vtkObjectManager.build(type) ?? null);
 }
-
-export default { buildInstance };

@@ -39,5 +39,3 @@ export function getWorldToClipMatrix(camera, aspect) {
   }
   return transposeMatrix(matrix);
 }
-
-export default { transposeMatrix, getWorldToClipMatrix };

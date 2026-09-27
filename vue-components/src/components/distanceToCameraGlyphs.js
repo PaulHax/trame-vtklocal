@@ -9,9 +9,8 @@ export const DEFAULT_DISTANCE_TO_CAMERA_ARRAY = "DistanceToCamera";
 
 // World-unit fallback cap for degenerate projections, used only when the point
 // set has no usable extent (a single glyph / empty). Non-degenerate sets derive
-// a scene-proportional cap from their own bounds (see boundedMaxScale), so this
-// constant's units no longer need to match the app's; an app can still force a
-// cap with distanceToCamera.maxScale.
+// a scene-proportional cap from their own bounds (see boundedMaxScale). The cap
+// is in world units; distanceToCamera.maxScale overrides it.
 const DEFAULT_MAX_SCALE = 600;
 const EPSILON = 1e-12;
 

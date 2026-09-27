@@ -105,8 +105,7 @@ export function applyPickableBlock(registry, nodeId, block, instance) {
 }
 
 // Project a world point [x,y,z] to canvas CSS px (top-left origin), or null
-// when the point is behind the camera. Mirrors the app's projectLocalEnuToCss
-// exactly: the same behind-camera rejection and y-flip.
+// when the point is behind the camera.
 function projectWorldToCss(out, worldToClip, x, y, z, width, height) {
   const cw =
     worldToClip[3] * x +

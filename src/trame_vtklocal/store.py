@@ -463,10 +463,6 @@ class SceneStore:
         )
 
     @property
-    def root_id(self) -> str:
-        return self._root_id
-
-    @property
     def seq(self) -> int:
         return self._state.seq
 

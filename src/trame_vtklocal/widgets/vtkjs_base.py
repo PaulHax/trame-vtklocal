@@ -263,14 +263,6 @@ class VtkJsBaseView(HtmlElement):
         """
         self.server.js_call(self._ref, "setPointerContext", context)
 
-    def set_armed_cloud_pick(self, spec: object) -> None:
-        """Send ordered runtime arm state (generation, token, asset_id).
-
-        A null token disarms; a null asset uses normal server-side depth. Every
-        pointer event echoes the captured token, including server-depth picks.
-        """
-        self.server.js_call(self._ref, "setArmedCloudPick", spec)
-
     def cleanup(self) -> None:
         if getattr(self, "_closed", True):
             return

@@ -285,6 +285,14 @@ function renderer() {
   };
 }
 
+// Every paint prepares the next frame serial, as useSceneSync's paints do.
+function withPaintSerials(context) {
+  let serial = 0;
+  return Object.defineProperty(context, "frameSerial", {
+    get: () => (serial += 1),
+  });
+}
+
 function sceneContext(bindings) {
   const instances = new Map();
   const rendererIds = new Map();
@@ -304,7 +312,7 @@ function sceneContext(bindings) {
   for (const [nodeId, binding] of bindings) {
     instances.set(String(nodeId), binding.actor);
   }
-  const context = {
+  const context = withPaintSerials({
     renderers,
     renderWindow: { getViews: () => [{ getSize: () => [200, 100] }] },
     topologyVersion: 1,
@@ -325,7 +333,7 @@ function sceneContext(bindings) {
       bindings.set(String(nodeId), { actor: anchor, renderer: hostRenderer });
       this.topologyVersion += 1;
     },
-  };
+  });
   return context;
 }
 
@@ -952,13 +960,13 @@ test("the reconciler re-fires a block when applied actor identity changes, and t
     }
     return ids;
   };
-  const context = {
+  const context = withPaintSerials({
     renderers: [hostRenderer],
     renderWindow: { getViews: () => [{ getSize: () => [200, 100] }] },
     topologyVersion: 1,
     getInstance: reconciler.instances.getInstance,
     referrersOf,
-  };
+  });
   reconciler.applyMessage(
     [
       { op: "upsert", id: "anchor", node: actorNode },

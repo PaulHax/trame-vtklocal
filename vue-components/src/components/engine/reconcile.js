@@ -571,13 +571,9 @@ export function createReconciler({
       blockHandlers.get(key)?.(id, null, instance);
     }
     dropBindings(id, { forgetPrivate: true });
-    if (instance) {
-      instances.remove(id);
-      if (isLiveInstance(instance)) {
-        instance.delete?.();
-      }
-    } else {
-      instances.remove(id);
+    instances.remove(id);
+    if (isLiveInstance(instance)) {
+      instance.delete?.();
     }
   }
 
@@ -705,11 +701,9 @@ export function createReconciler({
         } else if (op.op === "patchArray") {
           applyArrayPatch(op, mirror, cache);
           mirror.applyOp(op);
-        } else if (op.op === "remove") {
+        } else {
           teardownNode(String(op.id), mirror.get(String(op.id)));
           mirror.applyOp(op);
-        } else {
-          throw new Error(`unknown op ${op.op}`);
         }
       }
       if (lifecycle.reattach.size) {

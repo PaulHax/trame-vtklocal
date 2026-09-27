@@ -73,15 +73,3 @@ test("viewAsTypedArray accepts ArrayBuffer / base64 / array inputs", async () =>
     [1, 2, 3],
   );
 });
-
-test("viewAsTypedArray with copy:true does not alias an aligned ArrayBuffer view", async () => {
-  const { viewAsTypedArray } = await loadModule(
-    "/src/components/sync/base64.js",
-  );
-
-  const view = alignedFloat32View([1.5, 2.25, 3.125]);
-  const result = viewAsTypedArray(view, "Float32Array", { copy: true });
-
-  assert.notEqual(result.buffer, view.buffer);
-  assert.deepEqual(Array.from(result), [1.5, 2.25, 3.125]);
-});

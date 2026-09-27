@@ -13,25 +13,15 @@ export function base64ToArrayBuffer(base64) {
   return bytes.buffer;
 }
 
-export function createTypedArray(dataType, buffer) {
-  const TypedArrayClass = TYPED_ARRAYS[dataType] || Float32Array;
-  return new TypedArrayClass(buffer);
-}
-
-export function viewAsTypedArray(data, dataType, { copy = false } = {}) {
+export function viewAsTypedArray(data, dataType) {
   const Ctor = TYPED_ARRAYS[dataType] || Float32Array;
   if (data instanceof ArrayBuffer) {
-    if (copy) {
-      return new Ctor(data.slice(0));
-    }
     return new Ctor(data);
   }
   if (ArrayBuffer.isView(data)) {
     // msgpack delivers binary data as a view over a shared receive buffer.
-    // Copy when the caller will retain the result long-term (cache, store)
-    // so the underlying msgpack packet can be GC'd; otherwise alias when the
-    // byte offset is element-aligned for the fast path.
-    if (!copy && data.byteOffset % Ctor.BYTES_PER_ELEMENT === 0) {
+    // Alias it when the byte offset is element-aligned; otherwise copy.
+    if (data.byteOffset % Ctor.BYTES_PER_ELEMENT === 0) {
       return new Ctor(
         data.buffer,
         data.byteOffset,

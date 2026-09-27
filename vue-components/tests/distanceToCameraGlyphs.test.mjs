@@ -548,17 +548,3 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
     "the replacement input is recomputed during the adopting render prepass",
   );
 });
-
-test("distance-to-camera render hooks run during callback render paths", async () => {
-  const { createDistanceToCameraRenderCallback } = await loadModule(
-    "/src/components/distanceToCameraGlyphs.js",
-  );
-
-  const order = [];
-  const callback = createDistanceToCameraRenderCallback(
-    () => order.push("update-callback"),
-    () => order.push("render-callback"),
-  );
-  callback();
-  assert.deepEqual(order, ["update-callback", "render-callback"]);
-});

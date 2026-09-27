@@ -8,7 +8,6 @@ import vtkExternalContextRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/Ext
 
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
-import { createDistanceToCameraRenderCallback } from "./distanceToCameraGlyphs";
 import { createViewApi, VIEW_EMITS, VIEW_PROPS } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
 
@@ -21,23 +20,8 @@ export default {
 
     let externalRenderWindow = null;
     let renderWindow = null;
-    let renderRequestedCallbackWithDistanceToCamera = null;
+    let renderRequested = null;
     let repaintCallback = null;
-
-    // Measure only the paint's wall-time (not the pre-render camera/LOD update
-    // pass) and report it to the adaptive-quality budget loop. Callers that
-    // actually land pixels pass recordPaintDuration, which also closes a frame.
-    function paintAndRecord(
-      paint,
-      record = (ms) => scene.recordFrameDuration(ms),
-    ) {
-      const start = performance.now();
-      try {
-        return paint();
-      } finally {
-        record(performance.now() - start);
-      }
-    }
 
     const scene = useSceneSync({
       client,
@@ -50,7 +34,7 @@ export default {
     });
 
     const scheduleRender = createRafScheduler(() => {
-      renderRequestedCallbackWithDistanceToCamera?.();
+      renderRequested?.();
     });
 
     // State is already applied when this fires; the host only needs to paint.
@@ -73,9 +57,7 @@ export default {
       // layer. The synchronized renderer state decides which attachments load
       // existing contents and which clear before drawing.
       externalRenderWindow.setAutoClear(true);
-      externalRenderWindow?.setRenderCallback?.(
-        renderRequestedCallbackWithDistanceToCamera,
-      );
+      externalRenderWindow.setRenderCallback(renderRequested);
 
       renderWindow = vtkRenderWindow.newInstance();
       renderWindow.addView(externalRenderWindow);
@@ -96,6 +78,7 @@ export default {
     //     vtk.js so the render issues no gl.getParameter readbacks (each one
     //     is a synchronous CPU/GPU stall). Omit to let vtk.js query.
     function renderExternal(options = {}) {
+      if (!externalRenderWindow) return;
       scene.beforeRender();
       const hostState =
         "framebuffer" in options
@@ -104,28 +87,22 @@ export default {
               drawBuffers: options.drawBuffers,
             }
           : undefined;
-      paintAndRecord(
-        () => externalRenderWindow?.renderExternal?.(hostState),
-        (ms) => scene.recordPaintDuration(ms),
-      );
+      // Measure only the paint's wall-time, not the pre-render pass, for the
+      // adaptive-quality budget loop.
+      const start = performance.now();
+      try {
+        externalRenderWindow.renderExternal(hostState);
+      } finally {
+        scene.recordPaintDuration(performance.now() - start);
+      }
     }
 
+    // vtk.js hands its own render requests (renderWindow.render(), widget
+    // updates) to this callback instead of drawing; the host answers by
+    // calling renderExternal when it paints.
     function onRenderRequested(callback) {
-      // The host's callback is the actual paint; time it (not the update pass
-      // createDistanceToCameraRenderCallback runs first) for adaptive quality.
-      const timedCallback =
-        typeof callback === "function"
-          ? (...args) => paintAndRecord(() => callback(...args))
-          : null;
-      renderRequestedCallbackWithDistanceToCamera = timedCallback
-        ? createDistanceToCameraRenderCallback(
-            scene.beforeRender,
-            timedCallback,
-          )
-        : null;
-      externalRenderWindow?.setRenderCallback?.(
-        renderRequestedCallbackWithDistanceToCamera,
-      );
+      renderRequested = typeof callback === "function" ? callback : null;
+      externalRenderWindow?.setRenderCallback(renderRequested);
     }
 
     function setRepaintCallback(callback) {
@@ -154,7 +131,7 @@ export default {
     onBeforeUnmount(() => {
       unregisterView(registryKeys, viewApi);
       // A rAF render scheduled before unmount must not reach the host.
-      renderRequestedCallbackWithDistanceToCamera = null;
+      renderRequested = null;
       repaintCallback = null;
       scene.cleanup();
 

@@ -2004,12 +2004,6 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     sceneSeqAtLastPaint: -1,
     sceneSeqRequiringPaint: 1,
   });
-  scene.recordFrameDuration(3);
-  assert.equal(
-    scene.getSyncDiagnostics().rendering.completedFrameSerial,
-    0,
-    "host repaint requests do not claim that pixels completed",
-  );
   scene.recordPaintDuration(6);
   assert.deepEqual(scene.getSyncDiagnostics().rendering, {
     preparedFrameSerial: 1,

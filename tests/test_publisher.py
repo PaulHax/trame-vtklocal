@@ -762,9 +762,7 @@ def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
         publisher.cleanup()
 
 
-def test_patch_array_staleness_counts_by_default_and_relaxes_mid_gesture(
-    publisher_env,
-):
+def test_patch_array_staleness_counts(publisher_env):
     scene, publisher, server = publisher_env
     _start_retention(scene, publisher, server)
     dataset_id = _dataset_id(scene)
@@ -776,8 +774,6 @@ def test_patch_array_staleness_counts_by_default_and_relaxes_mid_gesture(
 
     # The patch moved the very points the pick was measured against.
     assert not publisher.event_is_current(event, dataset_id)
-    # Mid-gesture callers opt out so their own confirmations don't stale them.
-    assert publisher.event_is_current(event, dataset_id, strict=False)
 
 
 def test_parsed_state_cache_skips_unchanged_referenced_states():

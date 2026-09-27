@@ -205,14 +205,9 @@ class ScenePublisher:
         self._attach_binary(payload)
         return payload
 
-    def last_seq_touching(self, node_id: str | int, strict: bool = True) -> int | None:
-        return self._store.last_seq_touching(node_id, strict=strict)
-
-    def event_is_current(
-        self, event: object, node_id: str | int | None, strict: bool = True
-    ) -> bool:
+    def event_is_current(self, event: object, node_id: str | int | None) -> bool:
         """Whether a seq-stamped client event is current (see module helper)."""
-        return event_is_current(self._store, event, node_id, strict=strict)
+        return event_is_current(self._store, event, node_id)
 
     @property
     def store(self) -> SceneStore:

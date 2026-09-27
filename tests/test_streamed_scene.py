@@ -8,6 +8,7 @@ import weakref
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
+import numpy as np
 import pytest
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkRenderingCore import vtkActor, vtkRenderer, vtkRenderWindow
@@ -338,6 +339,26 @@ def test_tiles_source_rejects_invalid_wire_values(kwargs, match):
     }
     with pytest.raises(ValueError, match=match):
         Tiles3DSource(**values)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("opacity", np.float32(0.5)),
+        ("texture_blend", np.float64(0.25)),
+        ("vertical_exaggeration", np.float32(2)),
+        ("vertical_pivot_z", np.int64(-12)),
+        ("maximum_screen_space_error_px", np.float32(16)),
+    ],
+)
+def test_tiles_source_publishes_numpy_scalars_as_plain_numbers(name, value):
+    source = Tiles3DSource("mesh", "rev", "/tiles/mesh/rev", IDENTITY, **{name: value})
+
+    assert type(getattr(source, name)) is float
+    assert getattr(source, name) == float(value)
+    tiles3d = json.loads(json.dumps(streamed_scene.source_block(source)))["tiles3d"]
+    assert float(value) in tiles3d.values()
+    StreamedSceneActor(source)
 
 
 def test_tiles_source_consumes_shared_wire_contract_corpus():

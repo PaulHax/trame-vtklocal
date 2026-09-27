@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
 if TYPE_CHECKING:
+    from typing_extensions import TypeGuard
     from vtkmodules.vtkCommonCore import vtkObject, vtkObjectBase
+    from vtkmodules.vtkCommonDataModel import vtkDataObject
 
 
 def _iter_via_getters(obj: object, names: Iterable[str]) -> Iterator[vtkObject]:
@@ -88,6 +90,20 @@ def owned_collections(vtk_obj: vtkObjectBase | None) -> Iterator[vtkObject]:
         yield from _iter_via_getters(vtk_obj, ("GetRenderers",))
     elif vtk_obj.IsA("vtkRenderer"):
         yield from _iter_via_getters(vtk_obj, ("GetViewProps", "GetLights"))
+
+
+def is_mapper(obj: object) -> TypeGuard[vtkAlgorithm]:
+    return isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName()
+
+
+def updated_mapper_inputs(mapper: vtkAlgorithm) -> Iterator[vtkDataObject]:
+    """Update ``mapper``, then yield each input data object it holds."""
+    mapper.Update()
+    for port in range(mapper.GetNumberOfInputPorts()):
+        for index in range(mapper.GetNumberOfInputConnections(port)):
+            data = mapper.GetInputDataObject(port, index)
+            if data is not None:
+                yield data
 
 
 def pipeline_producers(mapper: vtkAlgorithm) -> Iterator[vtkAlgorithm]:

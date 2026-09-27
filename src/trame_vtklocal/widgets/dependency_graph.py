@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
-from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
-
 from trame_vtklocal.module.vtkjs_translator import get_ref_id
+from trame_vtklocal.widgets.vtk_dependencies import is_mapper, updated_mapper_inputs
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
@@ -85,15 +84,12 @@ class DependencyGraph:
             if refresh_entering and object_id not in self.objects:
                 # Objects outside this graph have no observers. Their recorded
                 # state can predate edits, even when their identity is retained.
-                if isinstance(obj, vtkAlgorithm) and "Mapper" in obj.GetClassName():
-                    obj.Update()
-                    for port in range(obj.GetNumberOfInputPorts()):
-                        for index in range(obj.GetNumberOfInputConnections(port)):
-                            data = obj.GetInputDataObject(port, index)
-                            data_id = self.manager.GetId(data) if data else 0
-                            if data_id:
-                                self.manager.UpdateStateFromObject(data_id)
-                                self.cache.drop(str(data_id))
+                if is_mapper(obj):
+                    for data in updated_mapper_inputs(obj):
+                        data_id = self.manager.GetId(data)
+                        if data_id:
+                            self.manager.UpdateStateFromObject(data_id)
+                            self.cache.drop(str(data_id))
                 self.manager.UpdateStateFromObject(int(object_id))
             stamp = mtime(obj)
             if not force and self._state_mtimes.get(object_id) == stamp:

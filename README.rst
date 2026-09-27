@@ -71,11 +71,12 @@ The wheel carries no VTK.wasm runtime. Its views render through vtk.js, which
 vite bundles into ``serve/js/trame_vtklocal.umd.js``; the only WebAssembly it
 ships is the offline 3D Tiles decoders under ``serve/wasm/tiles3d/``.
 
-Publishing runs from ``release.sh --publish``, locally or from
+Releases come from ``release.sh``, locally or from
 ``.github/workflows/build-fork-wheel.yml`` on every push to ``shared-context``.
-Both paths run the same script against the same immutable inputs — vtk-js
+Both paths run the same script against the same immutable inputs (vtk-js
 fetched by the commit in ``vtkjs-fork.env``, ``pointcloud-lod`` from the
-lockfile — so a CI rebuild is not a different build.
+lockfile), so a CI rebuild is not a different build. CI builds the wheel once,
+runs a browser smoke test against that wheel, then publishes it.
 
 ``verify_chain.py`` proves that before any wheel ships: the linked vtk.js is a
 clean checkout of the pinned commit, ``pointcloud-lod`` came from its
@@ -90,31 +91,33 @@ wheel it describes.
 Use ``release.sh`` at the fork root. It requires the vtk-js fork to be linked
 into ``vue-components`` (see Development above).
 
-Build and verify only (default, does NOT publish):
+Build and verify (publishes nothing):
 
 .. code-block:: console
 
-    ./release.sh
+    ./release.sh build
 
 This rebuilds ``vue-components`` (the UMD bundle), builds the wheel, and asserts
 the UMD embedded in the wheel byte-matches the freshly built
 ``serve/js/trame_vtklocal.umd.js`` (sha256 compare) so a stale wheel can never
-ship. It prints the stamped version and the release tag but publishes nothing.
+ship. It writes the wheel and ``release-evidence.json`` to ``dist/`` and prints
+the stamped version and the release tag.
 
-Publish a GitHub prerelease and print the app pin:
+Publish that wheel as a GitHub prerelease and print the app pin:
 
 .. code-block:: console
 
-    ./release.sh --publish
+    ./release.sh publish
 
-This additionally creates (or re-uploads to) the ``gh`` prerelease
-``v0.16.0-shared-context.<sha>`` with the wheel and ``release-evidence.json``
-attached, then prints the exact line to paste into the app's ``pyproject.toml``
-plus the wheel ``sha256``.
+This builds nothing. It checks that ``dist/release-evidence.json`` names
+``HEAD`` and the ``sha256`` of the wheel in ``dist/``, creates (or re-uploads
+to) the ``gh`` prerelease ``v0.16.0-shared-context.<sha>`` with the wheel and
+``release-evidence.json`` attached, then prints the exact line to paste into
+the app's ``pyproject.toml`` plus the wheel ``sha256``.
 Re-running is safe (existing releases get the asset re-uploaded with
 ``--clobber``).
 
-Two-repo pin bump: after ``--publish``, paste the printed dependency line into
+Two-repo pin bump: after ``publish``, paste the printed dependency line into
 the app repo's ``pyproject.toml`` (the ``trame-vtklocal = { url = "..." }`` entry
 pointing at the new release asset) and re-lock. The fork release and the app pin
 are the two halves of a single version bump — keep them in sync.

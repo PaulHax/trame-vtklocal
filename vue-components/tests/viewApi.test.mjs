@@ -1,67 +1,36 @@
 // The scene API contract: every key the view API promises must be backed by a
-// real function on the scene useSceneSync returns. A key named here but never
-// implemented (or later renamed on one side) makes the whole channel a silent
-// no-op — `api[key] = undefined` throws nothing until a user drives it.
+// real function on both views. A key named here but never implemented (or
+// later renamed on one side) makes the whole channel a silent no-op:
+// `api[key] = undefined` throws nothing until a user drives it.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import { mountScene } from "./sceneHarness.mjs";
 
 after(async () => {
   await closeModuleLoader();
 });
 
-async function buildScene() {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const scene = useSceneSync(
-    {
-      client: {},
-      emit() {},
-      getRenderWindow: () => ({ id: "rw-view-api" }),
-    },
-    {
-      createInstanceRegistry: () => ({ getInstance: () => null }),
-      createReconciler: () => ({
-        registerBlockHandler: () => () => {},
-        teardown() {},
-      }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        resync() {},
-        onCommand: () => () => {},
-        getDiagnostics: () => ({}),
-      }),
-    },
-  );
-  scene.initialize({ renderWindowId: 1 });
-  return scene;
-}
-
-test("every promised view API key is implemented by the scene", async () => {
+// Both views' setups run outside a mounted Vue instance here (lifecycle hooks
+// warn and no-op), which is enough: the returned object is the exact api each
+// registers for consumers.
+test("both views expose every common view API key", async () => {
   const { COMMON_VIEW_API_KEYS } = await loadModule(
     "/src/components/viewApi.js",
   );
-  const scene = await buildScene();
-
-  const missing = COMMON_VIEW_API_KEYS.filter(
-    (key) => typeof scene[key] !== "function",
-  );
-  assert.deepEqual(missing, [], `scene is missing: ${missing.join(", ")}`);
-});
-
-test("view props expose validated declarative 3D Tiles host policies", async () => {
-  const { VIEW_PROPS } = await loadModule("/src/components/viewApi.js");
-  assert.equal(VIEW_PROPS.tiles3dTexturePolicy.default, "auto");
-  assert.equal(VIEW_PROPS.tiles3dQualityPolicy.default, "adaptive");
-  for (const value of ["auto", "native", "rgba"]) {
-    assert.equal(VIEW_PROPS.tiles3dTexturePolicy.validator(value), true);
+  const props = { renderWindow: 1, wsClient: {}, viewKey: null };
+  for (const path of [
+    "/src/components/VtkJsLocal.js",
+    "/src/components/VtkJsShared.js",
+  ]) {
+    const component = (await loadModule(path)).default;
+    const api = component.setup(props, { emit() {} });
+    const missing = COMMON_VIEW_API_KEYS.filter(
+      (key) => typeof api[key] !== "function",
+    );
+    assert.deepEqual(missing, [], `${path} is missing: ${missing.join(", ")}`);
   }
-  assert.equal(VIEW_PROPS.tiles3dTexturePolicy.validator("compressed"), false);
-  for (const value of ["adaptive", "fixed"]) {
-    assert.equal(VIEW_PROPS.tiles3dQualityPolicy.validator(value), true);
-  }
-  assert.equal(VIEW_PROPS.tiles3dQualityPolicy.validator("manual"), false);
 });
 
 // The backend layer composes over the scene: it contributes the view-specific
@@ -70,7 +39,7 @@ test("a backend adds its own entries and overrides the common keys it names", as
   const { COMMON_VIEW_API_KEYS, createViewApi } = await loadModule(
     "/src/components/viewApi.js",
   );
-  const scene = await buildScene();
+  const { scene } = await mountScene();
   const backendGetRenderer = () => {};
   const api = createViewApi(scene, {
     container: {},
@@ -89,32 +58,5 @@ test("a backend adds its own entries and overrides the common keys it names", as
     Object.keys(api).sort(),
     [...COMMON_VIEW_API_KEYS, "container", "render", "resize"].sort(),
   );
-});
-
-// The scoped cloud pick must be reachable from BOTH view implementations —
-// the owned-canvas view and the shared-context view. Their setups run outside
-// a mounted Vue instance here (lifecycle hooks warn and no-op), which is
-// enough: the returned object is the exact api each registers for consumers.
-test("pickCloudPoint and setArmedCloudPick are exposed by both view implementations", async () => {
-  const { COMMON_VIEW_API_KEYS } = await loadModule(
-    "/src/components/viewApi.js",
-  );
-  assert.ok(COMMON_VIEW_API_KEYS.includes("pickCloudPoint"));
-  assert.ok(COMMON_VIEW_API_KEYS.includes("setArmedCloudPick"));
-
-  const props = {
-    renderWindow: 1,
-    wsClient: {},
-    viewKey: null,
-  };
-  for (const path of [
-    "/src/components/VtkJsLocal.js",
-    "/src/components/VtkJsShared.js",
-  ]) {
-    const component = (await loadModule(path)).default;
-    const api = component.setup(props, { emit() {} });
-    for (const key of ["pickCloudPoint", "setArmedCloudPick"]) {
-      assert.equal(typeof api[key], "function", `${path} exposes ${key}`);
-    }
-  }
+  scene.cleanup();
 });

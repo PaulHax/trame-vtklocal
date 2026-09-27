@@ -2,161 +2,120 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import { createSession, mountScene } from "./sceneHarness.mjs";
 
 after(async () => {
   await closeModuleLoader();
 });
 
-function makeCamera() {
-  return {
-    viewMatrix: null,
-    projectionMatrix: null,
-    parallelScale: null,
-    setViewMatrix(value) {
-      this.viewMatrix = value;
-    },
-    setProjectionMatrix(value) {
-      this.projectionMatrix = value;
-    },
-    setParallelScale(value) {
-      this.parallelScale = value;
-    },
-    modified() {},
-  };
-}
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
-function makeRenderer(id, camera) {
-  return {
-    id: String(id),
-    camera,
-    getActiveCamera() {
-      return this.camera;
-    },
-    setActiveCamera(value) {
-      this.camera = value;
-    },
-  };
-}
+const rendererNode = (layer) => ({ type: "vtkRenderer", props: { layer } });
+const rootNode = (renderers) => ({
+  type: "vtkRenderWindow",
+  refs: { renderers },
+});
 
-// Every renderer these tests build stands for a server node.
-const serverRenderers = {
-  getInstanceId: (instance) => instance?.id ?? null,
-};
-
-function initializedScene(useSceneSync, renderWindow) {
-  const scene = useSceneSync(
-    {
-      client: {},
-      emit() {},
-      getRenderWindow: () => renderWindow,
-    },
-    {
-      createInstanceRegistry: () => serverRenderers,
-      createReconciler: () => ({ registerBlockHandler() {}, teardown() {} }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        onCommand: () => () => {},
-        getDiagnostics: () => ({}),
-      }),
-    },
+async function newRenderWindow() {
+  const { default: vtkRenderWindow } = await loadModule(
+    "/node_modules/@kitware/vtk.js/Rendering/Core/RenderWindow.js",
   );
-  scene.initialize({ renderWindowId: 1 });
-  return scene;
-}
-
-function makeRenderWindow(renderers) {
-  return {
-    getRenderers: () => renderers,
-    getRenderersByReference: () => renderers,
-    getViews: () => [],
-  };
+  return vtkRenderWindow.newInstance();
 }
 
 test("the view shares one client camera across renderer layers", async () => {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const primaryCamera = makeCamera();
-  const primary = makeRenderer(1, primaryCamera);
-  const underlay = makeRenderer(2, makeCamera());
-  const renderWindow = makeRenderWindow([primary, underlay]);
-  const scene = initializedScene(useSceneSync, renderWindow);
+  const renderWindow = await newRenderWindow();
+  const session = createSession({
+    seq: 1,
+    nodes: {
+      1: rootNode(["2", "3"]),
+      2: rendererNode(0),
+      3: rendererNode(1),
+    },
+  });
+  const { scene } = await mountScene({
+    session,
+    getRenderWindow: () => renderWindow,
+  });
+  const [primary, underlay] = renderWindow.getRenderers();
 
-  const viewMatrix = Array.from({ length: 16 }, (_, i) => i + 1);
-  const projectionMatrix = Array.from({ length: 16 }, (_, i) => 32 - i);
-  assert.equal(scene.setRenderedCamera({ viewMatrix, projectionMatrix }), true);
+  const projectionMatrix = [2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1];
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(
+      scene.setRenderedCamera({ viewMatrix: IDENTITY, projectionMatrix }),
+      true,
+    );
+  } finally {
+    console.warn = warn;
+  }
 
   assert.equal(scene.getRenderer(), primary);
-  assert.equal(underlay.getActiveCamera(), primaryCamera);
-  assert.deepEqual(primaryCamera.viewMatrix, viewMatrix);
-  assert.deepEqual(primaryCamera.projectionMatrix, projectionMatrix);
+  assert.equal(underlay.getActiveCamera(), primary.getActiveCamera());
+  assert.deepEqual(
+    Array.from(primary.getActiveCamera().getViewMatrix()),
+    IDENTITY,
+  );
+  assert.deepEqual(
+    scene.getRenderedCamera().projectionMatrix,
+    projectionMatrix,
+  );
+  scene.cleanup();
 });
 
 test("the client camera binds initial, added, and replaced renderers before repaint", async () => {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const primaryCamera = makeCamera();
-  const primary = makeRenderer(1, primaryCamera);
-  const underlay = makeRenderer(2, makeCamera());
-  const renderers = [primary, underlay];
-  const renderWindow = makeRenderWindow(renderers);
-  let callbacks = null;
+  const renderWindow = await newRenderWindow();
+  const session = createSession({
+    seq: 1,
+    nodes: {
+      1: rootNode(["2", "3"]),
+      2: rendererNode(0),
+      3: rendererNode(1),
+    },
+  });
   let repaintCount = 0;
-  let rendererExpectedAtRepaint = underlay;
-
-  const scene = useSceneSync(
-    {
-      client: {},
-      emit() {},
-      getRenderWindow: () => renderWindow,
-    },
-    {
-      createInstanceRegistry: () => serverRenderers,
-      createReconciler: () => ({
-        registerBlockHandler() {},
-        teardown() {},
-      }),
-      createSceneEngine: (options) => {
-        callbacks = options.callbacks;
-        return {
-          start() {},
-          stop() {},
-          resync() {},
-          onCommand() {
-            return () => {};
-          },
-          getDiagnostics() {
-            return {};
-          },
-        };
-      },
-    },
-  );
-  scene.initialize({
-    renderWindowId: 1,
+  const sharesOneCamera = () => {
+    const [primary, ...siblings] = renderWindow.getRenderers();
+    return siblings.every(
+      (sibling) => sibling.getActiveCamera() === primary.getActiveCamera(),
+    );
+  };
+  const { scene } = await mountScene({
+    session,
+    getRenderWindow: () => renderWindow,
     onRenderNeeded() {
-      assert.equal(
-        rendererExpectedAtRepaint.getActiveCamera(),
-        primaryCamera,
-        "renderer is bound to the shared camera before repaint",
+      assert.ok(
+        sharesOneCamera(),
+        "every renderer is bound to the shared camera before repaint",
       );
       repaintCount += 1;
     },
   });
-
-  callbacks.onSnapshotApplied({ seq: 1 });
-  assert.equal(underlay.getActiveCamera(), primaryCamera);
   assert.equal(repaintCount, 1);
+  const clientCamera = renderWindow.getRenderers()[0].getActiveCamera();
 
-  const lateRenderer = makeRenderer(3, makeCamera());
-  renderers.push(lateRenderer);
-  rendererExpectedAtRepaint = lateRenderer;
-  callbacks.onApplied({ kind: "ops", seq: 2 });
-  assert.equal(lateRenderer.getActiveCamera(), primaryCamera);
+  session.broadcast({
+    ops: [
+      { op: "upsert", id: "4", node: rendererNode(2) },
+      { op: "upsert", id: "1", node: rootNode(["2", "3", "4"]) },
+    ],
+  });
+  assert.equal(renderWindow.getRenderers().length, 3);
   assert.equal(repaintCount, 2);
 
-  const replacementRenderer = makeRenderer(4, makeCamera());
-  renderers.splice(0, renderers.length, replacementRenderer);
-  rendererExpectedAtRepaint = replacementRenderer;
-  callbacks.onApplied({ kind: "ops", seq: 3 });
-  assert.equal(replacementRenderer.getActiveCamera(), primaryCamera);
+  session.broadcast({
+    ops: [
+      { op: "upsert", id: "5", node: rendererNode(0) },
+      { op: "upsert", id: "1", node: rootNode(["5"]) },
+      { op: "remove", id: "2" },
+      { op: "remove", id: "3" },
+      { op: "remove", id: "4" },
+    ],
+  });
+  const [replacement] = renderWindow.getRenderers();
+  assert.equal(renderWindow.getRenderers().length, 1);
+  assert.equal(replacement.getActiveCamera(), clientCamera);
   assert.equal(repaintCount, 3);
+  scene.cleanup();
 });

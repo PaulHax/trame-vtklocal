@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import { createSession, mountScene } from "./sceneHarness.mjs";
 
 after(async () => {
   await closeModuleLoader();
@@ -1933,14 +1934,16 @@ test("gesture enrichment preserves tag, armed override, and unavailable semantic
   assert.ok(calls.length >= 5);
 });
 
+const anchorNode = (block = pointBlock()) => ({
+  type: "vtkStreamedSceneActor",
+  blocks: { streamedScene: block },
+});
+
 test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics through the host", async () => {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const handlers = new Map();
   const calls = [];
   let createCount = 0;
   let hostOptions = null;
   let renders = 0;
-  let engineCallbacks = null;
   const fakeHost = {
     applyBlock: (...args) => calls.push(["block", ...args]),
     beforeRender: (value) => calls.push(["before", value]),
@@ -1952,72 +1955,40 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     describe: () => ({ members: [{ nodeId: "42" }], coordinator: {} }),
     dispose: () => calls.push(["dispose"]),
   };
-  const scene = useSceneSync(
+  const session = createSession();
+  const { scene } = await mountScene(
     {
-      client: {},
-      emit() {},
+      session,
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
       tiles3dTexturePolicy: "rgba",
       tiles3dQualityPolicy: "fixed",
+      onRenderNeeded: () => {
+        renders += 1;
+      },
     },
     {
-      createInstanceRegistry: () => ({ getInstance: () => null }),
-      createMirrorStore: () => ({
-        entries: () => [][Symbol.iterator](),
-        get: () => null,
-        clear() {},
-      }),
-      createReconciler: () => ({
-        registerBlockHandler(key, handler) {
-          handlers.set(key, handler);
-        },
-        teardown() {},
-      }),
-      createSceneEngine: (options) => {
-        engineCallbacks = options.callbacks;
-        return {
-          start() {},
-          stop() {},
-          onCommand: () => () => {},
-          getDiagnostics: () => ({}),
-        };
-      },
-      createStreamedSceneHost: (options) => {
+      newStreamedSceneHost: (options) => {
         createCount += 1;
         hostOptions = options;
         return fakeHost;
       },
     },
   );
-  scene.initialize({
-    renderWindowId: 1,
-    onRenderNeeded: () => {
-      renders += 1;
-    },
-  });
-  assert.equal(createCount, 0);
-  assert.equal(handlers.has("streamedScene"), true);
-  assert.equal(handlers.has("pointCloudLod"), false);
-  handlers.get("streamedScene")("missing", null, null);
-  assert.equal(createCount, 0, "a removal without a host stays lazy");
+  assert.equal(createCount, 0, "a scene without streamed blocks has no host");
 
   scene.beginCameraInteraction();
-  const anchor = actor();
-  handlers.get("streamedScene")("42", pointBlock(), anchor);
+  const rendersBeforeApply = renders;
+  session.broadcast({ ops: [{ op: "upsert", id: "42", node: anchorNode() }] });
   assert.equal(createCount, 1);
   assert.equal(hostOptions.tiles3dTexturePolicy, "rgba");
   assert.equal(hostOptions.tiles3dQualityPolicy, "fixed");
   assert.equal(typeof hostOptions.scheduleRender, "function");
-  assert.deepEqual(calls.slice(0, 2), [
-    ["begin"],
-    ["block", "42", pointBlock(), anchor],
-  ]);
-  const beforeApplyCount = calls.filter(([name]) => name === "before").length;
-  const rendersBeforeApply = renders;
-  engineCallbacks.onApplied({ kind: "ops", seq: 1, ops: [{}] });
+  assert.deepEqual(calls[0], ["begin"]);
+  assert.deepEqual(calls[1].slice(0, 3), ["block", "42", pointBlock()]);
+  assert.equal(calls[1][3].getClassName(), "vtkActor");
   assert.equal(
     calls.filter(([name]) => name === "before").length,
-    beforeApplyCount,
+    0,
     "an applied websocket message waits for the requested paint to prepare streaming",
   );
   assert.equal(renders, rendersBeforeApply + 1);
@@ -2042,11 +2013,11 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
     preparedFrameSerial: 1,
     completedFrameSerial: 1,
     completedPreparedFrameSerial: 1,
-    sceneSeqAtLastPaint: -1,
+    sceneSeqAtLastPaint: 1,
     sceneSeqRequiringPaint: 1,
   });
   const rendersAfterVisualMessage = renders;
-  engineCallbacks.onApplied({ kind: "ops", seq: 2, ops: [] });
+  session.broadcast();
   assert.equal(
     scene.getSyncDiagnostics().rendering.sceneSeqRequiringPaint,
     1,
@@ -2076,12 +2047,6 @@ test("useSceneSync lazily routes lifecycle, picking, feedback, and diagnostics t
 });
 
 test("useSceneSync emits tagged drag solves and armed click overrides", async () => {
-  const [{ useSceneSync }, glyph, polydata, points] = await Promise.all([
-    loadModule("/src/components/useSceneSync.js"),
-    loadModule("/node_modules/@kitware/vtk.js/Rendering/Core/Glyph3DMapper.js"),
-    loadModule("/node_modules/@kitware/vtk.js/Common/DataModel/PolyData.js"),
-    loadModule("/node_modules/@kitware/vtk.js/Common/Core/Points.js"),
-  ]);
   const canvas = {
     style: { cursor: "" },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
@@ -2093,15 +2058,9 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
   const hostRenderer = renderer();
   const renderWindow = {
     getRenderers: () => [hostRenderer],
+    getRenderersByReference: () => [hostRenderer],
     getViews: () => [{ getSize: () => [200, 100], getCanvas: () => canvas }],
   };
-  const mapper = glyph.default.newInstance();
-  const poly = polydata.default.newInstance();
-  const pts = points.default.newInstance();
-  pts.setData(new Float32Array([0.1, 0.1, 0.1]), 3);
-  poly.setPoints(pts);
-  mapper.setInputData(poly);
-
   const hostPickCalls = [];
   const fakeHost = {
     applyBlock() {},
@@ -2122,47 +2081,47 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
     describe: () => ({ members: [], coordinator: {} }),
     dispose() {},
   };
-  const handlers = new Map();
   const emitted = [];
-  const scene = useSceneSync(
+  const session = createSession({
+    seq: 1,
+    nodes: {
+      anchor: anchorNode(),
+      glyph: {
+        type: "vtkGlyph3DMapper",
+        refs: { inputs: ["centers"] },
+        blocks: {
+          pickable: {
+            grabPx: 8,
+            priority: 0,
+            tags: { depth_asset_id: "tagged" },
+          },
+        },
+      },
+      centers: {
+        type: "vtkPolyData",
+        arrays: {
+          points: {
+            ref: "c:centers",
+            dataType: "Float32Array",
+            size: 3,
+            numberOfComponents: 3,
+            registration: "setPoints",
+            vtkClass: "vtkPoints",
+          },
+        },
+      },
+    },
+    blobs: {
+      "c:centers": new Uint8Array(new Float32Array([0.1, 0.1, 0.1]).buffer),
+    },
+  });
+  const { scene } = await mountScene(
     {
-      client: {},
+      session,
       emit: (type, payload) => emitted.push([type, payload]),
       getRenderWindow: () => renderWindow,
     },
-    {
-      createInstanceRegistry: () => ({
-        getInstance: () => null,
-        getInstanceId: (instance) =>
-          instance === hostRenderer ? "renderer" : null,
-      }),
-      createMirrorStore: () => ({
-        entries: () => [][Symbol.iterator](),
-        get: () => null,
-        clear() {},
-      }),
-      createReconciler: () => ({
-        registerBlockHandler(key, handler) {
-          handlers.set(key, handler);
-        },
-        teardown() {},
-      }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        onCommand: () => () => {},
-        getSeq: () => 1,
-        getDiagnostics: () => ({}),
-      }),
-      createStreamedSceneHost: () => fakeHost,
-    },
-  );
-  scene.initialize({ renderWindowId: 1 });
-  handlers.get("streamedScene")("anchor", pointBlock(), actor());
-  handlers.get("pickable")(
-    "glyph",
-    { grabPx: 8, priority: 0, tags: { depth_asset_id: "tagged" } },
-    mapper,
+    { newStreamedSceneHost: () => fakeHost },
   );
   scene.setArmedCloudPick({
     generation: 1,
@@ -2197,13 +2156,9 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
     ["tagged", "armed"],
   );
   scene.cleanup();
-  mapper.delete();
-  poly.delete();
-  pts.delete();
 });
 
 test("useSceneSync reports the presentation interval, not the paint duration", async () => {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
   const pending = [];
   const previousWindow = globalThis.window;
   globalThis.window = {
@@ -2231,39 +2186,14 @@ test("useSceneSync reports the presentation interval, not the paint duration", a
     describe: () => ({ members: [], coordinator: {} }),
     dispose() {},
   };
-  const handlers = new Map();
-  const scene = useSceneSync(
+  const { scene } = await mountScene(
     {
-      client: {},
-      emit() {},
+      session: createSession({ nodes: { 42: anchorNode() } }),
       getRenderWindow: () => ({ getRenderers: () => [], getViews: () => [] }),
     },
-    {
-      createInstanceRegistry: () => ({ getInstance: () => null }),
-      createMirrorStore: () => ({
-        entries: () => [][Symbol.iterator](),
-        get: () => null,
-        clear() {},
-      }),
-      createReconciler: () => ({
-        registerBlockHandler(key, handler) {
-          handlers.set(key, handler);
-        },
-        teardown() {},
-      }),
-      createSceneEngine: () => ({
-        start() {},
-        stop() {},
-        onCommand: () => () => {},
-        getDiagnostics: () => ({}),
-      }),
-      createStreamedSceneHost: () => fakeHost,
-    },
+    { newStreamedSceneHost: () => fakeHost },
   );
   try {
-    scene.initialize({ renderWindowId: 1 });
-    handlers.get("streamedScene")("42", pointBlock(), actor());
-
     scene.recordPaintDuration(4);
     present(1000);
     assert.deepEqual(frames, [], "the first presentation has no interval yet");

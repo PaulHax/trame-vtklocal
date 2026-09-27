@@ -3,6 +3,7 @@ import { ref, inject, onMounted, onBeforeUnmount } from "vue";
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Glyph";
 
+import macro from "@kitware/vtk.js/macros";
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
@@ -10,10 +11,21 @@ import vtkInteractorStyleTrackballCamera from "@kitware/vtk.js/Interaction/Style
 
 import { createRafScheduler } from "./rafScheduler";
 import { useSceneSync } from "./useSceneSync";
-import { bindDistanceToCameraInteractorRenderEvent } from "./distanceToCameraGlyphs";
 import { createViewApi, VIEW_EMITS, VIEW_PROPS } from "./viewApi";
 import { registerView, unregisterView } from "./viewRegistry";
 import { getDevicePixelRatio } from "./viewportMetrics";
+
+// Every paint of the owned canvas reaches its OpenGL window as one
+// traverseAllPasses call: the interactor paints drag frames itself and ignores
+// render requests until the drag ends. `paint` wraps that call, so the
+// pre-render pass and the paint record follow the pixels, not a caller.
+function newOpenGLRenderWindow(paint) {
+  return macro.newInstance((publicAPI, model, initialValues) => {
+    vtkOpenGLRenderWindow.extend(publicAPI, model, initialValues);
+    const traverseAllPasses = publicAPI.traverseAllPasses;
+    publicAPI.traverseAllPasses = () => paint(traverseAllPasses);
+  })();
+}
 
 export default {
   emits: VIEW_EMITS,
@@ -27,19 +39,21 @@ export default {
     let renderWindow = null;
     let interactor = null;
     let resizeObserver = null;
-    let interactorRenderSubscription = null;
     let cameraSubscriptions = [];
 
-    function renderScene() {
+    function paint(traverseAllPasses) {
       scene.beforeRender();
       // Measure the paint's wall-time for the adaptive-quality budget loop.
       const start = performance.now();
       try {
-        renderWindow?.render?.();
+        traverseAllPasses();
       } finally {
-        const duration = performance.now() - start;
-        scene.recordPaintDuration(duration);
+        scene.recordPaintDuration(performance.now() - start);
       }
+    }
+
+    function renderScene() {
+      renderWindow?.render();
     }
 
     const scene = useSceneSync({
@@ -80,7 +94,7 @@ export default {
     const registryKeys = [props.viewKey, props.renderWindow];
 
     onMounted(async () => {
-      openGLRenderWindow = vtkOpenGLRenderWindow.newInstance();
+      openGLRenderWindow = newOpenGLRenderWindow(paint);
       openGLRenderWindow.setContainer(container.value);
 
       renderWindow = vtkRenderWindow.newInstance();
@@ -102,10 +116,6 @@ export default {
       interactor.setView(openGLRenderWindow);
       interactor.initialize();
       interactor.bindEvents(container.value);
-      interactorRenderSubscription = bindDistanceToCameraInteractorRenderEvent(
-        interactor,
-        scene.beforeRender,
-      );
       scene.enableCameraReports({ during: "interaction", terminal: true });
       // The Start/End/InteractionEvent trio fires on the interactor STYLE;
       // the interactor's .d.ts declares them but its runtime never does.
@@ -127,8 +137,6 @@ export default {
       unregisterView(registryKeys, viewApi);
       scene.cleanup();
 
-      interactorRenderSubscription?.unsubscribe?.();
-      interactorRenderSubscription = null;
       cameraSubscriptions.forEach((subscription) =>
         subscription.unsubscribe?.(),
       );

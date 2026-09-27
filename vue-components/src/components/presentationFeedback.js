@@ -44,10 +44,9 @@ export function createPresentationFeedback({
     }
   }
 
-  // vtk.js can notify RenderEvent from inside a view's explicit pre-paint
-  // hook. Both calls prepare the same paint, so retain one serial until that
-  // paint is reported complete. The coordinator uses this serial to make its
-  // admission drain idempotent.
+  // A prepared serial stays current until its paint is reported complete, so
+  // preparing the same paint twice keeps one serial. The coordinator uses
+  // this serial to make its admission drain idempotent.
   function preparePaint() {
     if (preparedFrameSerial === completedPreparedFrameSerial) {
       preparedFrameSerial += 1;

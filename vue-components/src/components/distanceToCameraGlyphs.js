@@ -86,22 +86,6 @@ export function createDistanceToCameraRenderCallback(updateScales, callback) {
   };
 }
 
-export function bindDistanceToCameraInteractorRenderEvent(
-  interactor,
-  updateScales,
-) {
-  if (
-    typeof updateScales !== "function" ||
-    typeof interactor?.onRenderEvent !== "function"
-  ) {
-    return null;
-  }
-
-  return interactor.onRenderEvent(() => {
-    updateScales();
-  });
-}
-
 function transformPoint(out, point, matrix) {
   const x = point[0];
   const y = point[1];
@@ -412,7 +396,6 @@ export default {
   createDistanceToCameraGlyphRegistry,
   applyDistanceToCameraBlock,
   createDistanceToCameraRenderCallback,
-  bindDistanceToCameraInteractorRenderEvent,
   computeDistanceToCameraScales,
   updateDistanceToCameraGlyphs,
   describeDistanceToCameraGlyphRegistry,

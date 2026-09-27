@@ -550,10 +550,9 @@ test("distance-to-camera registry adopts a replacement input instance", async ()
 });
 
 test("distance-to-camera render hooks run during callback render paths", async () => {
-  const {
-    bindDistanceToCameraInteractorRenderEvent,
-    createDistanceToCameraRenderCallback,
-  } = await loadModule("/src/components/distanceToCameraGlyphs.js");
+  const { createDistanceToCameraRenderCallback } = await loadModule(
+    "/src/components/distanceToCameraGlyphs.js",
+  );
 
   const order = [];
   const callback = createDistanceToCameraRenderCallback(
@@ -562,33 +561,4 @@ test("distance-to-camera render hooks run during callback render paths", async (
   );
   callback();
   assert.deepEqual(order, ["update-callback", "render-callback"]);
-
-  let renderEvent = null;
-  let unsubscribed = false;
-  const interactorSubscription = {
-    unsubscribe: () => {
-      unsubscribed = true;
-    },
-  };
-  const interactor = {
-    onRenderEvent(handler) {
-      renderEvent = handler;
-      return interactorSubscription;
-    },
-  };
-  assert.equal(
-    bindDistanceToCameraInteractorRenderEvent(interactor, () =>
-      order.push("update-interactor"),
-    ),
-    interactorSubscription,
-  );
-  renderEvent();
-  interactorSubscription.unsubscribe();
-  assert.equal(unsubscribed, true);
-
-  assert.deepEqual(order, [
-    "update-callback",
-    "render-callback",
-    "update-interactor",
-  ]);
 });

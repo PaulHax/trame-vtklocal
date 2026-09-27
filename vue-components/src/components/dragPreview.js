@@ -271,12 +271,5 @@ export function createDragPreview({
     cancelPreview();
   }
 
-  function targets(nodeId) {
-    const id = String(nodeId);
-    return (
-      !!active && (active.pick.nodeId === id || active.pointsNodeId === id)
-    );
-  }
-
-  return { start, move, reapply, end, targets };
+  return { start, move, reapply, end };
 }

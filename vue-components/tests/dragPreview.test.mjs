@@ -62,7 +62,6 @@ test("screen drag preview updates one bound point and remains an overlay", async
   values[0] = 2;
   assert.equal(preview.reapply(), false);
   assert.equal(values[0], 2);
-  assert.equal(preview.targets("mapper"), false);
 });
 
 test("ending a preview restores the last server-confirmed point", async () => {

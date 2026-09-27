@@ -745,7 +745,6 @@ export function useSceneSync(
     setEmitBackgroundClick: gestures.setEmitBackgroundClick,
     setShouldGrab: gestures.setShouldGrab,
     beforeRender,
-    recordFrameDuration: presentation.recordFrameDuration,
     recordPaintDuration: presentation.recordPaintDuration,
     recordHostFrame: presentation.recordHostFrame,
     requestFrameIfNeeded: presentation.requestFrameIfNeeded,

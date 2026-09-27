@@ -79,13 +79,6 @@ export function applyDistanceToCameraBlock(registry, nodeId, block, instance) {
   return registry;
 }
 
-export function createDistanceToCameraRenderCallback(updateScales, callback) {
-  return function distanceToCameraRenderCallback(...args) {
-    updateScales?.();
-    return callback?.(...args);
-  };
-}
-
 function transformPoint(out, point, matrix) {
   const x = point[0];
   const y = point[1];
@@ -395,7 +388,6 @@ export function describeDistanceToCameraGlyphRegistry(registry) {
 export default {
   createDistanceToCameraGlyphRegistry,
   applyDistanceToCameraBlock,
-  createDistanceToCameraRenderCallback,
   computeDistanceToCameraScales,
   updateDistanceToCameraGlyphs,
   describeDistanceToCameraGlyphRegistry,

@@ -180,7 +180,6 @@ export function createPresentationFeedback({
     requireScenePaint,
     preparePaint,
     onPaintCompleted,
-    recordFrameDuration,
     recordPaintDuration,
     recordHostFrame,
     requestFrameIfNeeded,

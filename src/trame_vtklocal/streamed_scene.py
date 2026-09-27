@@ -75,6 +75,29 @@ def _is_affine_entry(value: float, expected: float) -> bool:
     return abs(value - expected) <= AFFINE_ENTRY_ABS_TOL
 
 
+def _real(
+    value: object,
+    message: str,
+    *,
+    low: float = -math.inf,
+    high: float = math.inf,
+    positive: bool = False,
+) -> float:
+    """``value`` as a finite float within range, else ``ValueError(message)``.
+
+    Any real number converts, numpy scalars included, so the published block
+    holds plain JSON numbers; ``bool`` is refused.
+    """
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(message)
+    number = float(value)
+    if not math.isfinite(number) or not low <= number <= high:
+        raise ValueError(message)
+    if positive and number <= 0:
+        raise ValueError(message)
+    return number
+
+
 def _as_presentation(value: object) -> Presentation:
     if not isinstance(value, dict):
         raise ValueError("presentation must be a Fixed or Auto object")
@@ -266,41 +289,24 @@ class Tiles3DSource:
         if type(self.overlay_order) is not int or not 0 <= self.overlay_order <= 10000:
             raise ValueError("overlay_order must be an integer within 0..10000")
         for name in ("opacity", "texture_blend"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or not 0 <= value <= 1:
-                raise ValueError(f"{name} must be finite and within 0..1")
-
+            message = f"{name} must be finite and within 0..1"
+            value = _real(getattr(self, name), message, low=0, high=1)
+            object.__setattr__(self, name, value)
         if self.maximum_screen_space_error_px is not None:
-            if isinstance(self.maximum_screen_space_error_px, bool) or not isinstance(
-                self.maximum_screen_space_error_px, Real
-            ):
-                raise ValueError(
-                    "maximum_screen_space_error_px must be positive and finite"
-                )
-            maximum = float(self.maximum_screen_space_error_px)
-            if not _is_positive_finite(maximum):
-                raise ValueError(
-                    "maximum_screen_space_error_px must be positive and finite"
-                )
+            maximum = _real(
+                self.maximum_screen_space_error_px,
+                "maximum_screen_space_error_px must be positive and finite",
+                positive=True,
+            )
             object.__setattr__(self, "maximum_screen_space_error_px", maximum)
-
-        if isinstance(self.vertical_exaggeration, bool) or not isinstance(
-            self.vertical_exaggeration, (int, float)
-        ):
-            raise ValueError("vertical_exaggeration must be positive and finite")
-        vertical_exaggeration = float(self.vertical_exaggeration)
-        if not _is_positive_finite(vertical_exaggeration):
-            raise ValueError("vertical_exaggeration must be positive and finite")
-        object.__setattr__(self, "vertical_exaggeration", vertical_exaggeration)
-
-        if isinstance(self.vertical_pivot_z, bool) or not isinstance(
-            self.vertical_pivot_z, (int, float)
-        ):
-            raise ValueError("vertical_pivot_z must be finite")
-        vertical_pivot_z = float(self.vertical_pivot_z)
-        if not math.isfinite(vertical_pivot_z):
-            raise ValueError("vertical_pivot_z must be finite")
-        object.__setattr__(self, "vertical_pivot_z", vertical_pivot_z)
+        exaggeration = _real(
+            self.vertical_exaggeration,
+            "vertical_exaggeration must be positive and finite",
+            positive=True,
+        )
+        object.__setattr__(self, "vertical_exaggeration", exaggeration)
+        pivot = _real(self.vertical_pivot_z, "vertical_pivot_z must be finite")
+        object.__setattr__(self, "vertical_pivot_z", pivot)
 
         if self.geometric_error_scale not in {"maximum", "horizontal"}:
             raise ValueError("geometric_error_scale must be 'maximum' or 'horizontal'")

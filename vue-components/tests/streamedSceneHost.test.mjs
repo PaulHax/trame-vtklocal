@@ -337,31 +337,24 @@ function sceneContext(bindings) {
   return context;
 }
 
-test("streamedScene normalization is all-or-nothing and kind-owned", async () => {
-  const { normalizeStreamedSceneBlock } = await loadModule(
+test("streamedScene validation is all-or-nothing and kind-owned", async () => {
+  const { validateStreamedSceneBlock } = await loadModule(
     "/src/components/streamedSceneHost.js",
   );
   const factories = { has: (kind) => ["pointCloud", "tiles3d"].includes(kind) };
+  const validate = (block, available = factories) =>
+    validateStreamedSceneBlock(block, available);
 
-  assert.equal(
-    normalizeStreamedSceneBlock(pointBlock(), factories).kind,
-    "pointCloud",
-  );
-  assert.equal(
-    normalizeStreamedSceneBlock(tilesBlock(), factories).kind,
-    "tiles3d",
-  );
+  assert.equal(validate(pointBlock()).kind, "pointCloud");
+  assert.equal(validate(tilesBlock()).kind, "tiles3d");
+  assert.deepEqual(validate(tilesBlock()).kindConfig, {
+    tilesetToScene: IDENTITY,
+    verticalExaggeration: 1,
+    verticalPivotZ: 0,
+    geometricErrorScale: "maximum",
+  });
   assert.deepEqual(
-    normalizeStreamedSceneBlock(tilesBlock(), factories).kindConfig,
-    {
-      tilesetToScene: IDENTITY,
-      verticalExaggeration: 1,
-      verticalPivotZ: 0,
-      geometricErrorScale: "maximum",
-    },
-  );
-  assert.deepEqual(
-    normalizeStreamedSceneBlock(
+    validate(
       tilesBlock({
         tiles3d: {
           tilesetToScene: IDENTITY,
@@ -369,7 +362,6 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
           verticalPivotZ: -12,
         },
       }),
-      factories,
     ).kindConfig,
     {
       tilesetToScene: IDENTITY,
@@ -378,101 +370,93 @@ test("streamedScene normalization is all-or-nothing and kind-owned", async () =>
       geometricErrorScale: "maximum",
     },
   );
-  for (const tiles3d of [
-    { tilesetToScene: IDENTITY, verticalExaggeration: 0 },
-    { tilesetToScene: IDENTITY, verticalExaggeration: -1 },
-    { tilesetToScene: IDENTITY, verticalExaggeration: Infinity },
-    { tilesetToScene: IDENTITY, verticalExaggeration: "2" },
-    { tilesetToScene: IDENTITY, verticalExaggeration: true },
-    { tilesetToScene: IDENTITY, verticalExaggeration: null },
-    { tilesetToScene: IDENTITY, verticalPivotZ: NaN },
-    { tilesetToScene: IDENTITY, verticalPivotZ: -Infinity },
-    { tilesetToScene: IDENTITY, verticalPivotZ: "0" },
-    { tilesetToScene: IDENTITY, verticalPivotZ: false },
-    { tilesetToScene: IDENTITY, verticalPivotZ: null },
-  ]) {
-    assert.equal(
-      normalizeStreamedSceneBlock(tilesBlock({ tiles3d }), factories),
-      null,
+  for (const verticalExaggeration of [0, -1, Infinity, "2", true, null]) {
+    assert.throws(
+      () =>
+        validate(
+          tilesBlock({
+            tiles3d: { tilesetToScene: IDENTITY, verticalExaggeration },
+          }),
+        ),
+      /verticalExaggeration must be positive and finite/,
     );
   }
-  assert.equal(
-    normalizeStreamedSceneBlock(
-      tilesBlock({
-        tiles3d: {
-          tilesetToScene: IDENTITY.map((value, index) =>
-            index === 3 ? 1 : value,
-          ),
-        },
-      }),
-      factories,
-    ),
-    null,
+  for (const verticalPivotZ of [NaN, -Infinity, "0", false, null]) {
+    assert.throws(
+      () =>
+        validate(
+          tilesBlock({ tiles3d: { tilesetToScene: IDENTITY, verticalPivotZ } }),
+        ),
+      /verticalPivotZ must be finite/,
+    );
+  }
+  assert.throws(
+    () =>
+      validate(
+        tilesBlock({
+          tiles3d: {
+            tilesetToScene: IDENTITY.map((value, index) =>
+              index === 3 ? 1 : value,
+            ),
+          },
+        }),
+      ),
+    /tilesetToScene must be an affine column-major matrix/,
   );
-  assert.equal(
-    normalizeStreamedSceneBlock(
-      tilesBlock({
-        tiles3d: {
-          tilesetToScene: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-        },
-      }),
-      factories,
-    ),
-    null,
+  assert.throws(
+    () =>
+      validate(
+        tilesBlock({
+          tiles3d: {
+            tilesetToScene: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          },
+        }),
+      ),
+    /tilesetToScene must be invertible/,
   );
-  assert.equal(
-    normalizeStreamedSceneBlock(
-      { ...pointBlock(), tiles3d: { tilesetToScene: IDENTITY } },
-      factories,
-    ),
-    null,
+  assert.throws(
+    () => validate({ ...pointBlock(), tiles3d: { tilesetToScene: IDENTITY } }),
+    /a pointCloud block must not include tiles3d/,
   );
-  assert.equal(
-    normalizeStreamedSceneBlock(
-      pointBlock({ endpoint: "/pointcloud/trailing/" }),
-      factories,
-    ),
-    null,
+  assert.throws(
+    () => validate(pointBlock({ endpoint: "/pointcloud/trailing/" })),
+    /endpoint must be non-empty and must not end with '\/'/,
   );
-  assert.equal(
-    normalizeStreamedSceneBlock(
-      pointBlock({
-        pointCloud: { ...pointBlock().pointCloud, pointCount: NaN },
-      }),
-      factories,
-    ),
-    null,
+  assert.throws(
+    () =>
+      validate(
+        pointBlock({
+          pointCloud: { ...pointBlock().pointCloud, pointCount: NaN },
+        }),
+      ),
+    /pointCount must be finite and not negative/,
   );
-  assert.equal(
-    normalizeStreamedSceneBlock(pointBlock(), { has: () => false }),
-    null,
+  assert.throws(
+    () => validate(pointBlock({ kind: "mesh" })),
+    /kind must be pointCloud or tiles3d/,
+  );
+  assert.throws(
+    () => validate(pointBlock(), { has: () => false }),
+    /pointCloud member factory is unavailable/,
   );
 });
 
-test("streamedScene normalization consumes the shared Tiles3DSource contract", async () => {
-  const { normalizeStreamedSceneBlock, validateTiles3dSourceDocument } =
-    await loadModule("/src/components/streamedSceneHost.js");
+test("streamedScene validation consumes the shared Tiles3DSource contract", async () => {
+  const { validateStreamedSceneBlock } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
   const factories = { has: (kind) => kind === "tiles3d" };
 
   for (const fixture of TILES3D_SOURCE_CORPUS.valid) {
     assert.equal(
-      normalizeStreamedSceneBlock(fixture.document, factories).kind,
+      validateStreamedSceneBlock(fixture.document, factories).kind,
       "tiles3d",
-      fixture.name,
-    );
-    assert.doesNotThrow(
-      () => validateTiles3dSourceDocument(fixture.document, factories),
       fixture.name,
     );
   }
   for (const fixture of TILES3D_SOURCE_CORPUS.invalid) {
-    assert.equal(
-      normalizeStreamedSceneBlock(fixture.document, factories),
-      null,
-      fixture.name,
-    );
     assert.throws(
-      () => validateTiles3dSourceDocument(fixture.document, factories),
+      () => validateStreamedSceneBlock(fixture.document, factories),
       new RegExp(fixture.reason, "i"),
       fixture.name,
     );
@@ -483,7 +467,7 @@ test("streamedScene normalization consumes the shared Tiles3DSource contract", a
 // tests/test_streamed_scene.py
 // (test_fixed_affine_entries_share_one_absolute_tolerance).
 test("fixed affine entries share one absolute tolerance with the producer", async () => {
-  const { normalizeStreamedSceneBlock } = await loadModule(
+  const { validateStreamedSceneBlock } = await loadModule(
     "/src/components/streamedSceneHost.js",
   );
   const factories = { has: (kind) => ["pointCloud", "tiles3d"].includes(kind) };
@@ -491,8 +475,8 @@ test("fixed affine entries share one absolute tolerance with the producer", asyn
   const OUTSIDE = 2e-12;
   const matrixWith = (index, entry) =>
     IDENTITY.map((value, at) => (at === index ? entry : value));
-  const normalize = (tilesetToScene) =>
-    normalizeStreamedSceneBlock(
+  const validate = (tilesetToScene) =>
+    validateStreamedSceneBlock(
       tilesBlock({ tiles3d: { tilesetToScene } }),
       factories,
     );
@@ -504,11 +488,45 @@ test("fixed affine entries share one absolute tolerance with the producer", asyn
     [15, 1],
   ]) {
     assert.deepEqual(
-      normalize(matrixWith(index, expected + INSIDE)).kindConfig.tilesetToScene,
+      validate(matrixWith(index, expected + INSIDE)).kindConfig.tilesetToScene,
       matrixWith(index, expected + INSIDE),
     );
-    assert.equal(normalize(matrixWith(index, expected + OUTSIDE)), null);
+    assert.throws(
+      () => validate(matrixWith(index, expected + OUTSIDE)),
+      /affine/,
+    );
   }
+});
+
+test("an invalid block drops its member and reports why", async () => {
+  const { createStreamedSceneHost } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
+  const log = coordinatorLog();
+  const member = fakeMember();
+  const factories = factoriesFor(new Map([["pointCloud", [member]]]));
+  const anchor = actor();
+  const context = sceneContext(
+    new Map([["cloud", { actor: anchor, renderer: renderer() }]]),
+  );
+  const host = createStreamedSceneHost({
+    factories,
+    createCoordinator: fakeCoordinatorFactory(log),
+  });
+  host.applyBlock("cloud", pointBlock(), anchor);
+  host.beforeRender(context);
+  assert.equal(host.describe().members.length, 1);
+
+  host.applyBlock("cloud", pointBlock({ revision: "" }), anchor);
+  assert.equal(member.calls.at(-1)[0], "dispose");
+  assert.deepEqual(host.describe().members, []);
+  assert.deepEqual(host.describe().rejectedBlocks, [
+    { nodeId: "cloud", error: "revision must be non-empty" },
+  ]);
+
+  host.applyBlock("cloud", null, anchor);
+  assert.deepEqual(host.describe().rejectedBlocks, []);
+  host.dispose();
 });
 
 test("camera fan-out follows rendered projection matrices and CSS viewport metrics", async () => {
@@ -1472,7 +1490,11 @@ test("host motion, governor targets, frame feedback, and nested interactions sha
   const host = createStreamedSceneHost({
     factories,
     coordinatorOptions: {
-      governor: { motionDebounceMs: 0, interactionSettleMs: 0, vtkFrameFraction: 1 },
+      governor: {
+        motionDebounceMs: 0,
+        interactionSettleMs: 0,
+        vtkFrameFraction: 1,
+      },
     },
   });
   host.applyBlock(
@@ -2142,7 +2164,11 @@ test("useSceneSync emits tagged drag solves and armed click overrides", async ()
     { grabPx: 8, priority: 0, tags: { depth_asset_id: "tagged" } },
     mapper,
   );
-  scene.setArmedCloudPick({generation: 1, token: "armed-gesture", asset_id: "armed"});
+  scene.setArmedCloudPick({
+    generation: 1,
+    token: "armed-gesture",
+    asset_id: "armed",
+  });
   assert.equal(
     scene.startTargetDrag({
       clientX: 110,

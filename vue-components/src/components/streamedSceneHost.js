@@ -174,31 +174,42 @@ function normalizeAdaptiveOptions(value) {
 }
 
 function normalizePointCloud(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("pointCloud must be an object");
+  }
+  if (!Number.isFinite(value.pointCount) || value.pointCount < 0) {
+    throw new RangeError("pointCount must be finite and not negative");
+  }
+  if (typeof value.adaptive !== "boolean") {
+    throw new TypeError("adaptive must be a boolean");
+  }
   const presentation = normalizePresentation(value.presentation);
+  if (!presentation) {
+    throw new RangeError(
+      "presentation must be fixed with a positive diameterCssPx, or auto " +
+        "with positive userScale and ordered diameter clamps",
+    );
+  }
   const adaptiveOptions = normalizeAdaptiveOptions(value.adaptiveOptions);
-  if (
-    !Number.isFinite(value.pointCount) ||
-    value.pointCount < 0 ||
-    typeof value.adaptive !== "boolean" ||
-    !presentation ||
-    !adaptiveOptions
-  ) {
-    return null;
+  if (!adaptiveOptions) {
+    throw new RangeError(
+      "adaptiveOptions must hold positive targets and budgets, with " +
+        "maxBudget at least minBudget",
+    );
   }
   if (
     value.pointBudget !== undefined &&
     value.pointBudget !== null &&
     !isPositiveFinite(value.pointBudget)
   ) {
-    return null;
+    throw new RangeError("pointBudget must be positive and finite");
   }
   if (
     value.refinementCutoffPx !== undefined &&
     value.refinementCutoffPx !== null &&
     (!Number.isFinite(value.refinementCutoffPx) || value.refinementCutoffPx < 0)
   ) {
-    return null;
+    throw new RangeError("refinementCutoffPx must be finite and not negative");
   }
   return {
     pointCount: Math.floor(Number(value.pointCount)),
@@ -237,13 +248,10 @@ function normalizeTiles3d(value) {
   const verticalPivotZ =
     value.verticalPivotZ === undefined ? 0 : value.verticalPivotZ;
   const geometricErrorScale = value.geometricErrorScale ?? "maximum";
-  if (
-    !isPositiveFinite(verticalExaggeration) ||
-    !Number.isFinite(verticalPivotZ)
-  ) {
-    if (!isPositiveFinite(verticalExaggeration)) {
-      throw new RangeError("verticalExaggeration must be positive and finite");
-    }
+  if (!isPositiveFinite(verticalExaggeration)) {
+    throw new RangeError("verticalExaggeration must be positive and finite");
+  }
+  if (!Number.isFinite(verticalPivotZ)) {
     throw new RangeError("verticalPivotZ must be finite");
   }
   if (!["maximum", "horizontal"].includes(geometricErrorScale)) {
@@ -278,12 +286,15 @@ function normalizeTiles3d(value) {
   };
 }
 
-export function validateTiles3dSourceDocument(block, factories) {
+// One block is one member's whole configuration: every field is checked and a
+// violation throws, so a block is applied entire or not at all.
+export function validateStreamedSceneBlock(block, factories) {
   if (!block || typeof block !== "object" || Array.isArray(block)) {
-    throw new TypeError("Tiles3DSource document must be an object");
+    throw new TypeError("streamedScene block must be an object");
   }
-  if (block.kind !== "tiles3d") {
-    throw new TypeError("Tiles3DSource kind must be tiles3d");
+  const { kind } = block;
+  if (kind !== "pointCloud" && kind !== "tiles3d") {
+    throw new TypeError("kind must be pointCloud or tiles3d");
   }
   if (!nonEmptyString(block.sourceAssetId)) {
     throw new TypeError("sourceAssetId must be non-empty");
@@ -294,57 +305,23 @@ export function validateTiles3dSourceDocument(block, factories) {
   if (!nonEmptyString(block.endpoint) || block.endpoint.endsWith("/")) {
     throw new TypeError("endpoint must be non-empty and must not end with '/'");
   }
-  if (!factories?.has?.("tiles3d")) {
-    throw new TypeError("tiles3d member factory is unavailable");
+  if (!factories.has(kind)) {
+    throw new TypeError(`${kind} member factory is unavailable`);
   }
-  if (block.pointCloud !== undefined) {
-    throw new TypeError("Tiles3DSource must not include pointCloud");
+  const other = kind === "tiles3d" ? "pointCloud" : "tiles3d";
+  if (block[other] !== undefined) {
+    throw new TypeError(`a ${kind} block must not include ${other}`);
   }
   return {
-    kind: "tiles3d",
+    kind,
     sourceAssetId: block.sourceAssetId,
     revision: block.revision,
     endpoint: block.endpoint,
-    kindConfig: normalizeTiles3d(block.tiles3d),
+    kindConfig:
+      kind === "tiles3d"
+        ? normalizeTiles3d(block.tiles3d)
+        : normalizePointCloud(block.pointCloud),
   };
-}
-
-// Normalization is deliberately atomic. A malformed common field, a missing
-// kind payload, or an extra payload for another known kind drops the block.
-export function normalizeStreamedSceneBlock(block, factories) {
-  if (block?.kind === "tiles3d") {
-    try {
-      return validateTiles3dSourceDocument(block, factories);
-    } catch {
-      return null;
-    }
-  }
-  if (!block || typeof block !== "object" || Array.isArray(block)) return null;
-  const kind = nonEmptyString(block.kind);
-  const sourceAssetId = nonEmptyString(block.sourceAssetId);
-  const revision = nonEmptyString(block.revision);
-  const endpoint = nonEmptyString(block.endpoint);
-  if (
-    !kind ||
-    !sourceAssetId ||
-    !revision ||
-    !endpoint ||
-    endpoint.endsWith("/") ||
-    !factories?.has?.(kind)
-  ) {
-    return null;
-  }
-  if (
-    (kind !== "pointCloud" && block.pointCloud !== undefined) ||
-    (kind !== "tiles3d" && block.tiles3d !== undefined)
-  ) {
-    return null;
-  }
-  const kindConfig =
-    kind === "pointCloud" ? normalizePointCloud(block.pointCloud) : null;
-  return kindConfig
-    ? { kind, sourceAssetId, revision, endpoint, kindConfig }
-    : null;
 }
 
 function rowNorm(matrix, row) {
@@ -662,6 +639,8 @@ export function createStreamedSceneHost(options = {}) {
     ...(options.coordinatorOptions ?? {}),
   });
   const entries = new Map();
+  // nodeId -> why its block was refused; the node has no entry meanwhile.
+  const rejected = new Map();
   let disposed = false;
   let lastContext = null;
 
@@ -700,9 +679,17 @@ export function createStreamedSceneHost(options = {}) {
   function applyBlock(nodeId, block, instance) {
     if (disposed || nodeId === null || nodeId === undefined) return;
     const id = String(nodeId);
-    const config = normalizeStreamedSceneBlock(block, factories);
-    if (!config) {
+    rejected.delete(id);
+    if (!block) {
       remove(id);
+      return;
+    }
+    let config;
+    try {
+      config = validateStreamedSceneBlock(block, factories);
+    } catch (error) {
+      remove(id);
+      rejected.set(id, errorMessage(error));
       return;
     }
     const actor = isLiveInstance(instance) ? instance : null;
@@ -1049,6 +1036,10 @@ export function createStreamedSceneHost(options = {}) {
           stats: describeMember(entry),
         })),
         coordinator: coordinatorStats,
+        rejectedBlocks: [...rejected].map(([nodeId, error]) => ({
+          nodeId,
+          error,
+        })),
         decodePool: workers.stats?.() ?? null,
         textureCapabilities: {
           capabilityKey: textureCapabilities.capabilityKey,
@@ -1078,6 +1069,7 @@ export function createStreamedSceneHost(options = {}) {
       disposed = true;
       for (const entry of entries.values()) releaseEntry(entry);
       entries.clear();
+      rejected.clear();
       coordinator.dispose();
       workerLease?.release();
     },

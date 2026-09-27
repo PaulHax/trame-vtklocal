@@ -657,7 +657,8 @@ def test_oracle_sync_sweep_heals_missed_dirty_marks():
         # a false negative. The next sync()'s mtime sweep must heal it.
         with publisher._tracker.suppress():
             scene.handles["actor"].SetVisibility(False)
-        assert not publisher._tracker.has_pending()
+        publisher.sync()
+        assert server.protocol.drain() == []
 
         publisher.recover()
         ((_topic, message),) = server.protocol.drain()
@@ -679,7 +680,6 @@ def test_oracle_transaction_requires_explicit_recovery_for_suppressed_events():
         with publisher.transaction():
             with publisher._tracker.suppress():
                 scene.handles["actor"].SetVisibility(False)
-            assert not publisher._tracker.has_pending()
 
         assert server.protocol.drain() == []
         publisher.recover()

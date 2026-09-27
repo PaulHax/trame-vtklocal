@@ -123,19 +123,11 @@ _FIELD_BLOB_CACHE: weakref.WeakKeyDictionary[vtkDataArray, tuple[int, ArrayEntry
 def registered_blob(object_manager: vtkObjectManager, hash_value: str) -> Buffer | None:
     """The blob registered at ``hash_value``, or None when it is missing.
 
-    VTK >= 9.6 answers an unknown hash with an empty array instead of None,
-    so emptiness -- not identity -- is the liveness test.
+    VTK 9.6 answers an unknown hash with an empty array, so emptiness is the
+    liveness test.
     """
-    try:
-        blob: Buffer | None = object_manager.GetBlob(hash_value)
-    except (RuntimeError, TypeError, ValueError):
-        return None
-    if blob is None:
-        return None
-    try:
-        return blob if memoryview(blob).nbytes else None
-    except (TypeError, ValueError):
-        return blob
+    blob: Buffer = object_manager.GetBlob(hash_value)
+    return blob if memoryview(blob).nbytes else None
 
 
 def _flat_array_bytes(array: vtkDataArray) -> npt.NDArray[np.uint8]:

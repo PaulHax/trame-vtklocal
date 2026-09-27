@@ -112,11 +112,8 @@ class PushViewRegistry:
 
         count = 0
         for hash_value in sorted(stale):
-            try:
-                if self.vtk_object_manager.UnRegisterBlob(hash_value):
-                    count += 1
-            except (RuntimeError, TypeError, ValueError):
-                pass
+            if self.vtk_object_manager.UnRegisterBlob(hash_value):
+                count += 1
         return count
 
     def _all_tracked_push_blob_hashes(self) -> set[str]:
@@ -126,14 +123,7 @@ class PushViewRegistry:
         return hashes
 
     def _active_object_blob_hashes(self) -> set[str]:
-        try:
-            active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
-        except (RuntimeError, TypeError, ValueError):
-            return set()
-        try:
-            return {
-                str(value)
-                for value in self.vtk_object_manager.GetBlobHashes(active_ids)
-            }
-        except (RuntimeError, TypeError, ValueError):
-            return set()
+        active_ids = list(self.vtk_object_manager.GetAllDependencies(0))
+        return {
+            str(value) for value in self.vtk_object_manager.GetBlobHashes(active_ids)
+        }

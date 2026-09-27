@@ -18,6 +18,7 @@ from push_oracle.scenes import (
     make_line_polydata,
 )
 from trame_vtklocal.store import ref_manager_hashes
+from trame_vtklocal.widgets import hot_arrays
 from trame_vtklocal.widgets.hot_arrays import SMALL_REWRITE_BYTES, live_dataset_array
 from trame_vtklocal.widgets.publisher import (
     OPS_TOPIC,
@@ -368,7 +369,7 @@ def test_length_change_resends_full_content_ref(publisher_env):
     assert not [op for op in message["ops"] if op["op"] == "patchArray"]
 
 
-def test_over_cap_array_is_never_retained(publisher_env):
+def test_over_cap_array_is_never_retained(publisher_env, monkeypatch):
     """The retention cap outranks "there is no retained copy yet".
 
     Retention exists only to make patching possible, and an array past the
@@ -376,7 +377,7 @@ def test_over_cap_array_is_never_retained(publisher_env):
     cap refuses, for a diff that will never be taken.
     """
     scene, publisher, server = publisher_env
-    publisher._hot_arrays._cap_bytes = 8
+    monkeypatch.setattr(hot_arrays, "RETENTION_CAP_BYTES", 8)
 
     _touch_point(scene, 0, (9.0, 9.0, 9.0))
     publisher.sync()

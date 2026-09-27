@@ -1,9 +1,10 @@
 """Dataset array entries for the flat-node translator.
 
 Builds the ``arrays`` section of a dataset node: polydata topology
-(points/verts/lines/polys/strips) and field-data arrays, each carrying a blob
-ref instead of content — ``c:<hash>`` for content-addressed blobs,
-``c2:<connHash>:<offHash>`` for packed vtk.js cell arrays.
+(points/verts/lines/polys/strips, absent from image data) and field-data
+arrays, each carrying a blob ref instead of content — ``c:<hash>`` for
+content-addressed blobs, ``c2:<connHash>:<offHash>`` for packed vtk.js cell
+arrays.
 """
 
 from __future__ import annotations
@@ -303,10 +304,10 @@ def _field_data_arrays(reader: SceneReader, dataset_id: int) -> dict[str, ArrayE
     return arrays
 
 
-def polydata_array_entries(
+def dataset_array_entries(
     reader: SceneReader, state: VtkState
 ) -> dict[str, ArrayEntry]:
-    """The full ``arrays`` section for a polydata node."""
+    """The full ``arrays`` section for a polydata or image data node."""
     arrays: dict[str, ArrayEntry] = {}
     for state_key, spec in POLYDATA_ARRAYS.items():
         entry = _topology_entry(reader, state.get(state_key), spec)

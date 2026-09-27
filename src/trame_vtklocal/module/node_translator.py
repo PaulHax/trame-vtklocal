@@ -26,8 +26,8 @@ from trame_vtklocal.module.screen_size_glyphs import (
     screen_size_glyphs_config,
 )
 from trame_vtklocal.module.node_arrays import (
+    dataset_array_entries,
     glyph_mapper_array_props,
-    polydata_array_entries,
 )
 from trame_vtklocal.module.state_cache import SceneReader
 from trame_vtklocal.module.streamed_scene_translation import translate_actor
@@ -234,10 +234,10 @@ def _scalar_props(
     return props
 
 
-def _translate_polydata(
+def _translate_dataset(
     reader: SceneReader, state: VtkState, vtkjs_type: str
 ) -> SceneNode:
-    arrays = polydata_array_entries(reader, state)
+    arrays = dataset_array_entries(reader, state)
     props = _scalar_props(state, vtkjs_type)
     return _make_node(vtkjs_type, props, {}, arrays, {})
 
@@ -334,8 +334,8 @@ def _translate_node(reader: SceneReader, obj_id: int) -> SceneNode | None:
         return None
 
     vtkjs_type = map_class_name(class_name)
-    if class_name == "vtkPolyData":
-        return _translate_polydata(reader, state, vtkjs_type)
+    if class_name in ("vtkPolyData", "vtkImageData"):
+        return _translate_dataset(reader, state, vtkjs_type)
     if "Mapper" in class_name:
         return _translate_mapper(reader, state, vtkjs_type)
     return _translate_generic(reader, state, vtkjs_type)

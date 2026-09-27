@@ -765,6 +765,42 @@ def test_a_cell_array_ref_with_a_missing_blob_is_refused():
             pack_cell_array_payload(scene.api.vtk_object_manager, ref)
 
 
+def test_image_data_carries_its_point_data():
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+    from vtkmodules.vtkImagingCore import vtkRTAnalyticSource
+    from vtkmodules.vtkRenderingCore import (
+        vtkImageSlice,
+        vtkImageSliceMapper,
+        vtkRenderer,
+        vtkRenderWindow,
+    )
+
+    api = _ObjectManagerApiNoAttachments()
+    source = vtkRTAnalyticSource()
+    mapper = vtkImageSliceMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    image_slice = vtkImageSlice()
+    image_slice.SetMapper(mapper)
+    renderer = vtkRenderer()
+    renderer.AddViewProp(image_slice)
+    render_window = vtkRenderWindow()
+    render_window.SetOffScreenRendering(1)
+    render_window.AddRenderer(renderer)
+    scene = _wrap_scene("image_slice", api, render_window, {})
+
+    image = source.GetOutput()
+    arrays = translate(scene)[oid(scene, image)]["arrays"]
+
+    entry = arrays["field:pointData:RTData"]
+    assert entry["location"] == "pointData"
+    assert entry["registration"] == "setScalars"
+    assert entry["size"] == image.GetNumberOfPoints()
+    payload = resolve_ref_payload(api.vtk_object_manager, entry["ref"], lambda *_: None)
+    assert np.frombuffer(payload, dtype=np.float32).tolist() == (
+        vtk_to_numpy(image.GetPointData().GetScalars()).tolist()
+    )
+
+
 # ----------------------------------------------------------------------
 # Array datatype translation (VTK GetDataType()/class -> JS typed array)
 # ----------------------------------------------------------------------

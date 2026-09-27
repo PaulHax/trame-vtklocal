@@ -375,10 +375,10 @@ test("pickAt drops entries whose mapper instance was deleted", async () => {
   assert.equal(registry.size, 0);
 });
 
-test("pickAt reuses projected positions until points or camera change", async () => {
+test("pickAt follows camera and point changes", async () => {
   const pickables = await loadPickables();
   const vtk = await loadVtk();
-  const { mapper } = buildMapper(vtk, [0, 0, 0, 0.5, 0, 0]);
+  const { mapper, pts } = buildMapper(vtk, [0, 0, 0, 0.5, 0, 0]);
   const registry = pickables.createPickableRegistry();
   pickables.applyPickableBlock(
     registry,
@@ -398,15 +398,23 @@ test("pickAt reuses projected positions until points or camera change", async ()
     renderWindow: { getViews: () => [{ getSize: () => [WIDTH, HEIGHT] }] },
     instances: contextFor(new Map([["m", mapper]])),
   };
+  const pickedAt = (x) =>
+    pickables.pickAt(registry, x, 200, options)?.pointIndex;
 
-  pickables.pickAt(registry, 400, 200, options);
-  const firstCache = registry.get("m").projectionCache;
-  pickables.pickAt(registry, 400, 200, options);
-  assert.equal(registry.get("m").projectionCache, firstCache);
+  // The second point projects to x = 600 and picks there, twice over.
+  assert.equal(pickedAt(600), 1);
+  assert.equal(pickedAt(600), 1);
 
+  // Zooming 2x in x carries it to 800, off the spot it used to cover.
   matrix = [2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-  pickables.pickAt(registry, 400, 200, options);
-  assert.notEqual(registry.get("m").projectionCache, firstCache);
+  assert.equal(pickedAt(600), undefined);
+  assert.equal(pickedAt(800), 1);
+
+  // Moving the first point from 400 to 500 is picked up too.
+  pts.setData(new Float32Array([0.125, 0, 0, 0.5, 0, 0]), 3);
+  pts.modified();
+  assert.equal(pickedAt(400), undefined);
+  assert.equal(pickedAt(500), 0);
 });
 
 test("preview metadata and bound points node id ride the pick result", async () => {

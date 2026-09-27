@@ -53,12 +53,11 @@ def pack_cell_array_payload(
     vtk_object_manager: vtkObjectManager, cells_ref: str
 ) -> bytes:
     """Packed vtk.js Uint32 cell-array bytes for a ``c2:<conn>:<off>`` ref."""
-    parts = cells_ref.split(":")
-    conn_hash = parts[1]
-    off_hash = parts[2]
-
-    conn_blob = vtk_object_manager.GetBlob(conn_hash)
-    off_blob = vtk_object_manager.GetBlob(off_hash)
+    conn_hash, off_hash = cells_ref[len(REF_CELLS_PREFIX) :].split(":", 1)
+    conn_blob = registered_blob(vtk_object_manager, conn_hash)
+    off_blob = registered_blob(vtk_object_manager, off_hash)
+    if conn_blob is None or off_blob is None:
+        raise RuntimeError(f"missing object-manager blob for {cells_ref!r}")
 
     connectivity = np.frombuffer(memoryview(conn_blob), dtype=np.int64)
     offsets = np.frombuffer(memoryview(off_blob), dtype=np.int64)

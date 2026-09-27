@@ -1,14 +1,13 @@
 name: Publish Fork Wheel
 
-# On every push to this fork's `shared-context` branch, build the wheel and
-# publish it as a GitHub prerelease so a downstream app can pin it by
-# URL (`releases/download/<tag>/…whl`).
+# On every push to this fork's `shared-context` branch, build the wheel, test
+# that exact wheel, and publish it as a GitHub prerelease so a downstream app
+# can pin it by URL (`releases/download/<tag>/…whl`).
 #
 # The wheel embeds a UMD bundle built against the vtk-js fork
-# (PaulHax/vtk-js) — the build that carries `ExternalContextRenderWindow`
-# (renamed there from `SharedRenderWindow`, the retired `shared-context`
-# branch) and `vtkPointGaussianMapper`. "shared-context" below always refers to
-# this repo's own branch and wheel-version label, never to a vtk-js branch.
+# (PaulHax/vtk-js), the build that carries `ExternalContextRenderWindow` and
+# `vtkPointGaussianMapper`. "shared-context" below always refers to this repo's
+# own branch and wheel-version label, never to a vtk-js branch.
 #
 # Every input is immutable. vtk-js is fetched by COMMIT — the sha in
 # `vtkjs-fork.env`, the single place it is written — because a branch moves and
@@ -18,9 +17,11 @@ name: Publish Fork Wheel
 # fails the job when anything drifted, and the resulting build-info.json ships
 # inside the wheel.
 #
-# This reuses `./release.sh --publish` — the same script devs run locally — so
-# version stamping, chain verification, the UMD byte-assert, the tag scheme
-# (`v<base>-shared-context.<sha>`), and release creation live in ONE place.
+# This reuses `release.sh`, the same script devs run locally, so version
+# stamping, chain verification, the UMD byte-assert, the tag scheme
+# (`v<base>-shared-context.<sha>`) and release creation live in ONE place.
+# `release.sh build` builds the wheel once; `release.sh publish` uploads that
+# same wheel after checking its evidence names HEAD and the wheel's sha256.
 
 on:
   push:
@@ -90,8 +91,7 @@ jobs:
         working-directory: trame-vtklocal
         run: |
           pip install build
-          ./release.sh
-          echo "SMOKE_UMD_SHA=$(python -c 'import json;print(json.load(open("src/trame_vtklocal/module/serve/js/build-info.json"))["bundle"]["sha256"])')" >> "$GITHUB_ENV"
+          ./release.sh build
 
       - name: Trame browser smoke tests from a clean install of the wheel
         working-directory: trame-vtklocal
@@ -108,15 +108,13 @@ jobs:
           xvfb-run -a /tmp/smoke/bin/python -m pytest tests/test_shared_gl_context.py -v \
             --browser chromium --headed
 
-      - name: Publish the fork wheel release
+      - name: Publish the tested fork wheel
         working-directory: trame-vtklocal
         env:
           GH_TOKEN: ${{ github.token }}
-          # Only the bundle the smoke tests just exercised may be released.
-          EXPECT_UMD_SHA256: ${{ env.SMOKE_UMD_SHA }}
         run: |
           set -o pipefail
-          ./release.sh --publish | tee /tmp/release.out
+          ./release.sh publish | tee /tmp/release.out
           {
             echo '### Fork wheel published :package:'
             echo

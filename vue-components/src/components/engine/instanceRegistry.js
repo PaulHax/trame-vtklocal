@@ -77,12 +77,12 @@ export function createInstanceRegistry() {
     return record;
   }
 
-  function detach(id, { status = "pending", reason = null } = {}) {
+  function detach(id) {
     const record = ensureRecord(id);
     noteInstance(record, null);
     record.appliedType = null;
-    record.status = status;
-    record.pendingReason = reason;
+    record.status = "pending";
+    record.pendingReason = null;
     return record;
   }
 

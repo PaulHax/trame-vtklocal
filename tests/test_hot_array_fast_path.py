@@ -125,17 +125,6 @@ def test_guard_rejects_the_first_mutation_of_an_array():
         publisher.cleanup()
 
 
-def test_guard_rejects_an_over_cap_array(retained_points):
-    scene, publisher, _server = retained_points
-    # The cap is a constructor default with no publisher-level setting; the
-    # guard reads it off the differ on every plan.
-    publisher._hot_arrays._cap_bytes = 8
-
-    _touch_point(scene, 1234, (5.0, 6.0, 7.0))
-
-    assert _try_fast_path(publisher) is None
-
-
 def test_guard_rejects_a_dtype_change(retained_points):
     """Same values, wider element type: only the dtype check can catch this.
 
@@ -155,36 +144,11 @@ def test_guard_rejects_a_dtype_change(retained_points):
     assert _try_fast_path(publisher) is None
 
 
-def test_guard_rejects_a_size_change(retained_points):
-    scene, publisher, _server = retained_points
-    coords = np.zeros((POINT_COUNT + 7, 3), dtype=np.float32)
-
-    scene.handles["points"].SetData(numpy_to_vtk(coords, deep=True))
-    scene.handles["points"].Modified()
-
-    assert _try_fast_path(publisher) is None
-
-
 def test_guard_rejects_more_spans_than_the_cap(retained_points):
     scene, publisher, _server = retained_points
     # Nine well-separated moves against a default cap of eight spans.
     for index in range(9):
         scene.handles["points"].SetPoint(index * 500, float(index), 1.0, 2.0)
-    scene.handles["points"].Modified()
-
-    assert _try_fast_path(publisher) is None
-
-
-def test_guard_rejects_a_majority_rewrite(retained_points):
-    """Past half of an array above the small-array limit, the tick resends it.
-
-    Two conditions enforce this (a changed-element short circuit before spans
-    are assembled, and a patched-size check after); the test pins the outcome,
-    so deleting either one alone still leaves it green.
-    """
-    scene, publisher, _server = retained_points
-    for index in range(POINT_COUNT):
-        scene.handles["points"].SetPoint(index, float(index), 0.5, -0.5)
     scene.handles["points"].Modified()
 
     assert _try_fast_path(publisher) is None

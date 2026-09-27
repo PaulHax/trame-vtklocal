@@ -97,8 +97,6 @@ const pageWorkers = {
         failedJobs: 0,
         cancelledJobs: 0,
         workerElapsedMs: 0,
-        decodedGeometryBytes: 0,
-        decodedTextureBytes: 0,
         basisRuntimeInitializationMs: 0,
         basisTranscodeMs: 0,
         basisTextures: 0,

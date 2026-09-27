@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from vtkmodules.vtkSerializationManager import vtkObjectManager
 
     from trame_vtklocal.store import SceneNode
-    from trame_vtklocal.wire import OpsMessage, ResyncPayload
+    from trame_vtklocal.wire import OpsMessage, PushViewHost, ResyncPayload
 
     # A dataset array of any numeric VTK scalar type, viewed through numpy.
     NumericArray = npt.NDArray[np.generic]
@@ -112,16 +112,13 @@ def nodes_reference_missing_blob(
     return False
 
 
-def attach_binary(api: object, message: OpsMessage | ResyncPayload) -> None:
+def attach_binary(api: PushViewHost, message: OpsMessage | ResyncPayload) -> None:
     """Replace binary payloads in ``message`` with wslink attachments."""
-    attach = getattr(api, "addAttachment", None)
-    if attach is None:
-        return
     if "ops" in message:
         for op in message["ops"]:
             if op["op"] == "patchArray":
-                op["data"] = attach(memoryview(op["data"]))
+                op["data"] = api.addAttachment(memoryview(op["data"]))
     blobs = message.get("blobs")
     if blobs:
         for ref, payload in blobs.items():
-            blobs[ref] = attach(memoryview(payload))
+            blobs[ref] = api.addAttachment(memoryview(payload))

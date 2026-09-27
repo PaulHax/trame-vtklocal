@@ -508,7 +508,7 @@ class ScenePublisher:
         return packed
 
     def _attach_binary(self, message: OpsMessage | ResyncPayload) -> None:
-        attach_binary(self._api, message)
+        attach_binary(self._host, message)
 
     def _notify_blob_registry(self, refs_leaving: Iterable[str]) -> None:
         self._host.update_push_view_refs(

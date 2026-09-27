@@ -16,20 +16,5 @@ import { mat4, vec3 } from "gl-matrix";
 
 export { mat4, vec3 };
 
-const GLOBAL_KEY = "trameVtklocal";
-
-function globalScope() {
-  if (typeof window !== "undefined") return window;
-  if (typeof globalThis !== "undefined") return globalThis;
-  return {};
-}
-
 // Attach `{ mat4, vec3 }` alongside the view registry without clobbering it.
-export function exposeGlMatrix() {
-  const scope = globalScope();
-  const ns = (scope[GLOBAL_KEY] = scope[GLOBAL_KEY] || {});
-  ns.glMatrix = { mat4, vec3 };
-  return ns.glMatrix;
-}
-
-exposeGlMatrix();
+(globalThis.trameVtklocal ??= {}).glMatrix = { mat4, vec3 };

@@ -7,7 +7,8 @@ let registry;
 
 beforeEach(async () => {
   registry = await loadModule("/src/components/viewRegistry.js");
-  registry.resetViewRegistry();
+  globalThis.trameVtklocal.views.clear();
+  globalThis.trameVtklocal.waiters.clear();
 });
 
 after(async () => {

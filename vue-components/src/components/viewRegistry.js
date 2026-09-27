@@ -10,31 +10,12 @@
 // that loads the fork bundle — including app code served separately — shares one
 // registry instance.
 
-const GLOBAL_KEY = "trameVtklocal";
-
-function globalScope() {
-  if (typeof window !== "undefined") return window;
-  if (typeof globalThis !== "undefined") return globalThis;
-  return {};
-}
-
-function store() {
-  const scope = globalScope();
-  let ns = scope[GLOBAL_KEY];
-  if (!ns) {
-    ns = scope[GLOBAL_KEY] = {};
-  }
-  if (!(ns.views instanceof Map)) {
-    ns.views = new Map();
-  }
-  if (!(ns.waiters instanceof Map)) {
-    ns.waiters = new Map();
-  }
-  // Public helpers on the namespace so consumers only touch window.trameVtklocal.
-  ns.whenView = whenView;
-  ns.getView = getView;
-  return ns;
-}
+const ns = (globalThis.trameVtklocal ??= {});
+ns.views ??= new Map();
+ns.waiters ??= new Map();
+// Public helpers on the namespace so consumers only touch window.trameVtklocal.
+ns.whenView = whenView;
+ns.getView = getView;
 
 function normalizeKey(key) {
   return key == null ? null : String(key);
@@ -43,7 +24,6 @@ function normalizeKey(key) {
 // Register `api` under every provided key (nullish keys are ignored). Resolves
 // any pending `whenView` promises waiting on those keys.
 export function registerView(keys, api) {
-  const ns = store();
   const seen = new Set();
   for (const raw of keys) {
     const key = normalizeKey(raw);
@@ -62,7 +42,6 @@ export function registerView(keys, api) {
 // Remove the given keys. When `api` is supplied, only drop a key that still
 // points at that same api (so a remount that re-registered first is not clobbered).
 export function unregisterView(keys, api = null) {
-  const ns = store();
   for (const raw of keys) {
     const key = normalizeKey(raw);
     if (key == null) continue;
@@ -74,7 +53,6 @@ export function unregisterView(keys, api = null) {
 
 // Synchronous lookup; returns null when no view is registered under `key`.
 export function getView(key) {
-  const ns = store();
   const normalized = normalizeKey(key);
   if (normalized == null) return null;
   return ns.views.get(normalized) || null;
@@ -83,7 +61,6 @@ export function getView(key) {
 // Resolve with the view's API once it is registered under `key`; resolves
 // immediately when the view is already present.
 export function whenView(key) {
-  const ns = store();
   const normalized = normalizeKey(key);
   if (normalized == null) {
     return Promise.reject(new Error("whenView requires a view key"));
@@ -99,10 +76,4 @@ export function whenView(key) {
     }
     waiters.add(resolve);
   });
-}
-
-// Test-only: drop the whole registry so cases start from a clean global.
-export function resetViewRegistry() {
-  const scope = globalScope();
-  delete scope[GLOBAL_KEY];
 }

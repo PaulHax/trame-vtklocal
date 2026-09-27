@@ -278,11 +278,7 @@ class VtkJsBaseView(HtmlElement):
         api = self.api
         object_manager = api.vtk_object_manager
         if publisher is not None:
-            api.update_push_view_refs(
-                self._window_id,
-                frozenset(),
-                publisher.store.live_refs(),
-            )
+            # Unregistering the view queues every blob its store still names.
             publisher.cleanup()
             self._publisher = None
         object_manager.UnRegisterObject(int(self._window_id))

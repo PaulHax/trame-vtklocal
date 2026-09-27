@@ -53,7 +53,8 @@ class HtmlElement(AbstractElement):  # type: ignore[misc, no-any-unimported]
 
 class VtkJsBaseView(HtmlElement):
     _next_id = 0
-    _ref_prefix = "_vtkjsview"
+    _element_name: str
+    _ref_prefix: str
     _scene_event_names: list[Union[str, tuple[str, str]]] = [
         "updated",
         "camera",
@@ -63,19 +64,21 @@ class VtkJsBaseView(HtmlElement):
 
     def __init__(
         self,
-        _elem_name: str,
         render_window: vtkRenderWindow,
+        *,
         tiles3d_texture_policy: Tiles3DTexturePolicy = "auto",
         tiles3d_quality_policy: Tiles3DQualityPolicy = "adaptive",
         streamed_memory_budget_bytes: int | None = None,
         **kwargs: object,
     ) -> None:
-        self._tiles3d_texture_policy = _validate_policy(
+        from trame_vtklocal.widgets.publisher import ScenePublisher
+
+        texture_policy = _validate_policy(
             "tiles3d_texture_policy",
             tiles3d_texture_policy,
             TILES3D_TEXTURE_POLICIES,
         )
-        self._tiles3d_quality_policy = _validate_policy(
+        quality_policy = _validate_policy(
             "tiles3d_quality_policy",
             tiles3d_quality_policy,
             TILES3D_QUALITY_POLICIES,
@@ -85,18 +88,20 @@ class VtkJsBaseView(HtmlElement):
             or not isinstance(streamed_memory_budget_bytes, int)
             or not 0 < streamed_memory_budget_bytes <= 2**53 - 1
         ):
-            raise ValueError("streamed_memory_budget_bytes must be a positive safe integer")
-        super().__init__(_elem_name, **kwargs)
+            raise ValueError(
+                "streamed_memory_budget_bytes must be a positive safe integer"
+            )
+        super().__init__(self._element_name, **kwargs)
         if streamed_memory_budget_bytes is not None:
             self._attributes["streamed_memory_budget_bytes"] = (
                 f':streamed-memory-budget-bytes="{streamed_memory_budget_bytes}"'
             )
 
         self._attributes["tiles3d_texture_policy"] = (
-            f'tiles3d-texture-policy="{self._tiles3d_texture_policy}"'
+            f'tiles3d-texture-policy="{texture_policy}"'
         )
         self._attributes["tiles3d_quality_policy"] = (
-            f'tiles3d-quality-policy="{self._tiles3d_quality_policy}"'
+            f'tiles3d-quality-policy="{quality_policy}"'
         )
 
         ref = kwargs.get("ref")
@@ -118,6 +123,11 @@ class VtkJsBaseView(HtmlElement):
         self._attributes["ref"] = f'ref="{self._ref}"'
         self._attributes["view_key"] = f'view-key="{self._ref}"'
 
+        self._event_names += self._scene_event_names
+        self._publisher = ScenePublisher(
+            self.server, self.api, render_window, self._window_id
+        )
+
     def __del__(self) -> None:
         try:
             self.cleanup()
@@ -138,30 +148,6 @@ class VtkJsBaseView(HtmlElement):
     @property
     def ref_name(self) -> str:
         return self._ref
-
-    @property
-    def tiles3d_texture_policy(self) -> Tiles3DTexturePolicy:
-        return self._tiles3d_texture_policy
-
-    @property
-    def tiles3d_quality_policy(self) -> Tiles3DQualityPolicy:
-        return self._tiles3d_quality_policy
-
-    def _init_publisher(self) -> None:
-        from trame_vtklocal.widgets.publisher import ScenePublisher
-
-        if self._publisher:
-            self._publisher.cleanup()
-        self._publisher = ScenePublisher(
-            self.server,
-            self.api,
-            self._render_window,
-            self._window_id,
-        )
-
-    def _configure_push(self) -> None:
-        self._event_names += self._scene_event_names
-        self._init_publisher()
 
     # ------------------------------------------------------------------
     # Push sync v2 view API

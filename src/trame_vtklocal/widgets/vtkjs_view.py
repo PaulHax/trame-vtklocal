@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 
 class VtkJsLocalView(VtkJsBaseView):
+    _element_name = "vtk-js-local"
     _ref_prefix = "_vtkjslocalview"
 
     def __init__(
@@ -22,16 +23,16 @@ class VtkJsLocalView(VtkJsBaseView):
         *,
         tiles3d_texture_policy: Tiles3DTexturePolicy = "auto",
         tiles3d_quality_policy: Tiles3DQualityPolicy = "adaptive",
+        streamed_memory_budget_bytes: int | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(
-            "vtk-js-local",
             render_window,
             tiles3d_texture_policy=tiles3d_texture_policy,
             tiles3d_quality_policy=tiles3d_quality_policy,
+            streamed_memory_budget_bytes=streamed_memory_budget_bytes,
             **kwargs,
         )
-        self._configure_push()
         # A standalone view starts from the server's framing; its own
         # interactor owns the camera from there.
         self.set_camera()

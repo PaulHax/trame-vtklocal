@@ -39,15 +39,13 @@ class DirtyTracker:
         self,
         object_manager: vtkObjectManager,
         rw_id: int | str,
-        on_dirty: Callable[[], None] | None = None,
-        state_cache: ParsedStateCache | None = None,
+        on_dirty: Callable[[], None],
+        state_cache: ParsedStateCache,
     ) -> None:
         self._object_manager = object_manager
         self._rw_id = int(rw_id)
         self._on_dirty = on_dirty
-        self._graph = DependencyGraph(
-            object_manager, self._rw_id, state_cache or ParsedStateCache()
-        )
+        self._graph = DependencyGraph(object_manager, self._rw_id, state_cache)
         self._classes = self._graph.classes
         self._dirty_ids: set[str] = set()
         self._swept_ids: set[str] = set()
@@ -84,8 +82,7 @@ class DirtyTracker:
             return
         self._dirty_ids.add(object_id)
         self._swept_ids.discard(object_id)
-        if self._on_dirty:
-            self._on_dirty()
+        self._on_dirty()
 
     def classes(self) -> dict[str, str]:
         return self._classes

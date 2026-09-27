@@ -532,9 +532,10 @@ def test_add_then_remove_actor_round_trips_through_the_store():
 # ----------------------------------------------------------------------
 
 
-def test_screen_size_glyph_mapper_carries_its_block():
+def test_screen_size_glyph_mapper_carries_its_block(capfd):
     scene = make_glyph_scene()
     nodes = translate(scene)
+    assert "ERROR" not in capfd.readouterr().err
 
     mapper_id = oid(scene, scene.handles["mapper"])
     centers_id = oid(scene, scene.handles["centers"])
@@ -542,8 +543,8 @@ def test_screen_size_glyph_mapper_carries_its_block():
     node = nodes[mapper_id]
 
     assert node["type"] == "vtkGlyph3DMapper"
-    assert node["refs"]["inputs"][0] == centers_id
-    assert node["refs"]["inputs"][1] == source_id
+    assert node["refs"]["inputs"] == [centers_id, source_id]
+    assert source_id in nodes
     assert node["props"]["scaleArray"] == "DistanceToCamera"
     assert node["props"]["orientationArray"] == "GlyphRotation"
     assert node["props"]["orientationMode"] == 1

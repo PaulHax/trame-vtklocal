@@ -17,6 +17,10 @@ export function applyPointCloudPresentationBlock(
     block.diameterCssPx <= 0 ||
     !isLiveInstance(instance)
   ) {
+    // Leaving CSS sizing hands the mapper back its own point size.
+    if (registry.get(id)?.mapper === instance && isLiveInstance(instance)) {
+      instance.setPointSizeScale?.(1);
+    }
     registry.delete(id);
     return registry;
   }

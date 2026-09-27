@@ -105,3 +105,25 @@ test("a live mapper is registered only for a fixed block with a positive diamete
   );
   assert.equal(registry.size, 0);
 });
+
+test("leaving fixed CSS sizing restores the mapper's point size scale", async () => {
+  const { applyPointCloudPresentationBlock } = await loadPresentationModule();
+  const previous = globalThis.devicePixelRatio;
+  const registry = new Map();
+  const mapper = makeMapper();
+  try {
+    globalThis.devicePixelRatio = 2;
+    applyPointCloudPresentationBlock(
+      registry,
+      "mapper-1",
+      { mode: "fixed", diameterCssPx: 2 },
+      mapper,
+    );
+    applyPointCloudPresentationBlock(registry, "mapper-1", null, mapper);
+  } finally {
+    if (previous === undefined) delete globalThis.devicePixelRatio;
+    else globalThis.devicePixelRatio = previous;
+  }
+  assert.deepEqual(mapper.pointSizeScales, [2, 1]);
+  assert.equal(registry.size, 0);
+});

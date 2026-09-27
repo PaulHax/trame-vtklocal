@@ -212,7 +212,7 @@ for a later retry.
 TSW feature example
 -------------------
 
-``examples/vtk/maplibre_vtkjs_partial.py`` exercises shared MapLibre rendering,
+``examples/vtk/maplibre_vtkjs.py`` exercises shared MapLibre rendering,
 three renderer layers, delayed projected textures, screen-sized pickable
 glyphs, direct and streamed clouds, a textured 3D Tiles mesh, and dependency
 replacement across two views. See ``examples/vtk/tsw_demo/README.md`` for controls

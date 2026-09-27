@@ -6,11 +6,9 @@
 export const VIEW_EMITS = Object.freeze([
   "updated",
   "camera",
-  "command",
   "onReady",
   "beforeSceneLoaded",
   "afterSceneLoaded",
-  "messageApplied",
   "pointerEvent",
 ]);
 

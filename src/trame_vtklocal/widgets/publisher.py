@@ -73,16 +73,6 @@ WIRE_VERSION = 2
 OPS_TOPIC = "scene.ops"
 
 
-_REQUIRED_MANAGER_METHODS = (
-    "UpdateStateFromObject",
-    "UpdateStatesFromObjects",
-    "GetAllDependencies",
-    "GetState",
-    "GetObjectAtId",
-    "GetBlob",
-)
-
-
 class ScenePublisher:
     """Server-authoritative broadcast publisher for one render window."""
 
@@ -123,13 +113,8 @@ class ScenePublisher:
         except RuntimeError:
             self._loop = None
 
-        object_manager = self._object_manager
-        for name in _REQUIRED_MANAGER_METHODS:
-            if not hasattr(object_manager, name):
-                raise RuntimeError(f"Push sync requires vtkObjectManager.{name}")
-
         self._tracker = DirtyTracker(
-            object_manager,
+            self._object_manager,
             self._rw_id,
             on_dirty=self._schedule_publish,
             state_cache=self._state_cache,
@@ -372,24 +357,26 @@ class ScenePublisher:
     # ------------------------------------------------------------------
 
     @property
-    def _object_manager(self) -> vtkObjectManager:
+    def _host(self) -> PushViewHost:
         api = self._api
         if api is None:
             raise RuntimeError("scene publisher is disposed")
-        return api.vtk_object_manager
+        return api
+
+    @property
+    def _object_manager(self) -> vtkObjectManager:
+        return self._host.vtk_object_manager
 
     def _prune_object_manager(self, include_blobs: bool = False) -> None:
         # vtkObjectManager retains every state/blob it has ever seen; dead
         # objects and states are pruned on detachment, blobs only at construction
         # (a per-frame PruneUnusedBlobs sweep grows with uptime — the blob
         # registry retires them with targeted UnRegisterBlob instead).
-        methods: tuple[str, ...] = ("PruneUnusedObjects", "PruneUnusedStates")
+        object_manager = self._object_manager
+        object_manager.PruneUnusedObjects()
+        object_manager.PruneUnusedStates()
         if include_blobs:
-            methods = (*methods, "PruneUnusedBlobs")
-        for name in methods:
-            prune = getattr(self._object_manager, name, None)
-            if prune is not None:
-                prune()
+            object_manager.PruneUnusedBlobs()
 
     def _refresh_window_states(self) -> None:
         """Render + refresh the whole window's serialized states (eager init)."""
@@ -524,6 +511,6 @@ class ScenePublisher:
         attach_binary(self._api, message)
 
     def _notify_blob_registry(self, refs_leaving: Iterable[str]) -> None:
-        update = getattr(self._api, "update_push_view_refs", None)
-        if update is not None:
-            update(self._rw_id, self._store.live_refs(), refs_leaving)
+        self._host.update_push_view_refs(
+            self._rw_id, self._store.live_refs(), refs_leaving
+        )

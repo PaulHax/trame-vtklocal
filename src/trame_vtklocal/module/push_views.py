@@ -110,14 +110,10 @@ class PushViewRegistry:
         if not stale:
             return 0
 
-        unregister = getattr(self.vtk_object_manager, "UnRegisterBlob", None)
-        if unregister is None:
-            return 0
-
         count = 0
         for hash_value in sorted(stale):
             try:
-                if unregister(hash_value):
+                if self.vtk_object_manager.UnRegisterBlob(hash_value):
                     count += 1
             except (RuntimeError, TypeError, ValueError):
                 pass

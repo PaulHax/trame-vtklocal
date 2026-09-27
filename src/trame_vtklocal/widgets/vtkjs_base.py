@@ -278,21 +278,17 @@ class VtkJsBaseView(HtmlElement):
         api = self.api
         object_manager = api.vtk_object_manager
         if publisher is not None:
-            update_refs = getattr(api, "update_push_view_refs", None)
-            if update_refs is not None:
-                update_refs(
-                    self._window_id,
-                    frozenset(),
-                    publisher.store.live_refs(),
-                )
+            api.update_push_view_refs(
+                self._window_id,
+                frozenset(),
+                publisher.store.live_refs(),
+            )
             publisher.cleanup()
             self._publisher = None
         object_manager.UnRegisterObject(int(self._window_id))
         object_manager.PruneUnusedObjects()
         object_manager.PruneUnusedStates()
-        flush_blobs = getattr(api, "flush_stale_blobs", None)
-        if flush_blobs is not None:
-            flush_blobs()
+        api.flush_stale_blobs()
         self._closed = True
 
     def close(self) -> None:

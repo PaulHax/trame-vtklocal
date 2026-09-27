@@ -681,8 +681,7 @@ export function createStreamedSceneHost(options = {}) {
     : "auto";
   const tiles3dQualityPolicy =
     options.tiles3dQualityPolicy === "fixed" ? "fixed" : "adaptive";
-  const memory =
-    options.memory ?? getPageMemoryPool(options.streamedMemoryBudgetBytes);
+  const memory = getPageMemoryPool(options.streamedMemoryBudgetBytes);
   const workerLease = options.workers ? null : acquirePageWorkers();
   const workers = options.workers ?? workerLease.workers;
   const textureCapabilities = {
@@ -707,22 +706,13 @@ export function createStreamedSceneHost(options = {}) {
   let fallbackFrameSerial = 0;
 
   function reconcileTextureCapabilities(context) {
-    let environment;
-    if (options.textureCapabilities) {
-      environment = {
-        capabilities: options.textureCapabilities,
-        renderer: options.webglRenderer ?? webglRenderer,
-        rgbaReason: options.rgbaReason ?? rgbaReason,
-      };
-    } else {
-      // GPU capabilities can only change with the GL context itself, and the
-      // probe costs ~9 GL entry-point calls. beforeRender() runs it per paint
-      // and per applied message, so key it on the context.
-      const gl = contextGl(context);
-      if (gl && gl === probedGl) return;
-      probedGl = gl;
-      environment = probeTextureEnvironment(gl, tiles3dTexturePolicy);
-    }
+    // GPU capabilities can only change with the GL context itself, and the
+    // probe costs ~9 GL entry-point calls. beforeRender() runs it per paint
+    // and per applied message, so key it on the context.
+    const gl = contextGl(context);
+    if (gl && gl === probedGl) return;
+    probedGl = gl;
+    const environment = probeTextureEnvironment(gl, tiles3dTexturePolicy);
     const next = environment.capabilities;
     webglRenderer = { ...environment.renderer };
     rgbaReason = environment.rgbaReason ?? null;
@@ -1139,11 +1129,7 @@ export function createStreamedSceneHost(options = {}) {
           peakMs: picking.peakMs,
           statuses: { ...picking.statuses },
         },
-        pageMemory: memory.stats?.() ?? {
-          totalBytes: null,
-          memberCount: memory.memberCount?.() ?? 0,
-          shareBytes: null,
-        },
+        pageMemory: memory.stats(),
       };
     },
     dispose() {

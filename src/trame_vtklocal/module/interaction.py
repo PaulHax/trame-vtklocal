@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Literal, SupportsFloat, SupportsInt, TypedDict, cast
 
 from trame_vtklocal.module.feature_blocks import get_block, set_block
+from trame_vtklocal.module.validation import positive_finite
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
@@ -63,9 +64,7 @@ def make_pickable(
     op); an unchanged config is a no-op, so callers can re-tag on every update
     without forcing spurious re-serialization.
     """
-    grab = float(grab_px)
-    if not math.isfinite(grab) or grab <= 0:
-        raise ValueError("grab_px must be a positive number")
+    grab = positive_finite(grab_px, "grab_px must be a positive number")
     if preview not in (None, "screen", "plane", "cloud"):
         raise ValueError("preview must be None, 'screen', 'plane', or 'cloud'")
     normalized_plane: PickPlane | None = None

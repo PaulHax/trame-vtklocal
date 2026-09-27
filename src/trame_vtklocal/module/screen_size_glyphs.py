@@ -9,10 +9,10 @@ centers directly and no ``vtkDistanceToCamera`` filter sits in the pipeline.
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, SupportsFloat, TypedDict, cast
 
 from trame_vtklocal.module.feature_blocks import get_block, set_block
+from trame_vtklocal.module.validation import positive_finite
 
 if TYPE_CHECKING:
     from vtkmodules.vtkCommonCore import vtkObjectBase
@@ -33,9 +33,7 @@ def mark_screen_size_glyphs(
     array_name: str = DEFAULT_SCALE_ARRAY,
 ) -> ScreenSizeGlyphsConfig:
     """Scale ``mapper``'s glyphs on the client to ``screen_px`` CSS pixels."""
-    screen_size = float(screen_px)
-    if not math.isfinite(screen_size) or screen_size <= 0:
-        raise ValueError("screen_px must be positive and finite")
+    screen_size = positive_finite(screen_px, "screen_px must be positive and finite")
     if not array_name:
         raise ValueError("array_name is required")
     mapper.SetScaleArray(array_name)

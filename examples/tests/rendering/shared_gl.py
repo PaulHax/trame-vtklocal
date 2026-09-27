@@ -130,7 +130,6 @@ JS_CODE = r"""
 
     window.testCommonSceneApi = function() {
         const methods = [
-            "getQueueLength",
             "getRenderWindow",
             "getRenderer",
             "getSyncDiagnostics",

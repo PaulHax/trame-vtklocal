@@ -46,10 +46,8 @@ export const VIEW_PROPS = Object.freeze({
 });
 
 export const COMMON_VIEW_API_KEYS = Object.freeze([
-  "getQueueLength",
   "getRenderWindow",
   "getRenderer",
-  "getRenderers",
   "setRenderedCamera",
   "getRenderedCamera",
   "enableCameraReports",

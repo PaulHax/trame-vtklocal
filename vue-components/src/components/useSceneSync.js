@@ -251,10 +251,6 @@ export function useSceneSync(
     return true;
   }
 
-  function getQueueLength() {
-    return engine?.getDiagnostics?.().bufferLength ?? 0;
-  }
-
   function applyCameraIntent(params) {
     const { camera } = bindPrimaryCameraToRenderers();
     if (!camera || !params) return false;
@@ -712,10 +708,8 @@ export function useSceneSync(
   return {
     initialize,
     cleanup,
-    getQueueLength,
     getRenderWindow,
     getRenderer,
-    getRenderers,
     setRenderedCamera,
     getRenderedCamera,
     enableCameraReports: cameraReports.enable,

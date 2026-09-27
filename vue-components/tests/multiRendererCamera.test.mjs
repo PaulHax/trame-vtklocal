@@ -85,7 +85,6 @@ test("the view shares one client camera across renderer layers", async () => {
   const projectionMatrix = Array.from({ length: 16 }, (_, i) => 32 - i);
   assert.equal(scene.setRenderedCamera({ viewMatrix, projectionMatrix }), true);
 
-  assert.deepEqual(scene.getRenderers(), [primary, underlay]);
   assert.equal(scene.getRenderer(), primary);
   assert.equal(underlay.getActiveCamera(), primaryCamera);
   assert.deepEqual(primaryCamera.viewMatrix, viewMatrix);

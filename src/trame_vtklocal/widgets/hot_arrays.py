@@ -1,4 +1,4 @@
-"""Retained-copy region differ for publisher-configured hot arrays."""
+"""Retained-copy region differ for dataset points, the one hot array."""
 
 from __future__ import annotations
 
@@ -9,8 +9,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
-
-from trame_vtklocal.widgets.blob_payloads import numpy_array_from_vtk_data
+from vtkmodules.util.numpy_support import vtk_to_numpy
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -29,7 +28,6 @@ Span = Tuple[int, int]
 _CacheKey = Tuple[str, str]
 
 HOT_ARRAY_KEY = "points"
-DEFAULT_HOT_ARRAY_KEYS = frozenset({HOT_ARRAY_KEY})
 RETENTION_CAP_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_SPANS = 8
 DEFAULT_GAP_ELEMENTS = 3
@@ -55,37 +53,26 @@ JS_ARRAY_DTYPE_MAP: dict[str, type[np.generic]] = {
 
 
 def live_dataset_array_sources(
-    object_manager: vtkObjectManager, node_id: str | int, key: str
+    object_manager: vtkObjectManager, node_id: str | int
 ) -> tuple[vtkObject, ...]:
-    """VTK objects whose modification can change a supported dataset array."""
+    """A dataset's points and their data array, whose edits move the points."""
     vtk_object = object_manager.GetObjectAtId(int(node_id))
     if vtk_object is None:
         return ()
-    if key == HOT_ARRAY_KEY:
-        points = vtk_object.GetPoints() if hasattr(vtk_object, "GetPoints") else None
-        data = points.GetData() if points is not None else None
-        sources: tuple[vtkObject | None, ...] = (points, data)
-    elif key.startswith("field:pointData:"):
-        name = key.split(":", 2)[2]
-        point_data = (
-            vtk_object.GetPointData() if hasattr(vtk_object, "GetPointData") else None
-        )
-        data = point_data.GetArray(name) if point_data is not None else None
-        sources = (data,)
-    else:
-        sources = ()
-    return tuple(source for source in sources if source is not None)
+    points = vtk_object.GetPoints() if hasattr(vtk_object, "GetPoints") else None
+    data = points.GetData() if points is not None else None
+    return tuple(source for source in (points, data) if source is not None)
 
 
 def live_dataset_array(
-    object_manager: vtkObjectManager, node_id: str | int, key: str
+    object_manager: vtkObjectManager, node_id: str | int
 ) -> NumericArray | None:
-    """Flat numpy view for a supported dataset array key, or ``None``."""
-    sources = live_dataset_array_sources(object_manager, node_id, key)
-    data = sources[-1] if sources else None
-    if data is None:
+    """Flat numpy view of a dataset's points, or ``None``."""
+    sources = live_dataset_array_sources(object_manager, node_id)
+    if not sources:
         return None
-    return np.asarray(numpy_array_from_vtk_data(data)).reshape(-1)
+    array: NumericArray = vtk_to_numpy(sources[-1])
+    return array.reshape(-1)
 
 
 def _changed_spans(changed: npt.NDArray[np.intp], gap_elements: int) -> list[Span]:
@@ -129,19 +116,17 @@ class HotArrayPatchPlan:
 
 
 class HotArrayDiffer:
-    """Turn small edits to selected dataset arrays into ``patchArray`` ops."""
+    """Turn small edits to dataset points into ``patchArray`` ops."""
 
     def __init__(
         self,
         live_array_getter: LiveHotArray,
-        hot_keys: Iterable[str] = DEFAULT_HOT_ARRAY_KEYS,
         cap_bytes: int = RETENTION_CAP_BYTES,
         max_spans: int = DEFAULT_MAX_SPANS,
         gap_elements: int = DEFAULT_GAP_ELEMENTS,
         small_rewrite_bytes: int = SMALL_REWRITE_BYTES,
     ) -> None:
         self._live_array = live_array_getter
-        self._hot_keys = frozenset(str(key) for key in hot_keys)
         self._cap_bytes = cap_bytes
         self._max_spans = max_spans
         self._gap_elements = gap_elements
@@ -152,10 +137,6 @@ class HotArrayDiffer:
         self._orphaned_refs: dict[_CacheKey, str] = {}
         self._released_refs: set[str] = set()
         self._staged: list[Callable[[], None]] | None = None
-
-    @property
-    def hot_keys(self) -> frozenset[str]:
-        return self._hot_keys
 
     def take_released_refs(self) -> set[str]:
         released = self._released_refs
@@ -367,12 +348,12 @@ class HotArrayDiffer:
         stored_node: SceneNode | None,
         tx: SceneTransaction,
     ) -> None:
-        """Rewrite selected array refs and/or queue one or more patches."""
-        arrays = node.get("arrays") or {}
+        """Rewrite the points ref and/or queue one or more patches."""
+        entry = (node.get("arrays") or {}).get(HOT_ARRAY_KEY)
+        if entry is None:
+            self.drop(node_id, HOT_ARRAY_KEY)
+            return
         stored_arrays = (stored_node.get("arrays") if stored_node else None) or {}
-        for key in self._hot_keys:
-            entry = arrays.get(key)
-            if entry is None:
-                self.drop(node_id, key)
-                continue
-            self._apply_key(node_id, key, entry, stored_arrays.get(key), tx)
+        self._apply_key(
+            node_id, HOT_ARRAY_KEY, entry, stored_arrays.get(HOT_ARRAY_KEY), tx
+        )

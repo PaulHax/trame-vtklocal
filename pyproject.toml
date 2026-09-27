@@ -74,21 +74,6 @@ packages = [
     "src/trame",
 ]
 
-[tool.semantic_release]
-version_toml = [
-    "pyproject.toml:project.version",
-]
-build_command = """
-  python -m venv .venv
-  source .venv/bin/activate
-  pip install -U pip build
-  python -m build .
-"""
-
-[semantic_release.publish]
-dist_glob_patterns = ["dist/*"]
-upload_to_vcs_release = true
-
 [tool.ruff]
 line-length = 88
 indent-width = 4

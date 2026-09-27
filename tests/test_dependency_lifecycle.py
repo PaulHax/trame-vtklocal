@@ -115,7 +115,8 @@ def test_detached_property_no_longer_schedules_work():
         publisher.sync()
         server.protocol.drain()
         old.SetOpacity(0.3)
-        assert not publisher._tracker.has_pending()
+        publisher.sync()
+        assert server.protocol.drain() == []
         edit(scene, "property")
         publisher.sync()
         assert len(server.protocol.drain()) == 1
@@ -268,8 +269,10 @@ def test_replaced_pipeline_detaches_old_producer_and_tracks_reconnection():
         new.SetResolution(12)
         terminal.SetInputConnection(new.GetOutputPort())
         publisher.sync()
+        published = len(server.protocol.messages)
         old.SetHeight(8)
-        assert not publisher._tracker.has_pending()
+        publisher.sync()
+        assert len(server.protocol.messages) == published
         new.SetHeight(4)
         publisher.sync()
         for _, message in server.protocol.drain():
@@ -289,7 +292,9 @@ def test_repeated_replacements_keep_observers_bounded():
             publisher.sync()
             counts.append(len(publisher._tracker._observed_objects))
         assert len(set(counts)) == 1
-        assert not publisher._tracker.has_pending()
+        published = len(server.protocol.messages)
+        publisher.sync()
+        assert len(server.protocol.messages) == published
     finally:
         publisher.cleanup()
 

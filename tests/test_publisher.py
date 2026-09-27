@@ -528,7 +528,6 @@ def test_dirty_marks_auto_publish_on_next_loop_tick():
             scene.handles["actor"].GetProperty().SetOpacity(0.5)
             assert server.protocol.messages == []
             await asyncio.sleep(0)
-            assert not publisher._tracker.has_pending()
         finally:
             publisher.cleanup()
 

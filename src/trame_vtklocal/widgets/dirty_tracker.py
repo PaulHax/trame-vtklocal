@@ -87,9 +87,6 @@ class DirtyTracker:
         if self._on_dirty:
             self._on_dirty()
 
-    def has_pending(self) -> bool:
-        return bool(self._dirty_ids)
-
     def classes(self) -> dict[str, str]:
         return self._classes
 

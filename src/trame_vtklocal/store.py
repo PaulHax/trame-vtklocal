@@ -280,8 +280,7 @@ class _StoreState:
     seq: int
     # (id, key) -> int; survives node removal (id reuse)
     array_versions: dict[tuple[str, str], int]
-    touched_structural: dict[str, int]  # id -> seq of last upsert touching a live node
-    touched_array: dict[str, int]  # id -> seq of last patchArray touching a live node
+    touched: dict[str, int]  # id -> seq of the last op touching a live node
 
 
 def _plan_commit(
@@ -367,23 +366,18 @@ def _plan_commit(
     live_after = _live_refs(final_nodes)
 
     seq = state.seq + 1
-    touched_structural = dict(state.touched_structural)
-    touched_array = dict(state.touched_array)
+    touched = dict(state.touched)
     for op in ops:
-        if op["op"] == "upsert":
-            touched_structural[op["id"]] = seq
-        elif op["op"] == "patchArray":
-            touched_array[op["id"]] = seq
+        if op["op"] != "remove":
+            touched[op["id"]] = seq
     for node_id in removed_ids:
-        touched_structural.pop(node_id, None)
-        touched_array.pop(node_id, None)
+        touched.pop(node_id, None)
 
     new_state = _StoreState(
         nodes=final_nodes,
         seq=seq,
         array_versions=array_versions,
-        touched_structural=touched_structural,
-        touched_array=touched_array,
+        touched=touched,
     )
     result = {
         "base_seq": state.seq,
@@ -458,8 +452,7 @@ class SceneStore:
             nodes={},
             seq=0,
             array_versions={},
-            touched_structural={},
-            touched_array={},
+            touched={},
         )
 
     @property
@@ -476,25 +469,14 @@ class SceneStore:
     def live_refs(self) -> frozenset[str]:
         return frozenset(_live_refs(self._state.nodes))
 
-    def last_seq_touching(self, node_id: str | int, strict: bool = True) -> int | None:
-        """Seq relevant to event staleness for a live node.
+    def last_seq_touching(self, node_id: str | int) -> int | None:
+        """Seq of the last upsert or array patch touching a live node.
 
-        By default every touch counts — array patches move points, so a pick
-        measured against pre-patch geometry is stale. ``strict=False`` counts
-        only structural upserts, for callers validating events mid-gesture
-        whose own array confirmations ride the same channel. Unknown or
-        removed nodes return ``None`` and must be treated as stale.
+        Array patches count: they move points, so a pick measured against
+        pre-patch geometry is stale. Unknown or removed nodes return ``None``
+        and must be treated as stale.
         """
-        node_id = str(node_id)
-        structural = self._state.touched_structural.get(node_id)
-        if not strict:
-            return structural
-        array = self._state.touched_array.get(node_id)
-        if structural is None:
-            return array
-        if array is None:
-            return structural
-        return max(structural, array)
+        return self._state.touched.get(str(node_id))
 
     def snapshot(self) -> StoreSnapshot:
         """Wire-ready full state: ``{seq, root, nodes}`` (deep copy)."""
@@ -511,8 +493,7 @@ class SceneStore:
             nodes=state.nodes,
             seq=state.seq + 1,
             array_versions=state.array_versions,
-            touched_structural=state.touched_structural,
-            touched_array=state.touched_array,
+            touched=state.touched,
         )
         return state.seq, self._state.seq
 

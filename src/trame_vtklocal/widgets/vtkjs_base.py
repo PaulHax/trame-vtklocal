@@ -188,20 +188,16 @@ class VtkJsBaseView(HtmlElement):
             raise RuntimeError("view is closed")
         return self._publisher
 
-    def event_is_current(
-        self, event: object, node_id: str | int | None, strict: bool = True
-    ) -> bool:
+    def event_is_current(self, event: object, node_id: str | int | None) -> bool:
         """Whether a seq-stamped client event is current for one scene node.
 
-        Array patches count by default (they move the picked points);
-        ``strict=False`` counts structural upserts only, for mid-gesture
-        events whose own confirmations ride the same channel. ``node_id`` is
-        named by the caller — a gesture reports every node its measurement
+        Array patches count (they move the picked points). ``node_id`` is
+        named by the caller: a gesture reports every node its measurement
         depended on, and each is checked in turn; unknown/removed is stale.
         """
         if not self._publisher:
             return False
-        return self._publisher.event_is_current(event, node_id, strict=strict)
+        return self._publisher.event_is_current(event, node_id)
 
     # ------------------------------------------------------------------
     # Client-side camera / pointer seams

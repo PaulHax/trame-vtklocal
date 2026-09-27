@@ -28,6 +28,10 @@ import { base64ToArrayBuffer } from "../sync/base64";
 const TOPIC = "scene.ops";
 const RESYNC_RPC = "scene.resync";
 const PROTOCOL_VERSION = 2;
+// The deadline bounds a resource that never arrives; a slow one must not hit
+// it, so it sits well above any delivery the caller would still wait for (the
+// caller asks for a resend long before this).
+const HOLD_MS = 3000;
 
 function toUint8Copy(data) {
   if (data instanceof ArrayBuffer) {
@@ -55,10 +59,6 @@ export function createSceneEngine({
 }) {
   const session = client.getConnection().getSession();
   const commandHandlers = new Map(); // name -> Set(callback)
-  // The deadline bounds a resource that never arrives; a slow one must not
-  // hit it, so it sits well above any delivery the caller would still wait
-  // for (the caller asks for a resend long before this).
-  const holdMs = gate?.holdMs ?? 3000;
 
   let mySeq = -1;
   // The seq of the last message routed in order (applied or held); the
@@ -67,7 +67,6 @@ export function createSceneEngine({
   let routedSeq = -1;
   let held = []; // { message, deadline }, in seq order
   let holdTimer = null;
-  let holdsReleased = 0;
   let live = false;
   let buffer = [];
   let subscription = null;
@@ -192,7 +191,6 @@ export function createSceneEngine({
 
   // Apply everything held, in order, whatever the gate says.
   function releaseHeld() {
-    holdsReleased += held.length;
     while (held.length && live && !stopped) {
       applyRouted(held.shift().message);
     }
@@ -209,7 +207,7 @@ export function createSceneEngine({
     }
     routedSeq = message.seq;
     if (shouldHold(message)) {
-      held.push({ message, deadline: Date.now() + holdMs });
+      held.push({ message, deadline: Date.now() + HOLD_MS });
       if (held.length === 1) armHoldTimer();
       return;
     }
@@ -379,7 +377,6 @@ export function createSceneEngine({
       lastAppliedOp,
       bufferLength: buffer.length,
       heldLength: held.length,
-      holdsReleased,
     };
   }
 

@@ -76,7 +76,8 @@ Releases come from ``release.sh``, locally or from
 Both paths run the same script against the same immutable inputs (vtk-js
 fetched by the commit in ``vtkjs-fork.env``, ``pointcloud-lod`` from the
 lockfile), so a CI rebuild is not a different build. CI builds the wheel once,
-runs a browser smoke test against that wheel, then publishes it.
+runs the Python unit tests and a browser smoke test against that wheel, then
+publishes it.
 
 ``verify_chain.py`` proves that before any wheel ships: the linked vtk.js is a
 clean checkout of the pinned commit, ``pointcloud-lod`` came from its

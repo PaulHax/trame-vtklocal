@@ -21,34 +21,11 @@ import {
 import { viewAsTypedArray } from "../sync/base64";
 import { isLiveInstance } from "../predicates";
 import { createInstanceRegistry } from "./instanceRegistry";
-
-// Ref-slot -> vtk.js call map (pinned by the wire protocol).
-const SINGLE_REF_SETTERS = {
-  mapper: "setMapper",
-  property: "setProperty",
-  lookupTable: "setLookupTable",
-};
-
-const LIST_REF_SLOTS = {
-  renderers: {
-    add: "addRenderer",
-    remove: "removeRenderer",
-    read: "getRenderers",
-  },
-  viewProps: {
-    add: "addViewProp",
-    remove: "removeViewProp",
-    read: "getViewProps",
-  },
-  lights: { add: "addLight", remove: "removeLight", read: "getLights" },
-  textures: { add: "addTexture", remove: "removeTexture", read: "getTextures" },
-};
-
-const INDEXED_REF_SETTERS = {
-  rgbTransferFunction: "setRGBTransferFunction",
-  grayTransferFunction: "setGrayTransferFunction",
-  scalarOpacity: "setScalarOpacity",
-};
+import {
+  INDEXED_REF_SLOTS,
+  LIST_REF_SLOTS,
+  SINGLE_REF_SLOTS,
+} from "./refSlots";
 
 function slotIds(value) {
   if (value === undefined || value === null) {
@@ -200,7 +177,7 @@ export function createReconciler({
       applyInputsSlot(instance, slotIds(prevValue), slotIds(nextValue));
       return;
     }
-    const singleSetter = SINGLE_REF_SETTERS[slot];
+    const singleSetter = SINGLE_REF_SLOTS[slot]?.set;
     if (singleSetter) {
       // A slot that disappears is left alone: mapper/property/lookupTable only
       // ever leave with their owner node.
@@ -226,7 +203,7 @@ export function createReconciler({
       );
       return;
     }
-    const indexedSetter = INDEXED_REF_SETTERS[slot];
+    const indexedSetter = INDEXED_REF_SLOTS[slot]?.set;
     if (indexedSetter) {
       applyIndexedSlot(
         instance,

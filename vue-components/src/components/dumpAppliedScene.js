@@ -20,25 +20,11 @@
  */
 
 import { isLiveInstance } from "./predicates";
-
-const SINGLE_REF_GETTERS = {
-  mapper: "getMapper",
-  property: "getProperty",
-  lookupTable: "getLookupTable",
-};
-
-const LIST_REF_GETTERS = {
-  renderers: "getRenderers",
-  viewProps: "getViewProps",
-  lights: "getLights",
-  textures: "getTextures",
-};
-
-const INDEXED_REF_GETTERS = {
-  rgbTransferFunction: "getRGBTransferFunction",
-  grayTransferFunction: "getGrayTransferFunction",
-  scalarOpacity: "getScalarOpacity",
-};
+import {
+  INDEXED_REF_SLOTS,
+  LIST_REF_SLOTS,
+  SINGLE_REF_SLOTS,
+} from "./engine/refSlots";
 
 const TYPED_ARRAY_NAMES = new Set([
   "Int8Array",
@@ -118,7 +104,7 @@ function instanceId(instances, instance) {
 function dumpRefs(instance, mirrorRefs, instances) {
   const refs = {};
   for (const [slot, mirrorValue] of Object.entries(mirrorRefs)) {
-    const singleGetter = SINGLE_REF_GETTERS[slot];
+    const singleGetter = SINGLE_REF_SLOTS[slot]?.get;
     if (singleGetter) {
       const child =
         typeof instance?.[singleGetter] === "function"
@@ -128,7 +114,7 @@ function dumpRefs(instance, mirrorRefs, instances) {
       continue;
     }
 
-    const listGetter = LIST_REF_GETTERS[slot];
+    const listGetter = LIST_REF_SLOTS[slot]?.read;
     if (listGetter) {
       const children =
         typeof instance?.[listGetter] === "function"
@@ -142,7 +128,7 @@ function dumpRefs(instance, mirrorRefs, instances) {
       continue;
     }
 
-    const indexedGetter = INDEXED_REF_GETTERS[slot];
+    const indexedGetter = INDEXED_REF_SLOTS[slot]?.get;
     if (indexedGetter) {
       const ids = mirrorValue.map((mirrorId, index) => {
         const child =

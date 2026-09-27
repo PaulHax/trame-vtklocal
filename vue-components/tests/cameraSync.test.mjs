@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import { createSession, mountScene, settle } from "./sceneHarness.mjs";
 
 after(async () => {
   await closeModuleLoader();
@@ -67,7 +68,6 @@ function makeWindow() {
 }
 
 async function makeScene(camera = makeCamera()) {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
   const renderer = {
     get: () => ({}),
     getActiveCamera: () => camera,
@@ -86,48 +86,35 @@ async function makeScene(camera = makeCamera()) {
     getViews: () => [{ getSize: () => [800, 400], getCanvas: () => canvas }],
   };
   const events = [];
-  const commandHandlers = new Map();
-  let engineCallbacks = null;
-  const scene = useSceneSync(
-    {
-      client: {},
-      emit: (name, payload) => events.push({ name, payload }),
-      getRenderWindow: () => renderWindow,
-    },
-    {
-      createInstanceRegistry: () => ({}),
-      createReconciler: () => ({
-        registerBlockHandler() {},
-        teardown() {},
-      }),
-      createSceneEngine: ({ callbacks }) => {
-        engineCallbacks = callbacks;
-        return {
-          start() {},
-          stop() {},
-          resync() {},
-          getSeq: () => 7,
-          getDiagnostics: () => ({}),
-          onCommand(name, callback) {
-            commandHandlers.set(name, callback);
-            return () => commandHandlers.delete(name);
-          },
-        };
-      },
-    },
-  );
-  scene.initialize({
-    renderWindowId: 1,
+  const session = createSession({ seq: 7 });
+  const { scene } = await mountScene({
+    session,
+    emit: (name, payload) => events.push({ name, payload }),
+    getRenderWindow: () => renderWindow,
     onRenderNeeded() {},
   });
-  return { scene, camera, events, commandHandlers, engineCallbacks };
+  return { scene, camera, events, session };
+}
+
+const cameraSet = (payload) => ({ name: "camera.set", payload, render: true });
+
+// A seq gap makes the engine resync; the snapshot replays `commands`.
+async function resyncWith(session, commands) {
+  session.setSnapshot({ commands });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    session.skipAhead();
+    await settle();
+  } finally {
+    console.warn = warn;
+  }
 }
 
 test("camera.set command applies parameters through the built-in handler", async () => {
   const harness = await makeScene();
-  harness.commandHandlers.get("camera.set")({
-    position: [1, 2, 3],
-    parallelScale: 8,
+  harness.session.broadcast({
+    commands: [cameraSet({ position: [1, 2, 3], parallelScale: 8 })],
   });
   assert.deepEqual(harness.camera.state.position, [1, 2, 3]);
   assert.equal(harness.camera.state.parallelScale, 8);
@@ -135,32 +122,28 @@ test("camera.set command applies parameters through the built-in handler", async
 
 test("a resync replaying an applied camera command leaves the user's camera alone", async () => {
   const harness = await makeScene();
-  const setCamera = harness.commandHandlers.get("camera.set");
+  const { camera, scene, session } = harness;
   const seed = { position: [1, 2, 3] };
-  setCamera(seed, "camera.set", { snapshot: true });
-  assert.deepEqual(harness.camera.state.position, [1, 2, 3]);
+  await resyncWith(session, [cameraSet(seed)]);
+  assert.deepEqual(camera.state.position, [1, 2, 3]);
 
   // The user orbits, then a seq gap resyncs and replays the retained seed.
-  harness.camera.setPosition(9, 9, 9);
-  setCamera(seed, "camera.set", { snapshot: true });
-  assert.deepEqual(harness.camera.state.position, [9, 9, 9]);
+  camera.setPosition(9, 9, 9);
+  await resyncWith(session, [cameraSet(seed)]);
+  assert.deepEqual(camera.state.position, [9, 9, 9]);
 
   // A new server intent, or the same one sent live again, still applies.
-  setCamera({ position: [4, 5, 6] }, "camera.set", { snapshot: true });
-  assert.deepEqual(harness.camera.state.position, [4, 5, 6]);
-  harness.camera.setPosition(9, 9, 9);
-  setCamera({ position: [4, 5, 6] }, "camera.set", { snapshot: false });
-  assert.deepEqual(harness.camera.state.position, [4, 5, 6]);
+  await resyncWith(session, [cameraSet({ position: [4, 5, 6] })]);
+  assert.deepEqual(camera.state.position, [4, 5, 6]);
+  camera.setPosition(9, 9, 9);
+  session.broadcast({ commands: [cameraSet({ position: [4, 5, 6] })] });
+  assert.deepEqual(camera.state.position, [4, 5, 6]);
 
   // A fresh sync applies the retained seed again.
-  harness.camera.setPosition(9, 9, 9);
-  harness.scene.initialize({ renderWindowId: 1, onRenderNeeded() {} });
-  harness.commandHandlers.get("camera.set")(
-    { position: [4, 5, 6] },
-    "camera.set",
-    { snapshot: true },
-  );
-  assert.deepEqual(harness.camera.state.position, [4, 5, 6]);
+  camera.setPosition(9, 9, 9);
+  scene.initialize({ renderWindowId: 1, onRenderNeeded() {} });
+  await settle();
+  assert.deepEqual(camera.state.position, [4, 5, 6]);
 });
 
 test("camera reports coalesce moves and force a terminal report", async () => {

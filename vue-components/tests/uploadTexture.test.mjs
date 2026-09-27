@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { closeModuleLoader, loadModule } from "./loadModule.mjs";
+import { createSession, mountScene, settle } from "./sceneHarness.mjs";
 
 after(async () => {
   await closeModuleLoader();
@@ -36,39 +37,11 @@ function createMockGL() {
   return gl;
 }
 
-async function buildScene(renderWindow, onEngineReady = () => {}) {
-  const { useSceneSync } = await loadModule("/src/components/useSceneSync.js");
-  const scene = useSceneSync(
-    {
-      client: {},
-      emit() {},
-      getRenderWindow: () => renderWindow,
-    },
-    {
-      createInstanceRegistry: () => ({ getInstance: () => null }),
-      createReconciler: () => ({
-        registerBlockHandler() {
-          return () => {};
-        },
-        teardown() {},
-      }),
-      createSceneEngine: ({ callbacks }) => {
-        onEngineReady(callbacks);
-        return {
-          start() {},
-          stop() {},
-          resync() {},
-          onCommand() {
-            return () => {};
-          },
-          getDiagnostics() {
-            return {};
-          },
-        };
-      },
-    },
-  );
-  scene.initialize({ renderWindowId: 1 });
+async function buildScene(renderWindow, session = createSession()) {
+  const { scene } = await mountScene({
+    session,
+    getRenderWindow: () => renderWindow,
+  });
   return scene;
 }
 
@@ -174,12 +147,10 @@ test("sync diagnostics report the external textures", async () => {
 });
 
 test("retiring a frame identity preserves live siblings and clears replay state", async () => {
-  let command;
-  let beforeSnapshot;
-  const scene = await buildScene({ id: "rw-identities" }, (callbacks) => {
-    command = callbacks.onCommand;
-    beforeSnapshot = callbacks.beforeSnapshot;
-  });
+  const session = createSession();
+  const scene = await buildScene({ id: "rw-identities" }, session);
+  const command = (name, payload) =>
+    session.broadcast({ commands: [{ name, payload }] });
   const live = { slot_id: "b", frame_id: 20, seq: 2 };
   command("video.frame.a", { slot_id: "a", frame_id: 10, seq: 1 });
   command("video.frame.b", live);
@@ -188,9 +159,17 @@ test("retiring a frame identity preserves live siblings and clears replay state"
   assert.deepEqual(scene.getAppliedCommand("video.frame.b"), live);
   // A reconnect snapshot replaces the retained command set, including when
   // the client missed the removal command while disconnected.
-  beforeSnapshot();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    session.skipAhead();
+    await settle();
+  } finally {
+    console.warn = warn;
+  }
   assert.equal(scene.getAppliedCommand("video.frame.b"), undefined);
   command("video.frame.b", live);
+  assert.deepEqual(scene.getAppliedCommand("video.frame.b"), live);
   scene.cleanup();
   assert.equal(scene.getAppliedCommand("video.frame.b"), undefined);
 });

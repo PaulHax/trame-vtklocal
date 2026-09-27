@@ -36,6 +36,8 @@ import { createDragPreview } from "./dragPreview";
 import { createPresentationFeedback } from "./presentationFeedback";
 import { getExternalTextures, peekExternalTextures } from "./externalTextures";
 
+// `newStreamedSceneHost` is the one seam: the host drives pointcloud-lod's
+// coordinator and workers, which unit tests replace with a fake host.
 export function useSceneSync(
   {
     client,
@@ -46,18 +48,8 @@ export function useSceneSync(
     tiles3dQualityPolicy = "adaptive",
     streamedMemoryBudgetBytes = null,
   },
-  dependencies = {},
+  { newStreamedSceneHost = createStreamedSceneHost } = {},
 ) {
-  const {
-    createInstanceRegistry: createInstanceRegistryImpl = createInstanceRegistry,
-    createMirrorStore: createMirrorStoreImpl = createMirrorStore,
-    createReconciler: createReconcilerImpl = createReconciler,
-    createSceneEngine: createSceneEngineImpl = createSceneEngine,
-    buildInstance: buildInstanceImpl = buildInstance,
-    createStreamedSceneHost:
-      createStreamedSceneHostImpl = createStreamedSceneHost,
-  } = dependencies;
-
   let instances = null;
   let engine = null;
   let reconciler = null;
@@ -84,9 +76,9 @@ export function useSceneSync(
   const registrationGesture = createRegistrationGesture();
   const appliedCommands = new Map();
   const presentation = createPresentationFeedback({
-    getRenderWindow: () => getRenderWindow?.() || null,
+    getRenderWindow,
     getStreamedSceneHost: () => streamedSceneHost,
-    getSceneSeq: () => engine?.getDiagnostics?.()?.mySeq ?? -1,
+    getSceneSeq: () => engine?.getSeq() ?? -1,
     requestRender: () => renderRequestCallback?.(),
   });
   const cameraReports = createCameraReports({
@@ -99,7 +91,7 @@ export function useSceneSync(
         viewport: readGestureViewport(),
       };
     },
-    emit: (report) => emit?.("camera", report),
+    emit: (report) => emit("camera", report),
     onInteractionStart: () => streamedSceneHost?.beginInteraction(),
     onInteractionEnd: () => {
       streamedSceneHost?.endInteraction();
@@ -109,7 +101,7 @@ export function useSceneSync(
 
   function ensureStreamedSceneHost() {
     if (!streamedSceneHost) {
-      streamedSceneHost = createStreamedSceneHostImpl({
+      streamedSceneHost = newStreamedSceneHost({
         scheduleRender: () => renderRequestCallback?.(),
         tiles3dTexturePolicy,
         tiles3dQualityPolicy,
@@ -123,11 +115,11 @@ export function useSceneSync(
   }
 
   function getRenderer() {
-    return getPrimaryRenderer(getRenderWindow?.() || null, instances);
+    return getPrimaryRenderer(getRenderWindow(), instances);
   }
 
   function getRenderers() {
-    return getSyncedRenderers(getRenderWindow?.() || null, instances);
+    return getSyncedRenderers(getRenderWindow(), instances);
   }
 
   function bindPrimaryCameraToRenderers() {
@@ -182,12 +174,12 @@ export function useSceneSync(
     sceneGates.add(hold);
     return () => {
       sceneGates.delete(hold);
-      engine?.retryHeld?.();
+      engine?.retryHeld();
     };
   }
 
   function retrySceneGate() {
-    engine?.retryHeld?.();
+    engine?.retryHeld();
   }
 
   // Register a handler for server commands riding scene.ops broadcasts.
@@ -209,21 +201,18 @@ export function useSceneSync(
   }
 
   function getInstance(id) {
-    if (id === undefined || id === null) return null;
-    return instances?.getInstance?.(String(id)) ?? null;
+    return instances?.getInstance(id) ?? null;
   }
 
   // Which desired nodes name `nodeId` in the given ref slot. The mirror
   // maintains the reverse index as operations land, so association queries
   // are proportional to actual referrers rather than scene size.
   function referrersOf(nodeId, slot) {
-    return mirror?.referrersOf?.(nodeId, slot) || [];
+    return mirror?.referrersOf(nodeId, slot) ?? [];
   }
 
   function getSceneTopologyVersion() {
-    return (
-      (mirror?.refRevision?.() ?? 0) + (instances?.instanceRevision?.() ?? 0)
-    );
+    return (mirror?.refRevision() ?? 0) + (instances?.instanceRevision() ?? 0);
   }
 
   // Stage a texture source for this view's external-texture registry;
@@ -231,7 +220,7 @@ export function useSceneSync(
   // time. Upload happens on the next render — triggering that render stays
   // the caller's job.
   function uploadTexture(key, source, options = {}) {
-    const registry = getExternalTextures(getRenderWindow?.() || null);
+    const registry = getExternalTextures(getRenderWindow());
     if (!registry || key == null) {
       return false;
     }
@@ -243,7 +232,7 @@ export function useSceneSync(
   // texture in this render window.  This is the lifetime twin of
   // uploadTexture: closing one video consumer must not clear a sibling source.
   function removeTexture(key) {
-    const registry = getExternalTextures(getRenderWindow?.() || null);
+    const registry = getExternalTextures(getRenderWindow());
     if (!registry || key == null) {
       return false;
     }
@@ -303,7 +292,7 @@ export function useSceneSync(
   function getRenderedCamera() {
     if (!renderedCamera) return null;
     const rendererViewport = getRenderer()?.getViewport?.();
-    const views = getRenderWindow?.()?.getViews?.() || [];
+    const views = getRenderWindow()?.getViews?.() || [];
     const view = views.length > 0 ? views[0] : null;
     const size = view?.getSize?.();
     return {
@@ -339,11 +328,11 @@ export function useSceneSync(
 
   function cleanupSyncContext() {
     appliedCommands.clear();
-    engine?.stop?.();
+    engine?.stop();
     engine = null;
     clearCoincidentTopology?.();
     clearCoincidentTopology = null;
-    reconciler?.teardown?.();
+    reconciler?.teardown();
     reconciler = null;
     mirror = null;
     blobCache = null;
@@ -368,12 +357,12 @@ export function useSceneSync(
     renderRequestCallback = onRenderNeeded || null;
     syncedRootId = renderWindowId !== undefined ? String(renderWindowId) : null;
 
-    instances = createInstanceRegistryImpl();
-    mirror = createMirrorStoreImpl();
+    instances = createInstanceRegistry();
+    mirror = createMirrorStore();
     blobCache = new Map();
-    reconciler = createReconcilerImpl({
+    reconciler = createReconciler({
       instances,
-      buildInstance: buildInstanceImpl,
+      buildInstance,
       rootId: syncedRootId,
       rootInstance: getRenderWindow(),
     });
@@ -388,7 +377,7 @@ export function useSceneSync(
       ensureStreamedSceneHost,
     });
 
-    engine = createSceneEngineImpl({
+    engine = createSceneEngine({
       client,
       rwId: syncedRootId,
       reconciler,
@@ -410,7 +399,7 @@ export function useSceneSync(
         onSnapshotApplied(snapshot) {
           if (disposed) return;
           afterApply(snapshot);
-          emit?.("updated");
+          emit("updated");
           noteMessageApplied({ kind: "snapshot", seq: snapshot.seq });
           presentation.requireScenePaint(snapshot);
           if (!snapshot.commands?.some((command) => command?.render === true)) {
@@ -460,7 +449,7 @@ export function useSceneSync(
     dragPreview.end();
     // The GL context is shared across views and outlives this one, so its
     // textures must be deleted explicitly, before the render window goes away.
-    peekExternalTextures(getRenderWindow?.() || null)?.clear();
+    peekExternalTextures(getRenderWindow())?.clear();
     cleanupSyncContext();
     sceneAppliedCallbacks.clear();
     presentation.dispose();
@@ -476,7 +465,7 @@ export function useSceneSync(
       lastAppliedOp = null,
       bufferLength = 0,
       heldLength = 0,
-    } = engine?.getDiagnostics?.() ?? {};
+    } = engine?.getDiagnostics() ?? {};
     let cacheBytes = 0;
     if (blobCache) {
       for (const value of blobCache.values()) {
@@ -485,7 +474,7 @@ export function useSceneSync(
         }
       }
     }
-    const appliedIdentity = instances?.describe?.() ?? {
+    const appliedIdentity = instances?.describe() ?? {
       instanceRevision: 0,
       records: [],
     };
@@ -504,8 +493,8 @@ export function useSceneSync(
         ...appliedIdentity,
         records: appliedIdentity.records.map((record) => ({
           ...record,
-          desiredType: mirror?.get?.(record.id)?.type ?? null,
-          referrerCount: mirror?.referrerCount?.(record.id) ?? 0,
+          desiredType: mirror.get(record.id)?.type ?? null,
+          referrerCount: mirror.referrerCount(record.id),
         })),
       },
       distanceToCamera: describeDistanceToCameraGlyphRegistry(
@@ -516,9 +505,10 @@ export function useSceneSync(
         members: [],
         coordinator: null,
       },
-      externalTextures: peekExternalTextures(
-        getRenderWindow?.() || null,
-      )?.describe() ?? { size: 0, entries: [] },
+      externalTextures: peekExternalTextures(getRenderWindow())?.describe() ?? {
+        size: 0,
+        entries: [],
+      },
     };
   }
 
@@ -536,7 +526,7 @@ export function useSceneSync(
     // must keep the hit-test cache warm.
     return updateDistanceToCameraGlyphs(distanceToCameraGlyphs, {
       renderer: getRenderer(),
-      renderWindow: getRenderWindow?.(),
+      renderWindow: getRenderWindow(),
       instances,
     });
   }
@@ -545,8 +535,8 @@ export function useSceneSync(
     updatePointCloudPresentations(pointCloudPresentations);
     streamedSceneHost?.beforeRender({
       renderers: getRenderers(),
-      renderWindow: getRenderWindow?.(),
-      openGLRenderWindow: getOpenGLRenderWindow?.(),
+      renderWindow: getRenderWindow(),
+      openGLRenderWindow: getOpenGLRenderWindow(),
       referrersOf,
       getInstance,
       topologyVersion: getSceneTopologyVersion(),
@@ -562,9 +552,9 @@ export function useSceneSync(
       if (!entry.preview) continue;
       const mapper = resolvePickableMapper(entry, instances);
       const points = mapper?.getInputData?.(0);
-      const pointsNodeId = instances?.getInstanceId?.(points);
+      const pointsNodeId = instances.getInstanceId(points);
       if (pointsNodeId !== undefined && pointsNodeId !== null) {
-        reconciler?.protectLocalWrites?.(String(pointsNodeId), "points");
+        reconciler.protectLocalWrites(String(pointsNodeId), "points");
       }
     }
   }
@@ -590,7 +580,7 @@ export function useSceneSync(
   function pickAt(cssX, cssY) {
     return pickAtRegistry(pickables, cssX, cssY, {
       renderer: getRenderer(),
-      renderWindow: getRenderWindow?.(),
+      renderWindow: getRenderWindow(),
       instances,
     });
   }
@@ -624,7 +614,7 @@ export function useSceneSync(
       };
     }
     const camera = bindPrimaryCameraToRenderers().camera;
-    const metrics = getViewportMetrics(getRenderer(), getRenderWindow?.());
+    const metrics = getViewportMetrics(getRenderer(), getRenderWindow());
     const view = matrixCopy16(camera?.getViewMatrix?.());
     const projection = matrixCopy16(
       camera?.getProjectionMatrix?.(metrics?.aspect ?? 1, -1, 1),
@@ -643,13 +633,13 @@ export function useSceneSync(
   // event at build time so the server can run its generic staleness check;
   // null (stale by construction) until the engine exists.
   function getSeq() {
-    return engine?.getSeq?.() ?? null;
+    return engine?.getSeq() ?? null;
   }
 
   // The rendered viewport in canvas CSS px plus its device-pixel ratio, matching
   // the space pickAt measures pointer coordinates in.
   function readGestureViewport() {
-    const metrics = getViewportMetrics(getRenderer(), getRenderWindow?.());
+    const metrics = getViewportMetrics(getRenderer(), getRenderWindow());
     if (!metrics) return null;
     return {
       width: metrics.width,
@@ -659,15 +649,15 @@ export function useSceneSync(
   }
 
   function getViewCanvas() {
-    const view = getRenderWindow?.()?.getViews?.()?.[0];
+    const view = getRenderWindow()?.getViews?.()?.[0];
     return view?.getCanvas?.() ?? null;
   }
 
   const dragPreview = createDragPreview({
     getCamera: () => bindPrimaryCameraToRenderers().camera,
     getViewportMetrics: () =>
-      getViewportMetrics(getRenderer(), getRenderWindow?.()),
-    getBoundArray: (id, key) => reconciler?.getBoundArray?.(id, key),
+      getViewportMetrics(getRenderer(), getRenderWindow()),
+    getBoundArray: (id, key) => reconciler?.getBoundArray(id, key),
     getInstance,
     getPickableIds: (nodeId) => pickables.get(nodeId)?.ids ?? null,
     requestRender: () => renderRequestCallback?.(),
@@ -693,7 +683,7 @@ export function useSceneSync(
         captured.asset_id,
       );
     },
-    emit: (payload) => emit?.("pointerEvent", payload),
+    emit: (payload) => emit("pointerEvent", payload),
     onDragStart: dragPreview.start,
     onDragMove: dragPreview.move,
     onDragEnd: dragPreview.end,

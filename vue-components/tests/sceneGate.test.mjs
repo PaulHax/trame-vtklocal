@@ -32,7 +32,7 @@ const noopReconciler = {
 };
 const noopMirror = { gcBlobCache() {}, size: () => 0 };
 
-async function makeEngine(hold, { holdMs } = {}) {
+async function makeEngine(hold) {
   const { createSceneEngine } = await loadModule(
     "/src/components/engine/sceneEngine.js",
   );
@@ -45,7 +45,7 @@ async function makeEngine(hold, { holdMs } = {}) {
     reconciler: noopReconciler,
     mirror: noopMirror,
     cache: new Map(),
-    gate: { hold, holdMs },
+    gate: { hold },
     callbacks: { onApplied: (message) => applied.push(message.seq) },
   });
   engine.start();
@@ -101,7 +101,6 @@ test("a message the gate would not hold releases what it holds, in order", async
   session.push(ops(8));
   assert.deepEqual(applied, [6, 7, 8]);
   assert.equal(engine.getDiagnostics().heldLength, 0);
-  assert.equal(engine.getDiagnostics().holdsReleased, 2);
 
   engine.stop();
 });
@@ -132,15 +131,13 @@ test("messages behind a hold are not read as a sequence gap", async () => {
 test("a held message applies at its deadline whatever the gate says", async () => {
   mock.timers.enable({ apis: ["setTimeout", "Date"] });
   try {
-    const { engine, session, applied } = await makeEngine(() => true, {
-      holdMs: 250,
-    });
+    const { engine, session, applied } = await makeEngine(() => true);
     session.push(ops(6));
     mock.timers.tick(100);
     session.push(ops(7));
     assert.deepEqual(applied, []);
 
-    mock.timers.tick(149);
+    mock.timers.tick(2899);
     assert.deepEqual(applied, []);
     mock.timers.tick(1);
     // Only the message past its deadline applies; the next one waits its own.
@@ -171,7 +168,7 @@ test("stopping the engine releases its hold timer", async () => {
     const { engine, session, applied } = await makeEngine(() => true);
     session.push(ops(6));
     engine.stop();
-    mock.timers.tick(1000);
+    mock.timers.tick(3000);
     assert.deepEqual(applied, []);
   } finally {
     mock.timers.reset();

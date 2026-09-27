@@ -303,5 +303,3 @@ export function createPickableGestures({
     teardown,
   };
 }
-
-export default { createPickableGestures };

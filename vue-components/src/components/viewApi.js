@@ -88,5 +88,3 @@ export function createViewApi(scene, backend = {}) {
   }
   return Object.assign(api, backend);
 }
-
-export default { VIEW_EMITS, VIEW_PROPS, COMMON_VIEW_API_KEYS, createViewApi };

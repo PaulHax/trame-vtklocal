@@ -208,5 +208,3 @@ export function peekExternalTextures(renderWindow) {
   }
   return registries.get(renderWindow) || null;
 }
-
-export default { getExternalTextures, peekExternalTextures };

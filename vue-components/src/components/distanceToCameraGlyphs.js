@@ -384,11 +384,3 @@ export function describeDistanceToCameraGlyphRegistry(registry) {
 
   return { size: registry.size, entries };
 }
-
-export default {
-  createDistanceToCameraGlyphRegistry,
-  applyDistanceToCameraBlock,
-  computeDistanceToCameraScales,
-  updateDistanceToCameraGlyphs,
-  describeDistanceToCameraGlyphRegistry,
-};

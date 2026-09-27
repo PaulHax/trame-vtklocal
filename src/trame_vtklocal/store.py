@@ -117,21 +117,24 @@ class StoreSnapshot(TypedDict):
 _ArrayPatch = Tuple[str, str, int, bytes, str]
 
 
-def ref_manager_hashes(refs: Iterable[str] | None) -> set[str]:
-    """Raw object-manager blob hashes behind ``c:``/``c2:`` refs.
+def ref_hashes(ref: str) -> tuple[str, ...]:
+    """The object-manager blob hashes behind one array ref, in order.
 
-    ``v:`` refs are versioned identities resolved from live VTK arrays — they
-    have no object-manager blob, so they contribute nothing here.
+    ``c:`` names one hash and ``c2:`` its connectivity then its offsets.
+    ``v:`` refs are versioned identities resolved from live VTK arrays: they
+    have no object-manager blob, so they name none.
     """
-    hashes: set[str] = set()
-    for ref in refs or ():
-        if ref.startswith(REF_CONTENT_PREFIX):
-            hashes.add(ref[len(REF_CONTENT_PREFIX) :])
-        elif ref.startswith(REF_CELLS_PREFIX):
-            connectivity_hash, offsets_hash = ref[len(REF_CELLS_PREFIX) :].split(":", 1)
-            hashes.add(connectivity_hash)
-            hashes.add(offsets_hash)
-    return hashes
+    if ref.startswith(REF_CONTENT_PREFIX):
+        return (ref[len(REF_CONTENT_PREFIX) :],)
+    if ref.startswith(REF_CELLS_PREFIX):
+        connectivity_hash, offsets_hash = ref[len(REF_CELLS_PREFIX) :].split(":", 1)
+        return (connectivity_hash, offsets_hash)
+    return ()
+
+
+def ref_manager_hashes(refs: Iterable[str] | None) -> set[str]:
+    """Raw object-manager blob hashes behind a set of array refs."""
+    return {hash_value for ref in refs or () for hash_value in ref_hashes(ref)}
 
 
 _T = TypeVar("_T")

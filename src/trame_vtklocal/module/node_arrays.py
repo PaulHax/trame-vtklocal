@@ -32,6 +32,7 @@ from trame_vtklocal.store import (
     REF_CONTENT_PREFIX,
     ArrayEntry,
     SceneNode,
+    ref_hashes,
 )
 
 if TYPE_CHECKING:
@@ -197,13 +198,8 @@ def restore_dataset_blobs(
     restored: set[str] = set()
     for key, entry in (node.get("arrays") or {}).items():
         ref = entry.get("ref") if isinstance(entry, dict) else None
-        if not ref:
-            continue
-        if ref.startswith(REF_CONTENT_PREFIX):
-            hashes = [ref[len(REF_CONTENT_PREFIX) :]]
-        elif ref.startswith(REF_CELLS_PREFIX):
-            hashes = ref[len(REF_CELLS_PREFIX) :].split(":", 1)
-        else:
+        hashes = ref_hashes(ref) if ref else ()
+        if not hashes:
             continue
 
         arrays = _live_arrays_for_key(dataset, key)

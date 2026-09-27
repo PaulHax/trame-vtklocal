@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, NoReturn, Union
 from vtkmodules.vtkRenderingCore import vtkActor
 
 from trame_vtklocal.module.feature_blocks import set_block
+from trame_vtklocal.module.validation import positive_finite
 
 if TYPE_CHECKING:
     from trame_vtklocal.streamed_scene_blocks import (
@@ -67,10 +68,6 @@ class _FrozenDict(dict[str, object]):
     __ior__ = _immutable
 
 
-def _is_positive_finite(value: float) -> bool:
-    return math.isfinite(value) and value > 0
-
-
 def _is_affine_entry(value: float, expected: float) -> bool:
     return abs(value - expected) <= AFFINE_ENTRY_ABS_TOL
 
@@ -103,23 +100,17 @@ def _as_presentation(value: object) -> Presentation:
         raise ValueError("presentation must be a Fixed or Auto object")
     mode = value.get("mode")
     if mode == "fixed":
-        diameter = float(value["diameterCssPx"])
-        if not _is_positive_finite(diameter):
-            raise ValueError("Fixed diameterCssPx must be positive and finite")
+        diameter = positive_finite(
+            value["diameterCssPx"], "Fixed diameterCssPx must be positive and finite"
+        )
         return {"mode": "fixed", "diameterCssPx": diameter}
     if mode == "auto":
-        user_scale = float(value["userScale"])
-        minimum = float(value["minDiameterCssPx"])
-        maximum = float(value["maxDiameterCssPx"])
-        if (
-            not _is_positive_finite(user_scale)
-            or not _is_positive_finite(minimum)
-            or not _is_positive_finite(maximum)
-            or minimum > maximum
-        ):
-            raise ValueError(
-                "Auto scale and diameter clamps must be positive, finite and ordered"
-            )
+        message = "Auto scale and diameter clamps must be positive, finite and ordered"
+        user_scale = positive_finite(value["userScale"], message)
+        minimum = positive_finite(value["minDiameterCssPx"], message)
+        maximum = positive_finite(value["maxDiameterCssPx"], message)
+        if minimum > maximum:
+            raise ValueError(message)
         return {
             "mode": "auto",
             "userScale": user_scale,
@@ -157,10 +148,9 @@ def _as_adaptive_options(value: object) -> AdaptiveOptions:
         options["maxBudget"] = maximum
     for key in ("interactionTargetMs", "stationaryTargetMs"):
         if (raw := value.get(key)) is not None:
-            target = float(raw)
-            if not _is_positive_finite(target):
-                raise ValueError(f"{key} must be positive and finite, got {target}")
-            options[key] = target
+            options[key] = positive_finite(
+                raw, f"{key} must be positive and finite, got {raw}"
+            )
     return options
 
 

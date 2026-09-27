@@ -550,7 +550,7 @@ export function useSceneSync(
   function protectPreviewBindings() {
     for (const entry of pickables.values()) {
       if (!entry.preview) continue;
-      const mapper = resolvePickableMapper(entry, instances);
+      const mapper = resolvePickableMapper(entry);
       const points = mapper?.getInputData?.(0);
       const pointsNodeId = instances.getInstanceId(points);
       if (pointsNodeId !== undefined && pointsNodeId !== null) {

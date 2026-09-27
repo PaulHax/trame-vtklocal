@@ -105,9 +105,6 @@ export default {
         onRenderNeeded() {
           scheduleRender();
         },
-        onMessageApplied(message) {
-          emit("messageApplied", message);
-        },
       });
 
       interactor = vtkRenderWindowInteractor.newInstance();

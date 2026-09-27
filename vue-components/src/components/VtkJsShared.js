@@ -67,9 +67,6 @@ export default {
         onRenderNeeded() {
           requestRender();
         },
-        onMessageApplied(message) {
-          emit("messageApplied", message);
-        },
       });
     }
 

@@ -65,7 +65,6 @@ export function useSceneSync(
   let mirror = null;
   let blobCache = null;
   let disposed = false;
-  let messageAppliedCallback = null;
   let renderRequestCallback = null;
   const sceneAppliedCallbacks = new Set();
   const commandRegistrations = new Set(); // { name, callback } — survive re-init
@@ -159,7 +158,6 @@ export function useSceneSync(
 
   function noteMessageApplied(message) {
     if (!message) return;
-    messageAppliedCallback?.(message);
     sceneAppliedCallbacks.forEach((callback) => callback(message));
   }
 
@@ -353,7 +351,6 @@ export function useSceneSync(
     reconciler = null;
     mirror = null;
     blobCache = null;
-    messageAppliedCallback = null;
     renderRequestCallback = null;
     syncedRootId = null;
     clientCamera = null;
@@ -369,10 +366,9 @@ export function useSceneSync(
     instances = null;
   }
 
-  function initialize({ renderWindowId, onRenderNeeded, onMessageApplied }) {
+  function initialize({ renderWindowId, onRenderNeeded }) {
     disposed = false;
     cleanupSyncContext();
-    messageAppliedCallback = onMessageApplied || null;
     renderRequestCallback = onRenderNeeded || null;
     syncedRootId = renderWindowId !== undefined ? String(renderWindowId) : null;
 
@@ -450,7 +446,6 @@ export function useSceneSync(
           if (!disposed) {
             if (payload == null) appliedCommands.delete(name);
             else appliedCommands.set(name, payload);
-            emit?.("command", { name, payload });
           }
         },
       },

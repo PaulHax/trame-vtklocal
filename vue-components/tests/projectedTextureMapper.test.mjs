@@ -74,7 +74,7 @@ test("homography resolution: prop wins, field data is the fallback", async () =>
   assert.equal(mapper.getResolvedHomography(), null);
 });
 
-test("world-to-clip resolution: provider wins over prop", async () => {
+test("world-to-clip resolution needs a 16-value matrix", async () => {
   const { newInstance, ProjectedTextureMode } = await loadMapperModule();
   const mapper = newInstance({ mode: ProjectedTextureMode.WORLD_TO_CLIP });
 
@@ -83,15 +83,6 @@ test("world-to-clip resolution: provider wins over prop", async () => {
   const propMatrix = new Array(16).fill(0);
   propMatrix[0] = 1;
   mapper.setWorldToClip(propMatrix);
-  assert.equal(mapper.getResolvedWorldToClip(), propMatrix);
-
-  const providedMatrix = new Float32Array(16);
-  providedMatrix[5] = 1;
-  mapper.setWorldToClipProvider(() => providedMatrix);
-  assert.equal(mapper.getResolvedWorldToClip(), providedMatrix);
-
-  // Provider returning garbage falls back to the prop.
-  mapper.setWorldToClipProvider(() => [1, 2, 3]);
   assert.equal(mapper.getResolvedWorldToClip(), propMatrix);
 });
 

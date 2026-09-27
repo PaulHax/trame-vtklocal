@@ -88,8 +88,8 @@ class _Server:
     protocol = _Protocol()
 
 
-# Tolerance agreement with the JS boundary. The same constants and the same
-# matrices are pinned in vue-components/tests/streamedSceneHost.test.mjs
+# Tolerance agreement with the JS boundary. The same matrices are pinned in
+# vue-components/tests/streamedSceneHost.test.mjs
 # ("fixed affine entries share one absolute tolerance with the producer").
 AFFINE_INSIDE_TOLERANCE = 9e-13
 AFFINE_OUTSIDE_TOLERANCE = 2e-12

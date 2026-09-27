@@ -39,8 +39,8 @@ DEFAULT_ADAPTIVE_MIN_BUDGET = 200_000
 # here because this is where a matrix becomes a published payload.  The fixed
 # entries are exact constants, so the band is absolute, not relative: an entry
 # is accepted when ``abs(value - expected) <= AFFINE_ENTRY_ABS_TOL``.  The
-# client boundary re-checks arriving payloads with the same numbers -- see
-# AFFINE_ENTRY_ABS_TOL in vue-components/src/components/streamedSceneHost.js.
+# client re-checks arriving payloads with the same numbers through
+# pointcloud-lod's ``validateAffineMatrix``.
 AFFINE_ENTRY_ABS_TOL = 1e-12
 AFFINE_FIXED_ENTRIES = ((3, 0.0), (7, 0.0), (11, 0.0), (15, 1.0))
 # A linear block this close to singular has no usable inverse for picking.

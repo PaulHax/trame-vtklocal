@@ -471,12 +471,13 @@ test("streamedScene normalization consumes the shared Tiles3DSource contract", a
   }
 });
 
-// Tolerance agreement with the producer. The same constants and the same
-// matrices are pinned in tests/test_streamed_scene.py
+// Tolerance agreement with the producer. The same matrices are pinned in
+// tests/test_streamed_scene.py
 // (test_fixed_affine_entries_share_one_absolute_tolerance).
 test("fixed affine entries share one absolute tolerance with the producer", async () => {
-  const { AFFINE_ENTRY_ABS_TOL, normalizeStreamedSceneBlock } =
-    await loadModule("/src/components/streamedSceneHost.js");
+  const { normalizeStreamedSceneBlock } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
   const factories = { has: (kind) => ["pointCloud", "tiles3d"].includes(kind) };
   const INSIDE = 9e-13;
   const OUTSIDE = 2e-12;
@@ -500,7 +501,6 @@ test("fixed affine entries share one absolute tolerance with the producer", asyn
     );
     assert.equal(normalize(matrixWith(index, expected + OUTSIDE)), null);
   }
-  assert.equal(AFFINE_ENTRY_ABS_TOL, 1e-12);
 });
 
 test("camera fan-out follows rendered projection matrices and CSS viewport metrics", async () => {

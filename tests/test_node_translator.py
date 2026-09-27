@@ -754,6 +754,17 @@ def test_cell_arrays_pack_to_the_vtkjs_layout(scene_factory, key, expected_packe
     assert np.frombuffer(packed, dtype=np.uint32).tolist() == expected_packed
 
 
+def test_a_cell_array_ref_with_a_missing_blob_is_refused():
+    scene = make_quad_scene()
+    entry = translate(scene)[oid(scene, scene.handles["polydata"])]["arrays"]["polys"]
+    connectivity, offsets = entry["ref"].split(":")[1:]
+    missing = "deadbeef"
+
+    for ref in (f"c2:{connectivity}:{missing}", f"c2:{missing}:{offsets}"):
+        with pytest.raises(RuntimeError, match="missing object-manager blob"):
+            pack_cell_array_payload(scene.api.vtk_object_manager, ref)
+
+
 # ----------------------------------------------------------------------
 # Array datatype translation (VTK GetDataType()/class -> JS typed array)
 # ----------------------------------------------------------------------

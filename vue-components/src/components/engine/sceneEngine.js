@@ -284,8 +284,6 @@ export function createSceneEngine({
         applied = true;
       } catch (error) {
         console.warn(`[sceneEngine] snapshot apply failed: ${error.message}`);
-      } finally {
-        callbacks.afterSnapshot?.(applied);
       }
       if (!applied) {
         return false;

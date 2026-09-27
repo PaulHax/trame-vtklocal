@@ -201,7 +201,6 @@ with DivLayout(server) as layout:
             render_window,
             ref="pickableView",
             classes="pickableView",
-            sync_mode="push",
             on_ready="window.initPickableDemo?.()",
             pointer_event=(on_pointer_event, "[$event]"),
         )

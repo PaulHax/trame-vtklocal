@@ -224,16 +224,30 @@ def test_feature_demo_drag_round_trip(demo_server, page):
         assert end["y"] == pytest.approx(start["y"], abs=2)
 
 
+def look_straight_down(page, bearing):
+    """Turn the map to a top-down view at ``bearing`` and wait for its paint."""
+    painted = page.evaluate_handle("window.tswDemo.diagnostics().paints.demoMap")
+    page.evaluate(
+        """bearing => {
+          const map = window.tswDemo.map;
+          map.jumpTo({ pitch: 0, bearing });
+          map.triggerRepaint();
+        }""",
+        bearing,
+    )
+    page.wait_for_function(
+        "painted => window.tswDemo.diagnostics().paints.demoMap !== painted",
+        arg=painted,
+    )
+
+
 def test_nadir_pick_feedback_and_follow(demo_server, page):
     page.goto(demo_server + "?basemap=blank")
     wait_painted(page)
     wait_streamed(page)
-    # The map's top-down view used to give lookAt a parallel up vector.
+    # A top-down map camera must still produce a valid view matrix.
     for bearing in (0, 90, 180):
-        page.evaluate(
-            "bearing => window.tswDemo.map.jumpTo({pitch:0,bearing})", bearing
-        )
-        page.wait_for_timeout(150)
+        look_straight_down(page, bearing)
         image = Image.open(io.BytesIO(page.screenshot())).convert("RGB")
         point = project(page, "demoMap", [-7, 0, 2])
         assert math.isfinite(point["x"]) and math.isfinite(point["y"])
@@ -241,8 +255,7 @@ def test_nadir_pick_feedback_and_follow(demo_server, page):
             (255, 51, 77), abs=12
         )
 
-    page.evaluate("window.tswDemo.map.jumpTo({pitch:0,bearing:0})")
-    page.wait_for_timeout(150)
+    look_straight_down(page, 0)
     # Search beyond the cloud edge for an outer-bucket hit; verify the result
     # is on the cursor ray, not snapped to the distant supporting vertex.
     candidate = page.evaluate("""() => {

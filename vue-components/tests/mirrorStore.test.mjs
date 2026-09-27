@@ -55,6 +55,21 @@ function basicNodes() {
   };
 }
 
+function applyAll(mirror, ops) {
+  for (const op of ops) mirror.applyOp(op);
+}
+
+function nodesOf(mirror) {
+  return Object.fromEntries(mirror.ids().map((id) => [id, mirror.get(id)]));
+}
+
+// The refs among `refs` that a blob-cache GC keeps: the mirror's live ones.
+function liveAmong(mirror, refs) {
+  const cache = new Map(refs.map((ref) => [ref, new Uint8Array(0)]));
+  mirror.gcBlobCache(cache);
+  return [...cache.keys()].sort();
+}
+
 function upsertAllOps(nodes) {
   return Object.entries(nodes).map(([id, node]) => ({
     op: "upsert",
@@ -67,14 +82,14 @@ test("first commit's upserts reproduce the full node graph", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
 
-  mirror.applyOps(upsertAllOps(basicNodes()));
+  applyAll(mirror, upsertAllOps(basicNodes()));
 
-  assert.deepEqual(mirror.toObject(), basicNodes());
+  assert.deepEqual(nodesOf(mirror), basicNodes());
   assert.equal(mirror.size(), 6);
-  assert.deepEqual([...mirror.liveRefs()].sort(), [
-    "c2:conn-1:off-1",
-    "c:pts-hash-1",
-  ]);
+  assert.deepEqual(
+    liveAmong(mirror, ["c2:conn-1:off-1", "c:pts-hash-1", "c:stale"]),
+    ["c2:conn-1:off-1", "c:pts-hash-1"],
+  );
   assert.equal(mirror.refCount("c:pts-hash-1"), 1);
 });
 
@@ -83,7 +98,7 @@ test("upserts deep-copy nodes so later message mutation cannot leak in", async (
   const mirror = createMirrorStore();
   const nodes = basicNodes();
 
-  mirror.applyOps(upsertAllOps(nodes));
+  applyAll(mirror, upsertAllOps(nodes));
   nodes["4"].blocks.pickable.tags.rev = 99;
 
   assert.equal(mirror.get("4").blocks.pickable.tags.rev, 1);
@@ -92,29 +107,29 @@ test("upserts deep-copy nodes so later message mutation cannot leak in", async (
 test("a key change upsert replaces exactly that node", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
-  mirror.applyOps(upsertAllOps(basicNodes()));
+  applyAll(mirror, upsertAllOps(basicNodes()));
 
   // A feature-block change and a novel top-level key: the two shapes a
   // hand-maintained patch signature would miss but a generic diff must catch.
   const mapper = basicNodes()["4"];
   mapper.blocks.pickable.tags.rev = 2;
   mapper.authority = "server";
-  mirror.applyOps([{ op: "upsert", id: "4", node: mapper }]);
+  applyAll(mirror, [{ op: "upsert", id: "4", node: mapper }]);
 
   const expected = basicNodes();
   expected["4"].blocks.pickable.tags.rev = 2;
   expected["4"].authority = "server";
-  assert.deepEqual(mirror.toObject(), expected);
+  assert.deepEqual(nodesOf(mirror), expected);
 });
 
 test("remove ops drop the unreachable subtree and its refs leave", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
-  mirror.applyOps(upsertAllOps(basicNodes()));
+  applyAll(mirror, upsertAllOps(basicNodes()));
 
   const renderer = basicNodes()["2"];
   renderer.refs.viewProps = [];
-  mirror.applyOps([
+  applyAll(mirror, [
     { op: "upsert", id: "2", node: renderer },
     { op: "remove", id: "3" },
     { op: "remove", id: "4" },
@@ -122,15 +137,15 @@ test("remove ops drop the unreachable subtree and its refs leave", async () => {
   ]);
 
   assert.deepEqual([...mirror.ids()].sort(), [RW, "2", "6"]);
-  assert.equal(mirror.liveRefs().size, 0);
+  assert.deepEqual(liveAmong(mirror, ["c2:conn-1:off-1", "c:pts-hash-1"]), []);
 });
 
 test("patchArray re-refs the entry and preserves its other metadata", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
-  mirror.applyOps(upsertAllOps(basicNodes()));
+  applyAll(mirror, upsertAllOps(basicNodes()));
 
-  mirror.applyOps([
+  applyAll(mirror, [
     {
       op: "patchArray",
       id: "5",
@@ -152,8 +167,6 @@ test("patchArray re-refs the entry and preserves its other metadata", async () =
     ref: "c2:conn-1:off-1",
     dataType: "Uint32Array",
   });
-  assert.ok(mirror.liveRefs().has("v:5:points:1"));
-  assert.ok(!mirror.liveRefs().has("c:pts-hash-1"));
   assert.equal(mirror.refCount("c:pts-hash-1"), 0);
   assert.equal(mirror.refCount("v:5:points:1"), 1);
 });
@@ -165,7 +178,7 @@ test("ref counts track content aliases across patches and removal", async () => 
     type: "vtkPolyData",
     arrays: { points: { ref, dataType: "Float32Array" } },
   });
-  mirror.applyOps([
+  applyAll(mirror, [
     { op: "upsert", id: "a", node: node("c:shared") },
     { op: "upsert", id: "b", node: node("c:shared") },
   ]);
@@ -190,7 +203,7 @@ test("ref counts track content aliases across patches and removal", async () => 
 test("contract violations throw for the engine to resync on", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
-  mirror.applyOps(upsertAllOps(basicNodes()));
+  applyAll(mirror, upsertAllOps(basicNodes()));
 
   assert.throws(() => mirror.applyOp({ op: "remove", id: "999" }));
   assert.throws(() =>
@@ -210,7 +223,7 @@ test("contract violations throw for the engine to resync on", async () => {
 test("gcBlobCache drops refs no mirror node references", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
-  mirror.applyOps(upsertAllOps(basicNodes()));
+  applyAll(mirror, upsertAllOps(basicNodes()));
 
   const cache = new Map([
     ["c:pts-hash-1", new Float32Array(9)],
@@ -225,7 +238,7 @@ test("gcBlobCache drops refs no mirror node references", async () => {
 
   const renderer = basicNodes()["2"];
   renderer.refs.viewProps = [];
-  mirror.applyOps([
+  applyAll(mirror, [
     { op: "upsert", id: "2", node: renderer },
     { op: "remove", id: "3" },
     { op: "remove", id: "4" },
@@ -304,7 +317,7 @@ test("desired ref indexes preserve order and deduplicate reverse edges", async (
 test("target removal preserves incoming refs while referrer removal clears them", async () => {
   const createMirrorStore = await loadMirrorStore();
   const mirror = createMirrorStore();
-  mirror.applyOps([
+  applyAll(mirror, [
     { op: "upsert", id: "target", node: { type: "vtkTarget", refs: {} } },
     {
       op: "upsert",

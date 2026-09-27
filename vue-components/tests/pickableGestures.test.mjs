@@ -394,7 +394,10 @@ test("removing the active target emits a terminal cancelled drag end", async () 
   assert.equal(terminal.type, "target.drag.end");
   assert.equal(terminal.cancelled, true);
   assert.equal(terminal.unresolved, true);
-  assert.equal(g.getActivePick(), null);
+  const emitted = h.events.length;
+  h.windowRef.dispatch("pointermove", pointerEvent(20, 20));
+  h.windowRef.flushRaf();
+  assert.equal(h.events.length, emitted, "the ended drag moves nothing");
 });
 
 test("enrichPayload runs after rAF coalescing and its result is what emits", async () => {

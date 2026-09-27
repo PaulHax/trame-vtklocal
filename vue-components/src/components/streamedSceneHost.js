@@ -596,6 +596,7 @@ function releaseEntry(entry) {
   entry.registration?.release();
   entry.registration = null;
   entry.member = null;
+  entry.memberRenderer = null;
   entry.appearance = null;
   entry.hostRenderer = null;
   entry.anchorVersion = null;
@@ -767,6 +768,7 @@ export function createStreamedSceneHost(options = {}) {
         hostRenderer: null,
         anchorVersion: null,
         member: null,
+        memberRenderer: null,
         registration: null,
         source: null,
         sourceKey: null,
@@ -794,33 +796,13 @@ export function createStreamedSceneHost(options = {}) {
     scheduleRender();
   }
 
-  function resolveRenderer(entry, context, force = false) {
-    const version = Number.isFinite(context?.topologyVersion)
-      ? context.topologyVersion
-      : null;
-    const live =
-      typeof context?.getInstance === "function"
-        ? context.getInstance(entry.id)
-        : entry.actor;
-    if (!isLiveInstance(live)) {
-      entry.anchorVersion = version;
-      entry.hostRenderer = null;
-      return null;
-    }
-    const adopted = live !== entry.actor;
-    if (adopted) {
-      releaseEntry(entry);
-      entry.actor = live;
-      entry.configDirty = true;
-      entry.error = null;
-      entry.failedConfigGeneration = null;
-      entry.failedActor = null;
-      entry.failedRenderer = null;
-    } else if (!force && version !== null && entry.anchorVersion === version) {
-      return entry.hostRenderer;
-    }
-    entry.anchorVersion = version;
-    entry.hostRenderer = null;
+  function liveAnchor(entry, context) {
+    return typeof context?.getInstance === "function"
+      ? context.getInstance(entry.id)
+      : entry.actor;
+  }
+
+  function findHostRenderer(entry, context) {
     for (const rendererId of context?.referrersOf?.(entry.id, "viewProps") ??
       []) {
       const renderer = context?.getInstance?.(rendererId);
@@ -828,23 +810,56 @@ export function createStreamedSceneHost(options = {}) {
         isLiveInstance(renderer) &&
         (!context?.renderers || context.renderers.includes(renderer))
       ) {
-        entry.hostRenderer = renderer;
-        break;
+        return renderer;
       }
     }
+    return null;
+  }
+
+  function resolveRenderer(entry, context) {
+    const version = Number.isFinite(context?.topologyVersion)
+      ? context.topologyVersion
+      : null;
+    const live = liveAnchor(entry, context);
+    if (!isLiveInstance(live)) {
+      entry.anchorVersion = version;
+      entry.hostRenderer = null;
+      return null;
+    }
+    if (live !== entry.actor) {
+      releaseEntry(entry);
+      entry.actor = live;
+      entry.configDirty = true;
+      entry.error = null;
+      entry.failedConfigGeneration = null;
+      entry.failedActor = null;
+      entry.failedRenderer = null;
+    } else if (version !== null && entry.anchorVersion === version) {
+      return entry.hostRenderer;
+    }
+    entry.anchorVersion = version;
+    entry.hostRenderer = findHostRenderer(entry, context);
     return entry.hostRenderer;
   }
 
+  // The renderer an entry's member draws into, while the live scene still
+  // agrees. Moving or rebuilding a member is the paint's job, so between a
+  // scene change and that paint the member cannot answer a pick.
+  function drawnRenderer(entry) {
+    if (!lastContext || !entry.member) return null;
+    if (liveAnchor(entry, lastContext) !== entry.actor) return null;
+    const renderer = findHostRenderer(entry, lastContext);
+    return renderer === entry.memberRenderer ? renderer : null;
+  }
+
   function updateEntry(entry, context, views) {
-    const previousRenderer = entry.hostRenderer;
     const renderer = resolveRenderer(entry, context);
     if (!renderer) {
       if (entry.member) releaseEntry(entry);
       return;
     }
-    if (entry.member && previousRenderer && previousRenderer !== renderer) {
+    if (entry.member && entry.memberRenderer !== renderer) {
       releaseEntry(entry);
-      entry.hostRenderer = renderer;
     }
     const active = actorIsVisible(entry.actor) && rendererDraws(renderer);
     if (!entry.member && !active) {
@@ -883,6 +898,7 @@ export function createStreamedSceneHost(options = {}) {
         entry.failedRenderer = renderer;
         return;
       }
+      entry.memberRenderer = renderer;
       entry.error = null;
       entry.failedConfigGeneration = null;
       entry.failedActor = null;
@@ -929,20 +945,9 @@ export function createStreamedSceneHost(options = {}) {
     coordinator.prepareFrame(frameSerial);
   }
 
-  // `resolved` lets a caller that has already resolved this entry's renderer
-  // skip a second referrer scan over the whole mirror.
-  function queryState(entry, cssX, cssY, resolved = null) {
-    if (!lastContext || !entry.member || !entry.registration) return null;
-    const renderer = resolved ?? resolveRenderer(entry, lastContext, true);
-    if (
-      !renderer ||
-      !entry.member ||
-      !entry.registration ||
-      !actorIsVisible(entry.actor) ||
-      !rendererDraws(renderer)
-    ) {
-      return null;
-    }
+  // `renderer` is the entry's drawnRenderer().
+  function queryState(entry, renderer, cssX, cssY) {
+    if (!actorIsVisible(entry.actor) || !rendererDraws(renderer)) return null;
     const metrics = getViewportMetrics(renderer, lastContext.renderWindow);
     const view = readCameraView(renderer, lastContext.renderWindow, metrics);
     if (!view || !metrics) return null;
@@ -979,7 +984,9 @@ export function createStreamedSceneHost(options = {}) {
       target = entry;
     }
     if (!target) return null;
-    const targetQuery = queryState(target, cssX, cssY);
+    const targetRenderer = drawnRenderer(target);
+    if (!targetRenderer) return null;
+    const targetQuery = queryState(target, targetRenderer, cssX, cssY);
     if (!targetQuery || targetQuery.status !== "ready") return null;
     const targetResult = target.member.pick(
       targetQuery.view,
@@ -1001,10 +1008,10 @@ export function createStreamedSceneHost(options = {}) {
     for (const blocker of entries.values()) {
       if (blocker === target || !blocker.member || !blocker.active) continue;
       if (!actorIsVisible(blocker.actor)) continue;
-      const blockerRenderer = resolveRenderer(blocker, lastContext, true);
+      const blockerRenderer = drawnRenderer(blocker);
       if (!blockerRenderer) return null;
       if (!rendererDraws(blockerRenderer)) continue;
-      const blockerQuery = queryState(blocker, cssX, cssY, blockerRenderer);
+      const blockerQuery = queryState(blocker, blockerRenderer, cssX, cssY);
       if (!blockerQuery) return null;
       if (blockerQuery.status === "outside") continue;
       if (!sameCursorRay(targetQuery.ray, blockerQuery.ray)) return null;

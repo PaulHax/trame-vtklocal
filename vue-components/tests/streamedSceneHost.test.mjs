@@ -700,10 +700,15 @@ test("default pointCloud factory streams through the extracted member API", asyn
   };
   const added = [];
   const removed = [];
+  let noteActorAdded;
+  const actorAdded = new Promise((resolve) => {
+    noteActorAdded = resolve;
+  });
   const hostRenderer = {
     ...renderer(),
     addActor(value) {
       added.push(value);
+      noteActorAdded();
     },
     removeActor(value) {
       removed.push(value);
@@ -727,9 +732,7 @@ test("default pointCloud factory streams through the extracted member API", asyn
       anchor,
     );
     host.beforeRender(context);
-    for (let index = 0; index < 20 && added.length === 0; index += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    await actorAdded;
     assert.ok(fetches.some((url) => url.endsWith("/hierarchy/0-0-0-0.json")));
     assert.ok(fetches.some((url) => url.endsWith("/tile/0-0-0-0.bin")));
     assert.equal(added.length, 1);

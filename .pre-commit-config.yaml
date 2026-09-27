@@ -10,8 +10,8 @@ repos:
       - id: ruff
       - id: ruff-format
 
-  # Checks against the project environment so VTK, numpy and aiohttp resolve
-  # to their shipped type information.
+  # Checks against the project environment so VTK and numpy resolve to their
+  # shipped type information.
   - repo: local
     hooks:
       - id: mypy

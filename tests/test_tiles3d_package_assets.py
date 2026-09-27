@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from zipfile import ZipFile
@@ -28,29 +29,34 @@ def test_offline_tiles3d_runtime_is_staged_and_selected_for_wheel(tmp_path):
     }
     for name, source in codec_sources.items():
         assert (serve / "wasm/tiles3d" / name).read_bytes() == source.read_bytes()
-    pyproject = (root / "pyproject.toml").read_text()
-    assert '"/src/trame_vtklocal/module/serve/js/**"' in pyproject
-    assert '"/src/trame_vtklocal/module/serve/wasm/tiles3d/**"' in pyproject
-    assert '"/src/trame_vtklocal/module/serve/wasm/9.*"' in pyproject
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "build",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            str(tmp_path),
-        ],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    # Anything else a checkout holds under serve/wasm/ must stay out.
+    stray = serve / "wasm" / "stale-runtime"
+    stray.mkdir(exist_ok=True)
+    (stray / "vtkWebAssembly.wasm").write_bytes(b"\0asm")
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--wheel",
+                "--no-isolation",
+                "--outdir",
+                str(tmp_path),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        shutil.rmtree(stray)
     wheel = next(tmp_path.glob("*.whl"))
     with ZipFile(wheel) as archive:
         names = set(archive.namelist())
     prefix = "trame_vtklocal/module/serve/"
     assert {prefix + relative for relative in required} <= names
-    assert not any(name.startswith(prefix + "wasm/9.") for name in names)
+    assert {name for name in names if name.startswith(prefix + "wasm/")} == {
+        prefix + relative for relative in required if relative.startswith("wasm/")
+    }

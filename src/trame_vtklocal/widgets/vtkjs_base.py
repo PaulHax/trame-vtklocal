@@ -48,8 +48,7 @@ class HtmlElement(AbstractElement):  # type: ignore[misc, no-any-unimported]
     ) -> None:
         super().__init__(_elem_name, children, **kwargs)
         if self.server:
-            kwargs.pop("trame_server", None)
-            self.server.enable_module(module, **kwargs)
+            self.server.enable_module(module)
 
 
 class VtkJsBaseView(HtmlElement):

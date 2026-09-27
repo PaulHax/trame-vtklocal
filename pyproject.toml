@@ -3,7 +3,7 @@ name = "trame-vtklocal"
 # Version is stamped at build time (base + git short sha) by the custom
 # metadata hook in hatch_build.py. Base version lives there as BASE_VERSION.
 dynamic = ["version"]
-description = "VTK Local Rendering using WASM"
+description = "VTK local rendering with vtk.js"
 authors = [
     {name = "Kitware Inc."},
 ]
@@ -61,10 +61,11 @@ include = [
   "/src/trame_vtklocal/module/serve/wasm/tiles3d/**",
   "/src/trame/**/*.py",
 ]
-# The wheel target's `packages` (below) recursively grabs the whole
-# Exclude vtk-wasm LocalView runtimes while retaining the decoder assets above.
+# The wheel ships every file under its `packages` (below), whatever `include`
+# says, so serve/wasm/ is limited to the offline 3D Tiles decoders.
 exclude = [
-  "/src/trame_vtklocal/module/serve/wasm/9.*",
+  "/src/trame_vtklocal/module/serve/wasm/*",
+  "!/src/trame_vtklocal/module/serve/wasm/tiles3d",
 ]
 
 [tool.hatch.build.targets.wheel]

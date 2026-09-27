@@ -1,9 +1,4 @@
-"""
-Simple example demonstrating VtkJsLocalView with vtk.js rendering.
-
-This uses vtk.js (JavaScript implementation) for client-side rendering
-instead of the WASM-based LocalView.
-"""
+"""Simple example demonstrating VtkJsLocalView with vtk.js rendering."""
 
 from trame.app import get_server
 from trame.ui.html import DivLayout

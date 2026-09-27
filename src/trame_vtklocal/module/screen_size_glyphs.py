@@ -49,10 +49,6 @@ def mark_screen_size_glyphs(
     return config
 
 
-def clear_screen_size_glyphs(mapper: vtkGlyph3DMapper) -> None:
-    set_block(mapper, SCREEN_SIZE_GLYPHS_BLOCK, None)
-
-
 def screen_size_glyphs_config(
     mapper: vtkObjectBase,
 ) -> ScreenSizeGlyphsConfig | None:

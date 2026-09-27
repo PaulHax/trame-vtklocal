@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypedDict
 
 
@@ -66,12 +66,6 @@ class ParsedStateCache:
 
     def drop(self, obj_id: int | str) -> None:
         self._entries.pop(int(obj_id), None)
-
-    def retain(self, live_ids: Iterable[int | str]) -> None:
-        live = {int(obj_id) for obj_id in live_ids}
-        self._entries = {
-            obj_id: entry for obj_id, entry in self._entries.items() if obj_id in live
-        }
 
     def clear(self) -> None:
         self._entries.clear()

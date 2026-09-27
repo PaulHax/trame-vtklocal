@@ -151,12 +151,11 @@ addQuad(leftQuad, (mapper) => {
   mapper.setHomography(groundHomography(LEFT_X0, Y0, QUAD_W, QUAD_H));
 });
 
-// Right: world-to-clip projection through a per-render provider.
+// Right: world-to-clip projection.
 const rightQuad = makeQuad(RIGHT_X0, Y0, QUAD_W, QUAD_H);
-const rightWorldToClip = projectorWorldToClip(RIGHT_X0, Y0, QUAD_W, QUAD_H);
 addQuad(rightQuad, (mapper) => {
   mapper.setMode(ProjectedTextureMode.WORLD_TO_CLIP);
-  mapper.setWorldToClipProvider(() => rightWorldToClip);
+  mapper.setWorldToClip(projectorWorldToClip(RIGHT_X0, Y0, QUAD_W, QUAD_H));
 });
 
 const sourceCanvas = createSourceCanvas();

@@ -159,17 +159,8 @@ function vtkProjectedTextureMapper(publicAPI, model) {
     return values?.length >= 9 ? values : null;
   };
 
-  // A client-installed provider wins so per-render matrices (e.g. derived
-  // from an externally animated camera) need no prop churn.
-  publicAPI.getResolvedWorldToClip = () => {
-    if (typeof model.worldToClipProvider === "function") {
-      const matrix = model.worldToClipProvider();
-      if (matrix?.length === 16) {
-        return matrix;
-      }
-    }
-    return model.worldToClip?.length === 16 ? model.worldToClip : null;
-  };
+  publicAPI.getResolvedWorldToClip = () =>
+    model.worldToClip?.length === 16 ? model.worldToClip : null;
 }
 
 const RENDERABLE_DEFAULT_VALUES = {
@@ -178,7 +169,6 @@ const RENDERABLE_DEFAULT_VALUES = {
   homography: null, // 9 values, column-major
   homographyArrayName: "HomographyInverse",
   worldToClip: null, // 16 values, column-major
-  worldToClipProvider: null, // client-side only, never serialized
 };
 
 export function extend(publicAPI, model, initialValues = {}) {
@@ -192,7 +182,6 @@ export function extend(publicAPI, model, initialValues = {}) {
     "homography",
     "homographyArrayName",
     "worldToClip",
-    "worldToClipProvider",
   ]);
 
   vtkProjectedTextureMapper(publicAPI, model);

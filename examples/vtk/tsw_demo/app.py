@@ -1,6 +1,6 @@
 """TSW feature exerciser: shared map context, streamed assets and frame updates.
 
-Run: python examples/vtk/maplibre_vtkjs_partial.py --server
+Run: python examples/vtk/maplibre_vtkjs.py --server
 See tsw_demo/README.md for controls and headless browser checks.
 """
 

@@ -3,8 +3,7 @@
 // vtk.js getCompositeProjectionMatrix returns its 16 floats in the transposed
 // layout relative to what the flat project/unproject math in pickables.js and
 // dragPreview.js reads (w picked up from indices 3/7/11/15). Every consumer
-// converts through here so a projection path and an unprojection path can
-// never disagree about the layout again.
+// converts through here so projection and unprojection share one layout.
 
 export function transposeMatrix(matrix) {
   return [

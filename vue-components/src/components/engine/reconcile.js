@@ -231,9 +231,8 @@ export function createReconciler({
   }
 
   // Detach only what this reconciler attached, leaving client-owned entries in
-  // place. Removal goes by recorded instance rather than by id, which is what
-  // the full drain was really for: a replaced node leaves a predecessor in the
-  // collection that id lookups can no longer name.
+  // place. Removal goes by recorded instance: a replaced node leaves its
+  // predecessor in the collection under an id that no longer resolves to it.
   function drainAttachedSlot(instance, slot, listSpec) {
     const attached = attachedChildren.get(instance)?.get(slot);
     if (!attached) return;

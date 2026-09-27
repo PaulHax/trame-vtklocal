@@ -12,8 +12,7 @@
 
 // Registries are scoped per renderable vtkRenderWindow: in the shared-GL
 // architecture the context is shared across views but serialization scope and
-// instances are per view, so each view uploads its own copy (same cost shape
-// as the previous per-view raw-texture instances).
+// instances are per view, so each view uploads its own copy.
 const registries = new WeakMap();
 
 function createTextureState() {

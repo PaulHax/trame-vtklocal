@@ -664,7 +664,6 @@ export function createStreamedSceneHost(options = {}) {
   const entries = new Map();
   let disposed = false;
   let lastContext = null;
-  let fallbackFrameSerial = 0;
 
   function reconcileTextureCapabilities(context) {
     // GPU capabilities can only change with the GL context itself, and the
@@ -874,12 +873,7 @@ export function createStreamedSceneHost(options = {}) {
     const views = new Map();
     for (const entry of entries.values()) updateEntry(entry, context, views);
     coordinator.noteRenderedCameras(views);
-    const suppliedFrameSerial = context.frameSerial;
-    const frameSerial = Number.isSafeInteger(suppliedFrameSerial)
-      ? suppliedFrameSerial
-      : fallbackFrameSerial + 1;
-    fallbackFrameSerial = Math.max(fallbackFrameSerial, frameSerial);
-    coordinator.prepareFrame(frameSerial);
+    coordinator.prepareFrame(context.frameSerial);
   }
 
   // `renderer` is the entry's drawnRenderer().

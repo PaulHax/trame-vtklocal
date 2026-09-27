@@ -23,6 +23,7 @@ from trame_vtklocal.store import (
     REF_CELLS_PREFIX,
     REF_CONTENT_PREFIX,
     REF_VERSION_PREFIX,
+    ref_hashes,
     ref_manager_hashes,
 )
 
@@ -42,7 +43,7 @@ def pack_cell_array_payload(
     vtk_object_manager: vtkObjectManager, cells_ref: str
 ) -> bytes:
     """Packed vtk.js Uint32 cell-array bytes for a ``c2:<conn>:<off>`` ref."""
-    conn_hash, off_hash = cells_ref[len(REF_CELLS_PREFIX) :].split(":", 1)
+    conn_hash, off_hash = ref_hashes(cells_ref)
     conn_blob = registered_blob(vtk_object_manager, conn_hash)
     off_blob = registered_blob(vtk_object_manager, off_hash)
     if conn_blob is None or off_blob is None:

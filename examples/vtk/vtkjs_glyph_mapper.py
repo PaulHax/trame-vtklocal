@@ -126,7 +126,7 @@ with DivLayout(server) as layout:
     client.Style("body { margin: 0; font-family: sans-serif; }")
 
     with html.Div(style="position: absolute; inset: 0;"):
-        view = VtkJsLocalView(render_window, sync_mode="push")
+        view = VtkJsLocalView(render_window)
 
     with html.Div(
         style=(

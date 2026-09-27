@@ -1798,6 +1798,53 @@ test("duplicate identity and unresolved active blockers make a scoped query unav
   host.dispose();
 });
 
+test("a pick never moves or rebuilds a member; the next paint does", async () => {
+  const { createStreamedSceneHost } = await loadModule(
+    "/src/components/streamedSceneHost.js",
+  );
+  const log = coordinatorLog();
+  const members = [fakeMember(), fakeMember(), fakeMember()];
+  const factories = factoriesFor(new Map([["pointCloud", members.slice()]]));
+  const anchor = actor();
+  const firstRenderer = renderer();
+  const secondRenderer = renderer();
+  const context = sceneContext(
+    new Map([["moving", { actor: anchor, renderer: firstRenderer }]]),
+  );
+  const host = createStreamedSceneHost({
+    factories,
+    createCoordinator: fakeCoordinatorFactory(log),
+  });
+  host.applyBlock("moving", pointBlock(), anchor);
+  host.beforeRender(context);
+  assert.equal(members[0].factoryContext.renderer, firstRenderer);
+  assert.equal(host.pickAsset("asset-1", 50, 25).status, "miss");
+
+  context.bind("moving", anchor, secondRenderer);
+  assert.equal(
+    host.pickAsset("asset-1", 50, 25),
+    null,
+    "a member still drawing into its old renderer cannot answer",
+  );
+  host.beforeRender(context);
+  assert.equal(members[0].calls.at(-1)[0], "dispose");
+  assert.equal(members[1].factoryContext.renderer, secondRenderer);
+  assert.equal(host.pickAsset("asset-1", 50, 25).status, "miss");
+
+  const replacement = actor();
+  context.bind("moving", replacement, secondRenderer);
+  assert.equal(host.pickAsset("asset-1", 50, 25), null);
+  assert.equal(
+    members[1].calls.some(([name]) => name === "dispose"),
+    false,
+    "a pick does not tear down a member whose anchor was replaced",
+  );
+  host.beforeRender(context);
+  assert.equal(members[1].calls.at(-1)[0], "dispose");
+  assert.equal(members[2].factoryContext.renderer, secondRenderer);
+  host.dispose();
+});
+
 test("gesture enrichment preserves tag, armed override, and unavailable semantics", async () => {
   const { enrichGestureWithCloudSolve } = await loadModule(
     "/src/components/streamedSceneHost.js",

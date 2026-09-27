@@ -306,8 +306,13 @@ test("snapshot reconciliation rebuilds dead instances and rewires refs", async (
   const actor = harness.instances.get("actor");
   oldOwner.markDeleted();
 
+  const snapshotNodes = structuredClone(
+    Object.fromEntries(
+      harness.mirror.ids().map((id) => [id, harness.mirror.get(id)]),
+    ),
+  );
   harness.reconciler.applySnapshot(
-    harness.mirror.toObject(),
+    snapshotNodes,
     harness.mirror,
     harness.cache,
   );

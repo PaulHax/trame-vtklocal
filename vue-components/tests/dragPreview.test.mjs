@@ -303,7 +303,6 @@ test("preview ends when the bound points array is structurally replaced", async 
   values = new Float32Array([9, 9, 9]); // shrunk: index 0 is now B
   assert.equal(preview.reapply(), false);
   assert.deepEqual(Array.from(values), [9, 9, 9]);
-  assert.equal(preview.isActive(), false);
   assert.equal(preview.move({ pointer: { x: 80, y: 50 } }), false);
 });
 
@@ -347,7 +346,8 @@ test("preview follows the grabbed point id through same-size re-buckets", async 
   values.set([9, 9, 9, 8, 8, 8]);
   assert.equal(preview.reapply(), false);
   assert.deepEqual(Array.from(values), [9, 9, 9, 8, 8, 8]);
-  assert.equal(preview.isActive(), false);
+  assert.equal(preview.move({ pointer: { x: 80, y: 50 } }), false);
+  assert.deepEqual(Array.from(values), [9, 9, 9, 8, 8, 8]);
 
   // Reorder WITHOUT eviction re-targets instead of ending: grab A again,
   // then swap A to index 1 — the preview writes A's new slot, not B's.
@@ -401,15 +401,16 @@ test("index-fallback pick survives ids arriving mid-drag", async () => {
   ids = ["A", "B"];
   assert.equal(preview.move({ pointer: { x: 80, y: 50 } }), true);
   assert.ok(Math.abs(values[0] - 0.6) < 1e-6);
-  assert.equal(preview.isActive(), true);
 
   // But a structural size change still ends it: without a pick-time id
   // there is no identity to re-target by, ids or not.
   const grown = new Float32Array([1, 1, 1, 9, 9, 9, 8, 8, 8]);
   array.getData = () => grown;
   assert.equal(preview.move({ pointer: { x: 85, y: 50 } }), false);
-  assert.equal(preview.isActive(), false);
   assert.deepEqual(Array.from(grown), [1, 1, 1, 9, 9, 9, 8, 8, 8]);
+  // The preview ended: back at its original size it still writes nothing.
+  array.getData = () => values;
+  assert.equal(preview.move({ pointer: { x: 90, y: 50 } }), false);
 });
 
 test("plane drag preview honors vtk.js row-major composite matrices", async () => {

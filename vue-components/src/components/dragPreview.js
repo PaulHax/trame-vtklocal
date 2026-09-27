@@ -278,5 +278,5 @@ export function createDragPreview({
     );
   }
 
-  return { start, move, reapply, end, targets, isActive: () => !!active };
+  return { start, move, reapply, end, targets };
 }

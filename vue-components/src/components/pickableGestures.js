@@ -299,7 +299,6 @@ export function createPickableGestures({
     setEmitBackgroundClick,
     setShouldGrab,
     cancelForNode,
-    getActivePick: () => drag?.pick || null,
     teardown,
   };
 }

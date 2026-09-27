@@ -684,10 +684,7 @@ export function createStreamedSceneHost(options = {}) {
       if (entry.config.kind !== "tiles3d" || !entry.member) continue;
       releaseEntry(entry);
       entry.configDirty = true;
-      entry.error = null;
-      entry.failedConfigGeneration = null;
-      entry.failedActor = null;
-      entry.failedRenderer = null;
+      entry.failure = null;
     }
     scheduleRender();
   }
@@ -725,10 +722,7 @@ export function createStreamedSceneHost(options = {}) {
         sourceKey: null,
         configDirty: true,
         configGeneration: 1,
-        error: null,
-        failedConfigGeneration: null,
-        failedActor: null,
-        failedRenderer: null,
+        failure: null,
         active: false,
       });
     } else {
@@ -739,10 +733,7 @@ export function createStreamedSceneHost(options = {}) {
       current.config = config;
       current.configDirty = true;
       current.configGeneration += 1;
-      current.error = null;
-      current.failedConfigGeneration = null;
-      current.failedActor = null;
-      current.failedRenderer = null;
+      current.failure = null;
     }
     scheduleRender();
   }
@@ -781,10 +772,7 @@ export function createStreamedSceneHost(options = {}) {
       releaseEntry(entry);
       entry.actor = live;
       entry.configDirty = true;
-      entry.error = null;
-      entry.failedConfigGeneration = null;
-      entry.failedActor = null;
-      entry.failedRenderer = null;
+      entry.failure = null;
     } else if (version !== null && entry.anchorVersion === version) {
       return entry.hostRenderer;
     }
@@ -819,10 +807,9 @@ export function createStreamedSceneHost(options = {}) {
     }
     if (!entry.member) {
       if (
-        entry.error &&
-        entry.failedConfigGeneration === entry.configGeneration &&
-        entry.failedActor === entry.actor &&
-        entry.failedRenderer === renderer
+        entry.failure?.configGeneration === entry.configGeneration &&
+        entry.failure.actor === entry.actor &&
+        entry.failure.renderer === renderer
       ) {
         entry.active = false;
         return;
@@ -843,17 +830,16 @@ export function createStreamedSceneHost(options = {}) {
       } catch (error) {
         entry.member = null;
         entry.active = false;
-        entry.error = errorMessage(error);
-        entry.failedConfigGeneration = entry.configGeneration;
-        entry.failedActor = entry.actor;
-        entry.failedRenderer = renderer;
+        entry.failure = {
+          message: errorMessage(error),
+          configGeneration: entry.configGeneration,
+          actor: entry.actor,
+          renderer,
+        };
         return;
       }
       entry.memberRenderer = renderer;
-      entry.error = null;
-      entry.failedConfigGeneration = null;
-      entry.failedActor = null;
-      entry.failedRenderer = null;
+      entry.failure = null;
       const policy = qualityPolicy(entry.config, tiles3dQualityPolicy);
       entry.registration = coordinator.register(entry.member, {
         id: entry.id,
@@ -1065,7 +1051,7 @@ export function createStreamedSceneHost(options = {}) {
           anchorVisible: entry.actor ? actorIsVisible(entry.actor) : null,
           anchorUserMatrix: entry.actor?.getUserMatrix?.() ?? null,
           hasMember: !!entry.member,
-          error: entry.error,
+          error: entry.failure?.message ?? null,
           stats: describeMember(entry),
         })),
         coordinator: coordinatorStats,

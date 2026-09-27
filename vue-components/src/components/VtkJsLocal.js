@@ -117,7 +117,9 @@ export default {
       // The Start/End/InteractionEvent trio fires on the interactor STYLE;
       // the interactor's .d.ts declares them but its runtime never does.
       cameraSubscriptions = [
-        interactorStyle.onStartInteractionEvent(scene.beginCameraInteraction),
+        interactorStyle.onStartInteractionEvent(() =>
+          scene.beginCameraInteraction(),
+        ),
         interactorStyle.onInteractionEvent(scene.cameraInteraction),
         interactorStyle.onEndInteractionEvent(scene.endCameraInteraction),
       ];

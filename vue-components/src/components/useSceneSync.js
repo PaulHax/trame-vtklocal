@@ -380,10 +380,8 @@ export function useSceneSync(
 
     clearCoincidentTopology = registerBlockHandlers(reconciler, {
       pickables,
-      onPickableRemoved: (nodeId) => {
-        gestures.cancelForNode(nodeId);
-        if (dragPreview.targets(nodeId)) dragPreview.end();
-      },
+      // Cancelling the drag ends its preview through onDragEnd.
+      onPickableRemoved: (nodeId) => gestures.cancelForNode(nodeId),
       distanceToCameraGlyphs,
       pointCloudPresentations,
       getStreamedSceneHost: () => streamedSceneHost,

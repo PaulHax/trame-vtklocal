@@ -43,7 +43,7 @@ from trame_vtklocal.widgets.dirty_tracker import DirtyTracker
 from trame_vtklocal.widgets.scene_events import event_is_current
 from trame_vtklocal.widgets.hot_array_batch import commit_hot_array_batch
 from trame_vtklocal.widgets.hot_arrays import (
-    DEFAULT_HOT_ARRAY_KEYS,
+    HOT_ARRAY_KEY,
     HotArrayDiffer,
     live_dataset_array,
 )
@@ -82,7 +82,6 @@ class ScenePublisher:
         object_manager_api: PushViewHost,
         render_window: vtkRenderWindow,
         rw_id: int | str,
-        hot_array_keys: Iterable[str] | None = None,
     ) -> None:
         self._server = server
         self._api: PushViewHost | None = object_manager_api
@@ -96,12 +95,7 @@ class ScenePublisher:
         # change while the ref is live; entries leave with the ref.
         self._packed_cells: dict[str, bytes] = {}
 
-        self._hot_arrays = HotArrayDiffer(
-            self._live_hot_array,
-            hot_keys=(
-                DEFAULT_HOT_ARRAY_KEYS if hot_array_keys is None else hot_array_keys
-            ),
-        )
+        self._hot_arrays = HotArrayDiffer(self._live_hot_array)
         self._pending_commands: list[SceneCommand] = []
         self._retained_commands: dict[str, SceneCommand] = {}
         self._transaction_depth = 0
@@ -487,7 +481,9 @@ class ScenePublisher:
         self._class_names = self._tracker.classes()
 
     def _live_hot_array(self, node_id: str, key: str) -> NumericArray | None:
-        return live_dataset_array(self._object_manager, node_id, key)
+        if key != HOT_ARRAY_KEY:
+            return None
+        return live_dataset_array(self._object_manager, node_id)
 
     # ------------------------------------------------------------------
     # Blob payloads (see widgets/blob_payloads.py)

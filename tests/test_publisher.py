@@ -233,40 +233,6 @@ def test_retained_point_patch_skips_full_object_manager_serialization():
         publisher.cleanup()
 
 
-def test_registered_named_point_data_array_uses_region_patches():
-    scene = make_points_cloud_scene(point_count=1_000)
-    values = np.arange(1_000, dtype=np.float32)
-    vtk_array = numpy_to_vtk(values, deep=True)
-    vtk_array.SetName("Heat")
-    scene.handles["polydata"].GetPointData().AddArray(vtk_array)
-    key = "field:pointData:Heat"
-    server = _FakeServer()
-    publisher = ScenePublisher(
-        server,
-        scene.api,
-        scene.render_window,
-        scene.render_window_id,
-        hot_array_keys={key},
-    )
-    try:
-        vtk_array.SetValue(1, -1.0)
-        vtk_array.Modified()
-        publisher.sync()
-        server.protocol.drain()  # first candidate starts retention
-
-        vtk_array.SetValue(10, -10.0)
-        vtk_array.SetValue(900, -900.0)
-        vtk_array.Modified()
-        publisher.sync()
-
-        ((_topic, message),) = server.protocol.drain()
-        patches = [op for op in message["ops"] if op["op"] == "patchArray"]
-        assert [op["key"] for op in patches] == [key, key]
-        assert [op["offset"] for op in patches] == [10, 900]
-    finally:
-        publisher.cleanup()
-
-
 def test_moving_a_single_point_patches_it_without_reserializing():
     """A one-point dataset always rewrites most of its array when it moves.
 
@@ -326,9 +292,7 @@ def test_scattered_edits_to_a_small_array_patch_it_whole():
         ((_topic, message),) = server.protocol.drain()
         (op,) = message["ops"]
         assert (op["op"], op["offset"]) == ("patchArray", 0)
-        live = live_dataset_array(
-            scene.api.vtk_object_manager, _dataset_id(scene), "points"
-        )
+        live = live_dataset_array(scene.api.vtk_object_manager, _dataset_id(scene))
         assert np.array_equal(np.frombuffer(bytes(op["data"]), dtype=np.float32), live)
         assert message["blobs"] == {}
     finally:

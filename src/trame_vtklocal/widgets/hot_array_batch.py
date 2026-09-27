@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 from vtkmodules.vtkCommonCore import vtkDataArray
 
-from trame_vtklocal.widgets.hot_arrays import live_dataset_array_sources
+from trame_vtklocal.widgets.hot_arrays import (
+    HOT_ARRAY_KEY,
+    live_dataset_array_sources,
+)
 
 if TYPE_CHECKING:
     from vtkmodules.vtkSerializationManager import vtkObjectManager
@@ -42,43 +45,34 @@ def commit_hot_array_batch(
     for node_id in batch.candidates:
         node_id = str(node_id)
         stored = store.get(node_id)
-        arrays = (stored.get("arrays") if stored else None) or {}
-        node_has_dirty_hot_array = False
-        for key in hot_arrays.hot_keys:
-            entry = arrays.get(key)
-            if entry is None:
-                continue
-            source_ids = {
-                str(object_manager.GetId(source))
-                for source in live_dataset_array_sources(object_manager, node_id, key)
-            }
-            allowed_dirty_ids.update(source_ids)
-            if dirty_ids.isdisjoint(source_ids):
-                continue
-            sources = live_dataset_array_sources(object_manager, node_id, key)
-            array = sources[-1] if sources else None
-            serialized_ids = {
-                str(dependency)
-                for dependency in object_manager.GetAllDependencies(int(node_id))
-            }
-            if (
-                not isinstance(array, vtkDataArray)
-                # A live source the node's last serialization did not record,
-                # such as an array ``vtkPoints.SetData`` swapped in, is not
-                # observed either: only serializing the node makes its later
-                # edits visible.
-                or not source_ids <= serialized_ids
-                or array.GetNumberOfComponents() != entry.get("numberOfComponents", 1)
-                or (array.GetName() or "") != (entry.get("name") or "")
-            ):
-                return None
-            plan = hot_arrays.plan_retained_patch(node_id, key, entry)
-            if plan is None:
-                return None
-            plans.append(plan)
-            node_has_dirty_hot_array = True
-        if not node_has_dirty_hot_array:
+        entry = ((stored.get("arrays") if stored else None) or {}).get(HOT_ARRAY_KEY)
+        if entry is None:
             return None
+        sources = live_dataset_array_sources(object_manager, node_id)
+        source_ids = {str(object_manager.GetId(source)) for source in sources}
+        if dirty_ids.isdisjoint(source_ids):
+            return None
+        allowed_dirty_ids.update(source_ids)
+        array = sources[-1] if sources else None
+        serialized_ids = {
+            str(dependency)
+            for dependency in object_manager.GetAllDependencies(int(node_id))
+        }
+        if (
+            not isinstance(array, vtkDataArray)
+            # A live source the node's last serialization did not record,
+            # such as an array ``vtkPoints.SetData`` swapped in, is not
+            # observed either: only serializing the node makes its later
+            # edits visible.
+            or not source_ids <= serialized_ids
+            or array.GetNumberOfComponents() != entry.get("numberOfComponents", 1)
+            or (array.GetName() or "") != (entry.get("name") or "")
+        ):
+            return None
+        plan = hot_arrays.plan_retained_patch(node_id, HOT_ARRAY_KEY, entry)
+        if plan is None:
+            return None
+        plans.append(plan)
 
     if not dirty_ids.issubset(allowed_dirty_ids):
         return None

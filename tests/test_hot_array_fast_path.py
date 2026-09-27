@@ -23,22 +23,16 @@ from trame_vtklocal.widgets.hot_arrays import (
 )
 from trame_vtklocal.widgets.publisher import ScenePublisher
 
-HEAT_KEY = "field:pointData:Heat"
-
 
 # ----------------------------------------------------------------------
 # Harness
 # ----------------------------------------------------------------------
 
 
-def _make_publisher(scene, hot_array_keys=None):
+def _make_publisher(scene):
     server = _FakeServer()
     publisher = ScenePublisher(
-        server,
-        scene.api,
-        scene.render_window,
-        scene.render_window_id,
-        hot_array_keys=hot_array_keys,
+        server, scene.api, scene.render_window, scene.render_window_id
     )
     return publisher, server
 
@@ -152,7 +146,7 @@ def test_guard_rejects_a_dtype_change(retained_points):
     """
     scene, publisher, _server = retained_points
     dataset_id = _dataset_id(scene)
-    live = live_dataset_array(scene.api.vtk_object_manager, dataset_id, "points")
+    live = live_dataset_array(scene.api.vtk_object_manager, dataset_id)
     widened = live.astype(np.float64).reshape(-1, 3)
 
     scene.handles["points"].SetData(numpy_to_vtk(widened, deep=True))
@@ -293,7 +287,7 @@ def test_edits_to_a_swapped_in_points_array_reach_the_client(point_count, moved)
         object_manager = scene.api.vtk_object_manager
         dataset_id = _dataset_id(scene)
 
-        values = live_dataset_array(object_manager, dataset_id, "points").copy()
+        values = live_dataset_array(object_manager, dataset_id).copy()
         values[: 3 * moved] += 1.0
         replacement = numpy_to_vtk(values.reshape(-1, 3), deep=True)
         scene.handles["points"].SetData(replacement)
@@ -307,85 +301,9 @@ def test_edits_to_a_swapped_in_points_array_reach_the_client(point_count, moved)
         entry = client.nodes[dataset_id]["arrays"]["points"]
         shown = np.frombuffer(client.blobs[entry["ref"]], dtype=np.float32)
         assert shown[-3:].tolist() == [7.0, 7.0, 7.0]
-        assert np.array_equal(
-            shown, live_dataset_array(object_manager, dataset_id, "points")
-        )
+        assert np.array_equal(shown, live_dataset_array(object_manager, dataset_id))
     finally:
         publisher.cleanup()
-
-
-# ----------------------------------------------------------------------
-# Field-array hot keys reach the fast path (and still fall back correctly)
-# ----------------------------------------------------------------------
-
-
-def _heat_scene(point_count=1_000):
-    scene = make_points_cloud_scene(point_count=point_count)
-    heat = numpy_to_vtk(np.arange(point_count, dtype=np.float32), deep=True)
-    heat.SetName("Heat")
-    other = numpy_to_vtk(np.arange(point_count, dtype=np.float32), deep=True)
-    other.SetName("Other")
-    scene.handles["polydata"].GetPointData().AddArray(heat)
-    scene.handles["polydata"].GetPointData().AddArray(other)
-    scene.handles["heat"] = heat
-    scene.handles["other"] = other
-    return scene
-
-
-@pytest.fixture
-def retained_heat():
-    """Publisher with a ``field:pointData:`` hot key, already retaining it."""
-    scene = _heat_scene()
-    publisher, server = _make_publisher(scene, hot_array_keys={HEAT_KEY})
-    try:
-        scene.handles["heat"].SetValue(0, -1.0)
-        scene.handles["heat"].Modified()
-        publisher.sync()
-        server.protocol.drain()  # first send starts retention
-        yield scene, publisher, server
-    finally:
-        publisher.cleanup()
-
-
-def test_field_array_value_edit_takes_the_fast_path(retained_heat):
-    """Observed array value edits qualify without polling field containers."""
-    scene, publisher, _server = retained_heat
-
-    scene.handles["heat"].SetValue(100, 7.0)
-    scene.handles["heat"].Modified()
-    result = _try_fast_path(publisher)
-
-    assert result is not None
-    assert [op["key"] for op in result["ops"]] == [HEAT_KEY]
-    assert [op["offset"] for op in result["ops"]] == [100]
-
-
-def test_field_array_active_scalars_swap_falls_back(retained_heat):
-    """The container's *own* edits fire its ModifiedEvent, so it is not swept.
-
-    This is the line the whitelist must not cross: excusing a dirty
-    ``vtkPointData`` unconditionally would drop this active-attribute change
-    on the floor for good.
-    """
-    scene, publisher, _server = retained_heat
-
-    scene.handles["heat"].SetValue(100, 7.0)
-    scene.handles["heat"].Modified()
-    scene.handles["polydata"].GetPointData().SetActiveScalars("Heat")
-
-    assert _try_fast_path(publisher) is None
-
-
-def test_field_array_sibling_edit_falls_back(retained_heat):
-    """A non-hot array in the same container is its own unexcused dirty id."""
-    scene, publisher, _server = retained_heat
-
-    scene.handles["heat"].SetValue(100, 7.0)
-    scene.handles["heat"].Modified()
-    scene.handles["other"].SetValue(100, 7.0)
-    scene.handles["other"].Modified()
-
-    assert _try_fast_path(publisher) is None
 
 
 # ----------------------------------------------------------------------
@@ -449,7 +367,7 @@ def test_fast_tick_advances_the_retained_copy_to_the_live_array(retained_points)
 
     dataset_id = _dataset_id(scene)
     retained = publisher._hot_arrays._retained[(dataset_id, "points")]
-    live = live_dataset_array(scene.api.vtk_object_manager, dataset_id, "points")
+    live = live_dataset_array(scene.api.vtk_object_manager, dataset_id)
     assert np.array_equal(retained, live)
     assert retained is not live  # a copy, not the live VTK view
 
@@ -470,7 +388,7 @@ def test_resync_after_a_run_of_fast_ticks_serves_the_live_array(retained_points)
     dataset_id = _dataset_id(scene)
     entry = client.nodes[dataset_id]["arrays"]["points"]
     served = np.frombuffer(client.blobs[entry["ref"]], dtype=np.float32)
-    live = live_dataset_array(scene.api.vtk_object_manager, dataset_id, "points")
+    live = live_dataset_array(scene.api.vtk_object_manager, dataset_id)
     assert np.array_equal(served, live)
 
 
@@ -489,14 +407,19 @@ def test_dirty_but_unchanged_array_publishes_nothing(retained_points):
     assert publisher.store.seq == seq_before
 
 
-def test_recovery_does_not_mistake_suppressed_metadata_for_aggregate_mtime(
-    retained_heat,
-):
-    scene, publisher, _server = retained_heat
-    with publisher._tracker.suppress():
-        scene.handles["polydata"].GetPointData().SetActiveScalars("Heat")
-        scene.handles["heat"].SetValue(100, 7.0)
-        scene.handles["heat"].Modified()
-    publisher.recover()
-    entry = publisher.store.get(_dataset_id(scene))["arrays"][HEAT_KEY]
-    assert entry["registration"] == "setScalars"
+def test_recovery_does_not_mistake_suppressed_metadata_for_aggregate_mtime():
+    scene = make_points_cloud_scene(point_count=1_000)
+    heat = numpy_to_vtk(np.arange(1_000, dtype=np.float32), deep=True)
+    heat.SetName("Heat")
+    scene.handles["polydata"].GetPointData().AddArray(heat)
+    publisher, _server = _make_publisher(scene)
+    try:
+        with publisher._tracker.suppress():
+            scene.handles["polydata"].GetPointData().SetActiveScalars("Heat")
+            heat.SetValue(100, 7.0)
+            heat.Modified()
+        publisher.recover()
+        arrays = publisher.store.get(_dataset_id(scene))["arrays"]
+        assert arrays["field:pointData:Heat"]["registration"] == "setScalars"
+    finally:
+        publisher.cleanup()

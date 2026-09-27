@@ -17,7 +17,6 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Union
 
 import numpy as np
-from vtkmodules.util.numpy_support import vtk_to_numpy
 
 from trame_vtklocal.module.node_arrays import registered_blob
 from trame_vtklocal.store import (
@@ -37,16 +36,6 @@ if TYPE_CHECKING:
     # A dataset array of any numeric VTK scalar type, viewed through numpy.
     NumericArray = npt.NDArray[np.generic]
     LiveHotArray = Callable[[str, str], Union[NumericArray, None]]
-
-
-def numpy_array_from_vtk_data(data: object) -> NumericArray:
-    if hasattr(data, "GetDataType"):
-        try:
-            array: NumericArray = vtk_to_numpy(data)
-            return array
-        except Exception:
-            pass
-    return np.asarray(data)
 
 
 def pack_cell_array_payload(

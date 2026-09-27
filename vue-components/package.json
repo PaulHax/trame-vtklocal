@@ -14,7 +14,6 @@
     "vue": "^2.7.0 || >=3.0.0"
   },
   "dependencies": {
-    "@kitware/vtk-wasm": "^1.5.0",
     "pointcloud-lod": "0.12.4"
   },
   "devDependencies": {

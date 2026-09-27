@@ -16,7 +16,7 @@ BLOB_GC_DEBOUNCE_SECONDS = 2.0
 
 
 class PushViewRegistry:
-    """Shared blob ownership, independent of the legacy pull protocol."""
+    """Blob ownership shared by the push views of one object manager."""
 
     vtk_object_manager: vtkObjectManager
 
@@ -99,12 +99,11 @@ class PushViewRegistry:
         if not stale:
             return 0
 
-        # The object manager is shared with non-push subscriptions/widgets.
-        # Protect the globally live dependency set before unregistering. A
-        # dependency's state can keep naming a blob after the ref behind it
-        # left (a hot-array patch leaves it until the next serialization), and
-        # nothing queues the hash again when that state moves on, so it stays
-        # queued for a later flush.
+        # Protect every blob a live dependency's state still names. That state
+        # can keep naming a blob after the ref behind it left (a hot-array
+        # patch leaves it until the next serialization), and nothing queues
+        # the hash again when that state moves on, so it stays queued for a
+        # later flush.
         protected = stale & self._active_object_blob_hashes()
         self._pending_stale_blob_hashes |= protected
         stale -= protected

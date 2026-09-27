@@ -7,7 +7,7 @@ messages carry, so both ``module/`` and ``widgets/`` may import it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Protocol, TypedDict, final
 
 if TYPE_CHECKING:
@@ -78,14 +78,3 @@ class PushViewHost(Protocol):
     def register_push_view(self, rw_id: int, publisher: PushView, /) -> object: ...
 
     def unregister_push_view(self, rw_id: int, /) -> object: ...
-
-
-class ObjectStatus(TypedDict):
-    """The ``vtklocal.get.status`` reply for one root object."""
-
-    ids: list[tuple[int, int]]
-    hashes: Sequence[str]
-    ignore_ids: list[int]
-    cameras: list[int]
-    force_push: list[int]
-    interactor: int | None

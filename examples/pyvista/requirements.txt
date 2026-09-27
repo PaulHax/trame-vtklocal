@@ -1,3 +1,0 @@
-pyvista
-trame-vtk
-trame-server>=3.1.0

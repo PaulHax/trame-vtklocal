@@ -41,11 +41,3 @@ class ModuleHostServer(NamedServer, Protocol):
     def enable_module(
         self, module: ModuleType | dict[str, object], /, **kwargs: object
     ) -> object: ...
-
-
-class UpdateThrottle(Protocol):
-    """trame's ``Throttle`` around :meth:`LocalView.update`."""
-
-    rate: float
-
-    def __call__(self, *args: object, **kwargs: object) -> None: ...

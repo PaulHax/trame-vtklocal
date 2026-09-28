@@ -3,7 +3,7 @@
 // The mirror is the client's copy of `store.snapshot()["nodes"]`: an id ->
 // node map that must equal the server store after every applied message.
 // `applyOp` is a line-for-line port of the normative reference applier
-// (`apply_ops` in tests/test_scene_store.py). Violations of the op contract
+// (`apply_ops` in tests/push_oracle/reference.py). Violations of the op contract
 // (removing an unknown id, patching a missing array) throw so the engine can
 // fall back to a resync.
 //

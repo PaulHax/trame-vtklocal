@@ -6,44 +6,32 @@ import numpy as np
 import pytest
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
-from push_oracle.scenes import add_actor, make_line_polydata, make_scalars_scene
-from test_publisher import (
-    POINT_COUNT,
-    _FakeServer,
-    _dataset_id,
-    _start_retention,
-    _touch_point,
-    make_points_cloud_scene,
+from push_oracle.harness import (
+    MirrorClient,
+    cloud_dataset_id,
+    make_publisher,
+    start_retention,
+    touch_point,
 )
-from test_v2_oracle import MirrorClient
+from push_oracle.scenes import (
+    POINT_COUNT,
+    add_actor,
+    make_line_polydata,
+    make_points_cloud_scene,
+    make_scalars_scene,
+)
 from trame_vtklocal.widgets.dirty_batch import DirtyBatch
 from trame_vtklocal.widgets.hot_array_batch import commit_hot_array_batch
-from trame_vtklocal.widgets.hot_arrays import (
-    live_dataset_array,
-)
-from trame_vtklocal.widgets.publisher import ScenePublisher
-
-
-# ----------------------------------------------------------------------
-# Harness
-# ----------------------------------------------------------------------
-
-
-def _make_publisher(scene):
-    server = _FakeServer()
-    publisher = ScenePublisher(
-        server, scene.api, scene.render_window, scene.render_window_id
-    )
-    return publisher, server
+from trame_vtklocal.widgets.hot_arrays import live_dataset_array
 
 
 @pytest.fixture
 def retained_points():
     """Point-cloud publisher whose ``points`` array is already retained."""
     scene = make_points_cloud_scene()
-    publisher, server = _make_publisher(scene)
+    publisher, server = make_publisher(scene)
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
         yield scene, publisher, server
     finally:
         publisher.cleanup()
@@ -75,12 +63,12 @@ def test_guard_accepts_a_pure_value_edit(retained_points):
     """Control for every rejection below: this tick must be accepted."""
     scene, publisher, _server = retained_points
 
-    _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+    touch_point(scene, 1234, (5.0, 6.0, 7.0))
     result = _try_fast_path(publisher)
 
     assert result is not None
     assert [op["op"] for op in result["ops"]] == ["patchArray"]
-    assert result["ops"][0]["id"] == _dataset_id(scene)
+    assert result["ops"][0]["id"] == cloud_dataset_id(scene)
 
 
 # ----------------------------------------------------------------------
@@ -91,7 +79,7 @@ def test_guard_accepts_a_pure_value_edit(retained_points):
 def test_guard_rejects_a_structural_tick(retained_points):
     scene, publisher, _server = retained_points
 
-    _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+    touch_point(scene, 1234, (5.0, 6.0, 7.0))
     batch = _pending_batch(publisher)
     batch.structural = True
 
@@ -101,7 +89,7 @@ def test_guard_rejects_a_structural_tick(retained_points):
 def test_guard_rejects_a_mapper_tick(retained_points):
     scene, publisher, _server = retained_points
 
-    _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+    touch_point(scene, 1234, (5.0, 6.0, 7.0))
     batch = _pending_batch(publisher)
     batch.mappers = {id(scene.handles["mapper"]): scene.handles["mapper"]}
 
@@ -117,9 +105,9 @@ def test_guard_rejects_an_empty_batch(retained_points):
 def test_guard_rejects_the_first_mutation_of_an_array():
     """No retained copy yet: nothing to diff against, so nothing to patch."""
     scene = make_points_cloud_scene()
-    publisher, _server = _make_publisher(scene)
+    publisher, _server = make_publisher(scene)
     try:
-        _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+        touch_point(scene, 1234, (5.0, 6.0, 7.0))
         assert _try_fast_path(publisher) is None
     finally:
         publisher.cleanup()
@@ -134,7 +122,7 @@ def test_guard_rejects_a_dtype_change(retained_points):
     put mis-sized elements on the wire.
     """
     scene, publisher, _server = retained_points
-    dataset_id = _dataset_id(scene)
+    dataset_id = cloud_dataset_id(scene)
     live = live_dataset_array(scene.api.vtk_object_manager, dataset_id)
     widened = live.astype(np.float64).reshape(-1, 3)
 
@@ -158,7 +146,7 @@ def test_guard_rejects_a_tick_that_also_changed_a_node(retained_points):
     """A point move plus an actor property: the actor edit has no patch."""
     scene, publisher, _server = retained_points
 
-    _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+    touch_point(scene, 1234, (5.0, 6.0, 7.0))
     scene.handles["actor"].SetVisibility(False)
 
     assert _try_fast_path(publisher) is None
@@ -175,15 +163,15 @@ def test_guard_rejects_an_unexplained_dirty_id_on_a_patchable_node():
     meta = numpy_to_vtk(np.arange(4, dtype=np.float32), deep=True)
     meta.SetName("Meta")
     scene.handles["polydata"].GetFieldData().AddArray(meta)
-    publisher, server = _make_publisher(scene)
+    publisher, server = make_publisher(scene)
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
 
-        _touch_point(scene, 100, (5.0, 6.0, 7.0))
+        touch_point(scene, 100, (5.0, 6.0, 7.0))
         meta.SetValue(2, -2.0)
         meta.Modified()
         batch = _pending_batch(publisher)
-        assert batch.candidates == {_dataset_id(scene)}
+        assert batch.candidates == {cloud_dataset_id(scene)}
 
         assert _try_fast_path(publisher, batch) is None
     finally:
@@ -220,7 +208,7 @@ def test_guard_rejects_a_structural_tick_end_to_end(retained_points):
     """The realistic shape of the structural case, through the publisher."""
     scene, publisher, server = retained_points
 
-    _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+    touch_point(scene, 1234, (5.0, 6.0, 7.0))
     polydata, _points = make_line_polydata()
     add_actor(scene.handles["renderer"], polydata)
     publisher.sync()
@@ -243,13 +231,13 @@ def test_edits_to_a_swapped_in_points_array_reach_the_client(point_count, moved)
     later edit made to that array alone must still reach a following client.
     """
     scene = make_points_cloud_scene(point_count=point_count)
-    publisher, server = _make_publisher(scene)
+    publisher, server = make_publisher(scene)
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
         client = MirrorClient()
         client.resync(publisher)
         object_manager = scene.api.vtk_object_manager
-        dataset_id = _dataset_id(scene)
+        dataset_id = cloud_dataset_id(scene)
 
         values = live_dataset_array(object_manager, dataset_id).copy()
         values[: 3 * moved] += 1.0
@@ -278,7 +266,7 @@ def test_edits_to_a_swapped_in_points_array_reach_the_client(point_count, moved)
 def test_every_polydata_child_stays_observed():
     """Every dataset child must be observed for ordinary publication."""
     scene = make_scalars_scene()
-    publisher, _server = _make_publisher(scene)
+    publisher, _server = make_publisher(scene)
     try:
         publisher._tracker.sync_observers()
         classes = publisher._tracker.classes()
@@ -323,13 +311,13 @@ def test_fast_tick_advances_the_retained_copy_to_the_live_array(retained_points)
     """The server's model of what the client holds must match live VTK."""
     scene, publisher, server = retained_points
 
-    _touch_point(scene, 20, (2.0, 3.0, 4.0))
-    _touch_point(scene, 8_000, (5.0, 6.0, 7.0))
+    touch_point(scene, 20, (2.0, 3.0, 4.0))
+    touch_point(scene, 8_000, (5.0, 6.0, 7.0))
     publisher.sync()
     ((_topic, message),) = server.protocol.drain()
     assert [op["op"] for op in message["ops"]] == ["patchArray", "patchArray"]
 
-    dataset_id = _dataset_id(scene)
+    dataset_id = cloud_dataset_id(scene)
     retained = publisher._hot_arrays._retained[(dataset_id, "points")]
     live = live_dataset_array(scene.api.vtk_object_manager, dataset_id)
     assert np.array_equal(retained, live)
@@ -341,7 +329,7 @@ def test_resync_after_a_run_of_fast_ticks_serves_the_live_array(retained_points)
     scene, publisher, server = retained_points
 
     for tick in range(6):
-        _touch_point(scene, tick * 700, (float(tick), 1.0, 2.0))
+        touch_point(scene, tick * 700, (float(tick), 1.0, 2.0))
         publisher.sync()
         ((_topic, message),) = server.protocol.drain()
         assert [op["op"] for op in message["ops"]] == ["patchArray"]
@@ -349,7 +337,7 @@ def test_resync_after_a_run_of_fast_ticks_serves_the_live_array(retained_points)
     client = MirrorClient()
     client.resync(publisher)
 
-    dataset_id = _dataset_id(scene)
+    dataset_id = cloud_dataset_id(scene)
     entry = client.nodes[dataset_id]["arrays"]["points"]
     served = np.frombuffer(client.blobs[entry["ref"]], dtype=np.float32)
     live = live_dataset_array(scene.api.vtk_object_manager, dataset_id)
@@ -376,14 +364,14 @@ def test_recovery_does_not_mistake_suppressed_metadata_for_aggregate_mtime():
     heat = numpy_to_vtk(np.arange(1_000, dtype=np.float32), deep=True)
     heat.SetName("Heat")
     scene.handles["polydata"].GetPointData().AddArray(heat)
-    publisher, _server = _make_publisher(scene)
+    publisher, _server = make_publisher(scene)
     try:
         with publisher._tracker.suppress():
             scene.handles["polydata"].GetPointData().SetActiveScalars("Heat")
             heat.SetValue(100, 7.0)
             heat.Modified()
         publisher.recover()
-        arrays = publisher.store.get(_dataset_id(scene))["arrays"]
+        arrays = publisher.store.get(cloud_dataset_id(scene))["arrays"]
         assert arrays["field:pointData:Heat"]["registration"] == "setScalars"
     finally:
         publisher.cleanup()

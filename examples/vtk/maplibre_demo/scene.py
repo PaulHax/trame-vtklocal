@@ -1,4 +1,4 @@
-"""TSW's VTK feature combinations in a small, replaceable scene."""
+"""Layered VTK geometry, projected textures and streamed scene sources."""
 
 import math
 
@@ -57,7 +57,7 @@ class DemoScene:
             PointCloudSource(
                 "demo-cloud",
                 "v1",
-                "/tsw-assets/cloud",
+                "/maplibre-assets/cloud",
                 cloud_count,
                 presentation={"mode": "fixed", "diameterCssPx": 4},
                 adaptive=True,
@@ -71,7 +71,7 @@ class DemoScene:
             Tiles3DSource(
                 "demo-mesh",
                 "v1",
-                "/tsw-assets/mesh",
+                "/maplibre-assets/mesh",
                 IDENTITY,
                 maximum_screen_space_error_px=8,
             )
@@ -160,7 +160,7 @@ class DemoScene:
             window.SetSize(700, 500)
             window.SetNumberOfLayers(3)
             layers = []
-            # TSW adds annotations first for camera/picking authority.
+            # The first renderer supplies the camera and picking coordinates.
             for layer in (2, 1, 0):
                 renderer = vtk.vtkRenderer()
                 renderer.SetLayer(layer)

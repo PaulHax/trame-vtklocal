@@ -1,7 +1,7 @@
-"""TSW feature exerciser: shared map context, streamed assets and frame updates.
+"""MapLibre shared-context rendering, streamed assets and frame updates.
 
 Run: python examples/vtk/maplibre_vtkjs.py --server
-See tsw_demo/README.md for controls and headless browser checks.
+See maplibre_demo/README.md for controls and headless browser checks.
 """
 
 import argparse
@@ -26,7 +26,7 @@ class FeatureDemo:
     def __init__(self, vendor_dir=None):
         self.server = get_server(client_type="vue3")
         self.state = self.server.state
-        self.assets = tempfile.TemporaryDirectory(prefix="trame-tsw-demo-")
+        self.assets = tempfile.TemporaryDirectory(prefix="trame-maplibre-demo-")
         self.scene = DemoScene(write_assets(Path(self.assets.name)))
         self.play_task = None
         self.views = []
@@ -42,23 +42,23 @@ class FeatureDemo:
         )
         module = {
             "serve": {
-                "tsw-demo": str(Path(__file__).parent),
-                "tsw-assets": self.assets.name,
+                "maplibre-demo": str(Path(__file__).parent),
+                "maplibre-assets": self.assets.name,
             },
             "scripts": [
                 "https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.js",
                 "https://unpkg.com/gl-matrix@3.4.3/gl-matrix-min.js",
-                "tsw-demo/host.js",
+                "maplibre-demo/host.js",
             ],
             "styles": ["https://unpkg.com/maplibre-gl@5.16.0/dist/maplibre-gl.css"],
         }
         if vendor_dir:
-            module["serve"]["tsw-vendor"] = str(Path(vendor_dir).resolve())
+            module["serve"]["maplibre-vendor"] = str(Path(vendor_dir).resolve())
             module["scripts"][:2] = [
-                "tsw-vendor/maplibre-gl.js",
-                "tsw-vendor/gl-matrix-min.js",
+                "maplibre-vendor/maplibre-gl.js",
+                "maplibre-vendor/gl-matrix-min.js",
             ]
-            module["styles"] = ["tsw-vendor/maplibre-gl.css"]
+            module["styles"] = ["maplibre-vendor/maplibre-gl.css"]
         self.server.enable_module(module)
         self.server.trigger("demo.action")(self.action)
         self.server.trigger("demo.ready")(self.ready)
@@ -84,7 +84,7 @@ class FeatureDemo:
                     hide_details=True,
                     style="max-width:190px;min-width:160px",
                     classes="mr-4",
-                    update_modelValue="window.tswDemo?.setBasemap($event)",
+                    update_modelValue="window.maplibreDemo?.setBasemap($event)",
                 )
                 vuetify3.VSwitch(
                     v_model=("follow_sphere",),
@@ -164,21 +164,21 @@ class FeatureDemo:
                     )
                 vuetify3.VBtn(
                     "Reload map style",
-                    click="window.tswDemo.reloadStyle()",
+                    click="window.maplibreDemo.reloadStyle()",
                     variant="text",
                     size="small",
                 )
                 vuetify3.VBtn(
                     "Pick cloud point",
                     id="cloud-pick-toggle",
-                    click="window.tswDemo.armCloudPick()",
+                    click="window.maplibreDemo.armCloudPick()",
                     variant="tonal",
                     color="primary",
                     size="small",
                 )
             html.Div("", id="cloud-pick-mode", classes="text-caption")
             html.Div(
-                "Synthetic TSW scene · Frame {{ frame }} · replacement {{ generation }}",
+                "Synthetic MapLibre scene · Frame {{ frame }} · replacement {{ generation }}",
                 classes="text-caption text-medium-emphasis",
             )
             html.Div("{{ pointer }}", id="pointer-status", classes="text-caption")
@@ -238,7 +238,7 @@ class FeatureDemo:
             for view in self.views:
                 view.send_command("demo.frame", self.payload(), retain=True)
                 view.set_pointer_context(self.payload())
-        # Match TSW's post-transaction flush: this should be a no-op.
+        # A transaction already publishes its changes; this flush is a no-op.
         for view in self.views:
             view.sync()
         self.state.frame = self.scene.frame
@@ -315,7 +315,7 @@ class FeatureDemo:
             view = self.views[view_index]
             if view.event_is_current(event, pick.get("nodeId")):
                 index = ["left", "middle", "right"].index(pick["pointId"])
-                # Like TSW, pickable glyph centers live directly in scene space.
+                # Pickable glyph centers live directly in scene space.
                 local = world
 
                 def commit_drag():
@@ -330,7 +330,7 @@ def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "--vendor-dir",
-        default=os.environ.get("TRAME_TSW_DEMO_VENDOR"),
+        default=os.environ.get("TRAME_MAPLIBRE_DEMO_VENDOR"),
         help="Optional local MapLibre 5.16.0 and gl-matrix 3.4.3 distribution files",
     )
     args, _ = parser.parse_known_args()

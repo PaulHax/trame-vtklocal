@@ -1,6 +1,6 @@
-"""MapLibre + VTK.js: orbiting sphere, camera following and TSW features."""
+"""MapLibre + VTK.js: shared-context rendering with an independent inset view."""
 
-from tsw_demo.app import main
+from maplibre_demo.app import main
 
 if __name__ == "__main__":
     main()

@@ -291,7 +291,7 @@
   const localCanvas = () => document.querySelector("#inspector canvas");
   while (!localCanvas()) await sleep(50);
   bindPointer(local, localCanvas());
-  window.tswDemo = {
+  window.maplibreDemo = {
     views: { demoMap: shared, demoLocal: local },
     map,
     diagnostics: () => ({
@@ -340,7 +340,7 @@
       document.querySelector("#cloud-pick-toggle .v-btn__content").textContent =
         cloudPickArmed ? "Stop cloud picking" : "Pick cloud point";
       document.getElementById("cloud-pick-mode").textContent = cloudPickArmed
-        ? "Cloud picking ON — click the cyan cloud in the main map. No landmark is added."
+        ? "Cloud picking ON: click the cyan cloud in the main map. No landmark is added."
         : "";
     },
     resetCamera() {

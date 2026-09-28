@@ -5,6 +5,8 @@ trame-vtklocal  |pypi_download|
 Local rendering for trame: a server-side ``vtkRenderWindow`` is published as a
 flat scene and drawn in the browser with vtk.js, either on the view's own canvas
 (``VtkJsLocalView``) or inside a host's WebGL context (``VtkJsSharedView``).
+Shared views can render inside MapLibre while the map owns the canvas, camera
+and interaction.
 
 License
 ----------------------------------------
@@ -28,7 +30,7 @@ Development
 ----------------------------------------
 
 Build and install the Vue components. The bundle needs the vtk-js fork built at
-the exact commit recorded in ``vtkjs-fork.env`` (``VTKJS_FORK_COMMIT``) — the
+the exact commit recorded in ``vtkjs-fork.env`` (``VTKJS_FORK_COMMIT``), the
 only place that sha is written, so this README, ``release.sh`` and CI cannot
 disagree about which vtk.js the bundle carries.
 
@@ -61,8 +63,8 @@ Install the library
 Fork release flow (shared-context)
 ----------------------------------------
 
-This ``shared-context`` fork ships as a pinned wheel to the app repo rather than
-to PyPI. The wheel version is stamped at build time with the git short sha
+This ``shared-context`` fork publishes GitHub prerelease wheels for applications
+to pin by URL. The wheel version is stamped at build time with the git short sha
 (``0.16.0+shared-context.<sha>``, computed by the ``hatch_build.py`` metadata
 hook) so ``importlib.metadata.version("trame-vtklocal")`` proves exactly which
 fork commit produced the embedded UMD bundle.
@@ -71,13 +73,11 @@ The wheel carries no VTK.wasm runtime. Its views render through vtk.js, which
 vite bundles into ``serve/js/trame_vtklocal.umd.js``; the only WebAssembly it
 ships is the offline 3D Tiles decoders under ``serve/wasm/tiles3d/``.
 
-Releases come from ``release.sh``, locally or from
-``.github/workflows/build-fork-wheel.yml`` on every push to ``shared-context``.
-Both paths run the same script against the same immutable inputs (vtk-js
-fetched by the commit in ``vtkjs-fork.env``, ``pointcloud-lod`` from the
-lockfile), so a CI rebuild is not a different build. CI builds the wheel once,
-runs the Python unit tests and a browser smoke test against that wheel, then
-publishes it.
+``.github/workflows/build-fork-wheel.yml`` builds and publishes releases on
+every push to ``shared-context``. CI builds the wheel once, runs the Python
+unit tests and a browser smoke test against that wheel, then publishes the
+tested artifact. Its inputs are immutable: vtk-js is fetched at the commit in
+``vtkjs-fork.env`` and ``pointcloud-lod`` is installed from the lockfile.
 
 ``verify_chain.py`` proves that before any wheel ships: the linked vtk.js is a
 clean checkout of the pinned commit, ``pointcloud-lod`` came from its
@@ -89,10 +89,9 @@ written to ``serve/js/build-info.json``, which ships inside the wheel, and to
 ``dist/release-evidence.json``, which is attached to the release next to the
 wheel it describes.
 
-Use ``release.sh`` at the fork root. It requires the vtk-js fork to be linked
-into ``vue-components`` (see Development above).
-
-Build and verify (publishes nothing):
+For local development checks, run ``release.sh build`` at the fork root. It
+requires the vtk-js fork to be linked into ``vue-components`` (see Development
+above) and publishes nothing:
 
 .. code-block:: console
 
@@ -104,24 +103,15 @@ the UMD embedded in the wheel byte-matches the freshly built
 ship. It writes the wheel and ``release-evidence.json`` to ``dist/`` and prints
 the stamped version and the release tag.
 
-Publish that wheel as a GitHub prerelease and print the app pin:
+CI's final upload step runs ``release.sh publish`` on the tested wheel without
+rebuilding it. The command checks that ``dist/release-evidence.json`` names
+``HEAD`` and the wheel's ``sha256``, then uploads the wheel and evidence to
+the GitHub prerelease ``v0.16.0-shared-context.<sha>``. It prints the dependency
+URL and wheel hash for application consumers.
 
-.. code-block:: console
-
-    ./release.sh publish
-
-This builds nothing. It checks that ``dist/release-evidence.json`` names
-``HEAD`` and the ``sha256`` of the wheel in ``dist/``, creates (or re-uploads
-to) the ``gh`` prerelease ``v0.16.0-shared-context.<sha>`` with the wheel and
-``release-evidence.json`` attached, then prints the exact line to paste into
-the app's ``pyproject.toml`` plus the wheel ``sha256``.
-Re-running is safe (existing releases get the asset re-uploaded with
-``--clobber``).
-
-Two-repo pin bump: after ``publish``, paste the printed dependency line into
-the app repo's ``pyproject.toml`` (the ``trame-vtklocal = { url = "..." }`` entry
-pointing at the new release asset) and re-lock. The fork release and the app pin
-are the two halves of a single version bump — keep them in sync.
+To consume a release, update the application's dependency URL to the printed
+``trame-vtklocal = { url = "..." }`` entry and regenerate its lockfile. The URL
+identifies the wheel built and verified from the pinned library revisions.
 
 
 Running examples
@@ -209,14 +199,14 @@ A failed pre-commit serialization preserves pending changes and command order
 for a later retry.
 
 
-TSW feature example
--------------------
+MapLibre shared-context example
+------------------------------
 
 ``examples/vtk/maplibre_vtkjs.py`` exercises shared MapLibre rendering,
 three renderer layers, delayed projected textures, screen-sized pickable
 glyphs, direct and streamed clouds, a textured 3D Tiles mesh, and dependency
-replacement across two views. See ``examples/vtk/tsw_demo/README.md`` for controls
-and reproducible headless checks.
+replacement across two views. See ``examples/vtk/maplibre_demo/README.md`` for
+controls and reproducible headless checks.
 
 Gesture ``pointer_event`` camera matrices use column-major layout for both
 local and shared views, matching ``setRenderedCamera``.

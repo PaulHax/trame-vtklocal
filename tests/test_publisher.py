@@ -24,6 +24,7 @@ from push_oracle.scenes import (
     make_basic_scene,
     make_line_polydata,
     make_points_cloud_scene,
+    make_quad_scene,
 )
 from trame_vtklocal.store import ref_manager_hashes
 from trame_vtklocal.widgets import hot_arrays
@@ -749,6 +750,56 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
         )
     finally:
         publisher.cleanup()
+
+
+def test_new_view_keeps_existing_view_field_blobs_for_resync(monkeypatch):
+    from vtkmodules.vtkRenderingCore import vtkRenderWindow
+
+    scene = make_quad_scene()
+    api = scene.api._api
+    monkeypatch.setattr(api, "addAttachment", lambda payload: bytes(payload))
+    orphan_hash = "untracked-bootstrap-blob"
+    api.vtk_object_manager.RegisterBlob(
+        orphan_hash, numpy_to_vtk(np.arange(4, dtype=np.uint8), deep=True)
+    )
+    first = ScenePublisher(
+        FakeServer(), api, scene.render_window, scene.render_window_id
+    )
+    second = None
+    second_window = vtkRenderWindow()
+    second_id = None
+    try:
+        assert not blob_size(api.vtk_object_manager, orphan_hash)
+        before = first.resync([])
+        field_refs = {
+            entry["ref"]
+            for node in before["nodes"].values()
+            for key, entry in (node.get("arrays") or {}).items()
+            if key.startswith("field:")
+        }
+        assert field_refs
+        assert all(before["blobs"][ref] for ref in field_refs)
+
+        second_id = api.vtk_object_manager.RegisterObject(second_window)
+        second_window.Render()
+        api.vtk_object_manager.UpdateStatesFromObjects([second_id])
+        second = ScenePublisher(FakeServer(), api, second_window, second_id)
+
+        after = first.resync([])
+        assert after["nodes"] == before["nodes"]
+        assert after["blobs"] == before["blobs"]
+        second.cleanup()
+        api.vtk_object_manager.UnRegisterObject(second_id)
+        api.flush_stale_blobs()
+        assert first.resync([])["blobs"] == before["blobs"]
+    finally:
+        if second is not None:
+            second.cleanup()
+        if second_id is not None:
+            api.vtk_object_manager.UnRegisterObject(second_id)
+        first.cleanup()
+        second_window.Finalize()
+        scene.render_window.Finalize()
 
 
 def test_deferred_blob_gc_keeps_hashes_that_return_alive():

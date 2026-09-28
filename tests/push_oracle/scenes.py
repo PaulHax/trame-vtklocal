@@ -47,13 +47,12 @@ class _ObjectManagerApiNoAttachments:
     def __init__(self):
         self._api = ObjectManagerAPI()
         self.vtk_object_manager = self._api.vtk_object_manager
-        self._registered_push_views = {}
 
     def register_push_view(self, rw_id, publisher):
-        self._registered_push_views[int(rw_id)] = publisher
+        self._api.register_push_view(rw_id, publisher)
 
     def unregister_push_view(self, rw_id):
-        self._registered_push_views.pop(int(rw_id), None)
+        self._api.unregister_push_view(rw_id)
 
     def update_push_view_refs(self, rw_id, live_refs, refs_leaving):
         return self._api.update_push_view_refs(rw_id, live_refs, refs_leaving)

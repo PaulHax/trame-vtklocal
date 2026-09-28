@@ -29,6 +29,12 @@ class PushViewRegistry:
     def register_push_view(self, rw_id: int | str, publisher: PushView) -> None:
         """Register the ScenePublisher serving one render window."""
         rw_id = int(rw_id)
+        if not self._push_views:
+            # VTK states omit translated field arrays. A global blob prune
+            # is safe only before a live publisher owns any such payloads.
+            self.vtk_object_manager.PruneUnusedObjects()
+            self.vtk_object_manager.PruneUnusedStates()
+            self.vtk_object_manager.PruneUnusedBlobs()
         self._push_views[rw_id] = publisher
         self._push_view_blob_hashes.setdefault(rw_id, set())
 

@@ -118,9 +118,6 @@ class ScenePublisher:
         object_manager_api.register_push_view(self._rw_id, self)
 
         # Populate the store eagerly; resync first recovers missed events.
-        # Prune blobs once at construction so stale blobs
-        # from pre-publisher serialization don't hide from targeted GC.
-        self._prune_object_manager(include_blobs=True)
         self._refresh_window_states()
         self._tracker.sync_observers()
         self._refresh_translation_cache_index()
@@ -357,16 +354,12 @@ class ScenePublisher:
     def _object_manager(self) -> vtkObjectManager:
         return self._host.vtk_object_manager
 
-    def _prune_object_manager(self, include_blobs: bool = False) -> None:
-        # vtkObjectManager retains every state/blob it has ever seen; dead
-        # objects and states are pruned on detachment, blobs only at construction
-        # (a per-frame PruneUnusedBlobs sweep grows with uptime — the blob
-        # registry retires them with targeted UnRegisterBlob instead).
+    def _prune_object_manager(self) -> None:
+        # Dead objects and states are pruned on detachment. Shared blob
+        # ownership belongs to the registry, which retires payloads by hash.
         object_manager = self._object_manager
         object_manager.PruneUnusedObjects()
         object_manager.PruneUnusedStates()
-        if include_blobs:
-            object_manager.PruneUnusedBlobs()
 
     def _refresh_window_states(self) -> None:
         """Render + refresh the whole window's serialized states (eager init)."""

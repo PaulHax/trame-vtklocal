@@ -22,8 +22,8 @@ import subprocess
 
 from hatchling.metadata.plugin.interface import MetadataHookInterface
 
-# Sole source of truth for the base version now that ``project.version`` is
-# declared dynamic. Bump this for a real version change.
+# The base version; ``project.version`` is dynamic. Bump this for a real
+# version change.
 BASE_VERSION = "0.16.0"
 
 # Kept consistent with the release tag scheme ``v<BASE>-shared-context.<sha>``

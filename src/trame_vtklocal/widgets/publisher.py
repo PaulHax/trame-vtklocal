@@ -452,14 +452,13 @@ class ScenePublisher:
             )
         # Only nodes new to the store can cite a dropped blob: a node
         # still in the store keeps its refs live, so its blobs are never
-        # UnRegisterBlob'd. A module-singleton glyph source that left on
-        # a landmark clear and re-enters on the rebuild returns with an
-        # unchanged VTK MTime, so the object manager serves a cached,
-        # blob-less state and never re-registers its content blob (a
-        # per-object UpdateStateFromObject is a no-op). A full-window
-        # re-serialize is the only call that re-registers it; the
-        # content-addressed refs are unchanged, so the built nodes stay
-        # valid — only the payloads they cite are repopulated.
+        # UnRegisterBlob'd. An object that re-enters with an unchanged VTK
+        # MTime is served from its recorded state, which can cite a blob
+        # the GC retired; a per-object UpdateStateFromObject is a no-op for
+        # it. A full-window serialization re-registers the blob, and the
+        # live arrays are bridged back when it does not. The
+        # content-addressed refs are unchanged either way, so the built
+        # nodes stay valid.
         new_nodes = {
             node_id: node for node_id, node in nodes.items() if node_id not in known
         }

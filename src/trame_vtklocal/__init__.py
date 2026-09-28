@@ -24,8 +24,8 @@ __all__ = [
 def __getattr__(
     name: str,
 ) -> type[Union[PointCloudSource, StreamedSceneActor, Tiles3DSource]]:
-    # Keep package import VTK-free for users that only consume the web assets;
-    # the public actor API naturally requires the optional VTK dependency.
+    # Resolved lazily so trame_vtklocal.store and trame_vtklocal.wire import
+    # without VTK or a built web bundle.
     if name in {"PointCloudSource", "StreamedSceneActor", "Tiles3DSource"}:
         from trame_vtklocal import streamed_scene
 

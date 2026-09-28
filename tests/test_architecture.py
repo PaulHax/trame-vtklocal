@@ -74,23 +74,14 @@ DEFAULT_LINE_BUDGET = 400
 # default — if a new addition needs an entry here, the right move is
 # almost always to split it.
 SIZE_BUDGETS = {
-    # one translator for every node kind, plus the shared-reader seam
-    "module/node_translator.py": 403,
     # the node, op and commit shapes the store validates live beside it, since
     # it may import nothing else from the package; plus the JSON-shaped copier
     # that keeps stored nodes isolated at a third of deepcopy's cost
-    "store.py": 531,
-    # one concern (dirty candidates) but three observer graphs: objects,
-    # dataset children, pipeline producers
-    "widgets/dirty_tracker.py": 500,
-    # retained-copy differ plus the hot-array fast-path guard
-    "widgets/hot_arrays.py": 438,
+    "store.py": 511,
     # publish tick + wire encoding + resync + dropped-blob re-entry guard +
     # the hot-array fast-path dispatch in _commit_batch + releasing a
-    # committed batch's refs when its broadcast raises.
-    # Next reduction: event_is_current() is a VTK-free, store-only predicate
-    # with one in-module caller and belongs beside the store, not here.
-    "widgets/publisher.py": 534,
+    # committed batch's refs when its broadcast raises
+    "widgets/publisher.py": 502,
 }
 
 

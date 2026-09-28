@@ -10,7 +10,7 @@ def help_dialog():
             style="float:right",
             click="window.document.getElementById('demo-help').close()",
         )
-        html.H2("Explore the TSW demo", id="demo-help-title")
+        html.H2("Explore the MapLibre + VTK.js demo", id="demo-help-title")
         html.P(
             "Start with Step, then Replace dependencies, then Step again. "
             "Both views should keep changing together. Everything shown is synthetic: "
@@ -44,8 +44,7 @@ def help_dialog():
             "The reported pixel distance is to the supporting vertex, not to the marker. "
             "This deliberately permits hits outside the visible cloud. Misses and scene "
             "corrections clear the marker. "
-            "It does not add or move a landmark or perform registration; it demonstrates "
-            "the depth-picking input that TSW uses for registration. "
+            "Cloud picking reports a 3D position without changing the landmarks. "
             "Stop cloud picking returns to ordinary clicks. Landmark dragging still works."
         )
         html.H3("Controls")

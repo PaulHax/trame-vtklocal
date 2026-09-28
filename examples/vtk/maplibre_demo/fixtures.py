@@ -1,4 +1,4 @@
-"""Tiny deterministic HTTP assets; no TSW datasets or external tile service."""
+"""Generate deterministic point-cloud and textured-mesh HTTP assets locally."""
 
 import json
 import struct

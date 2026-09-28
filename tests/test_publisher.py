@@ -4,18 +4,26 @@ client-owned cameras, and seq-stamped event staleness."""
 from __future__ import annotations
 
 import asyncio
-import copy
 
 import numpy as np
 import pytest
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
+from push_oracle.harness import (
+    CountingObjectManager,
+    FakeServer,
+    blob_size,
+    cloud_dataset_id,
+    make_publisher,
+    start_retention,
+    touch_point,
+)
 from push_oracle.scenes import (
-    OracleScene,
-    _ObjectManagerApiNoAttachments,
+    POINT_COUNT,
     add_actor,
     make_basic_scene,
     make_line_polydata,
+    make_points_cloud_scene,
 )
 from trame_vtklocal.store import ref_manager_hashes
 from trame_vtklocal.widgets import hot_arrays
@@ -25,45 +33,6 @@ from trame_vtklocal.widgets.publisher import (
     ScenePublisher,
     event_is_current,
 )
-
-
-class _FakeProtocol:
-    def __init__(self):
-        self.messages = []
-
-    def publish(self, topic, payload, client_id=None):
-        self.messages.append((topic, copy.deepcopy(payload)))
-
-    def drain(self):
-        messages = self.messages
-        self.messages = []
-        return messages
-
-
-class _FakeServer:
-    def __init__(self):
-        self.protocol = _FakeProtocol()
-
-
-class _CountingObjectManager:
-    def __init__(self, wrapped):
-        self.wrapped = wrapped
-        self.get_state_calls = []
-        self.update_state_calls = []
-
-    def GetState(self, object_id):
-        self.get_state_calls.append(int(object_id))
-        return self.wrapped.GetState(object_id)
-
-    def UpdateStateFromObject(self, object_id):
-        self.update_state_calls.append(int(object_id))
-        return self.wrapped.UpdateStateFromObject(object_id)
-
-    def __getattr__(self, name):
-        return getattr(self.wrapped, name)
-
-
-POINT_COUNT = 10_000
 
 
 def run_coroutine(coro):
@@ -85,54 +54,11 @@ def run_coroutine(coro):
         asyncio.events._set_running_loop(previous)
 
 
-def make_points_cloud_scene(point_count=POINT_COUNT, name="points_cloud"):
-    """One actor over a large float32 point cloud (hot-array workloads)."""
-    from vtkmodules.vtkCommonCore import vtkPoints
-    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
-    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
-
-    api = _ObjectManagerApiNoAttachments()
-    render_window = vtkRenderWindow()
-    render_window.SetOffScreenRendering(1)
-    renderer = vtkRenderer()
-    render_window.AddRenderer(renderer)
-
-    coords = np.linspace(0.0, 1.0, point_count * 3, dtype=np.float32).reshape(-1, 3)
-    points = vtkPoints()
-    points.SetData(numpy_to_vtk(coords, deep=True))
-
-    verts = vtkCellArray()
-    verts.InsertNextCell(1)
-    verts.InsertCellPoint(0)
-
-    polydata = vtkPolyData()
-    polydata.SetPoints(points)
-    polydata.SetVerts(verts)
-    actor, mapper = add_actor(renderer, polydata)
-
-    render_window_id = api.vtk_object_manager.RegisterObject(render_window)
-    render_window.Render()
-    api.vtk_object_manager.UpdateStatesFromObjects()
-    return OracleScene(
-        name=name,
-        api=api,
-        render_window=render_window,
-        render_window_id=render_window_id,
-        handles={
-            "renderer": renderer,
-            "actor": actor,
-            "mapper": mapper,
-            "polydata": polydata,
-            "points": points,
-        },
-    )
-
-
 @pytest.fixture
 def publisher_env():
     """(scene, publisher, server) over the big point cloud; auto-cleanup."""
     scene = make_points_cloud_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -140,32 +66,6 @@ def publisher_env():
         yield scene, publisher, server
     finally:
         publisher.cleanup()
-
-
-def blob_size(object_manager, hash_value):
-    """Registered blob length (0 when the hash is gone)."""
-    blob = object_manager.GetBlob(hash_value)
-    return 0 if blob is None else memoryview(blob).nbytes
-
-
-def _dataset_id(scene):
-    return str(scene.api.vtk_object_manager.GetId(scene.handles["polydata"]))
-
-
-def _touch_point(scene, index, value):
-    scene.handles["points"].SetPoint(index, *value)
-    scene.handles["points"].Modified()
-
-
-def _start_retention(scene, publisher, server):
-    """First mutation pays a full send and starts retained-copy tracking."""
-    _touch_point(scene, 0, (9.0, 9.0, 9.0))
-    publisher.sync()
-    ((_topic, message),) = server.protocol.drain()
-    (op,) = message["ops"]
-    assert op["op"] == "upsert"
-    assert set(message["blobs"]) == {op["node"]["arrays"]["points"]["ref"]}
-    return message
 
 
 # ----------------------------------------------------------------------
@@ -177,16 +77,16 @@ def test_one_point_move_in_10k_points_emits_one_small_patch(
     publisher_env,
 ):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
     moved_index = 1234
-    _touch_point(scene, moved_index, (5.0, 6.0, 7.0))
+    touch_point(scene, moved_index, (5.0, 6.0, 7.0))
     publisher.sync()
 
     ((_topic, message),) = server.protocol.drain()
     (op,) = message["ops"]
     assert op["op"] == "patchArray"
-    assert op["id"] == _dataset_id(scene)
+    assert op["id"] == cloud_dataset_id(scene)
     assert op["key"] == "points"
     assert op["offset"] == moved_index * 3
     assert np.frombuffer(bytes(op["data"]), dtype=np.float32).tolist() == [
@@ -194,16 +94,16 @@ def test_one_point_move_in_10k_points_emits_one_small_patch(
         6.0,
         7.0,
     ]
-    assert op["ref"] == f"v:{_dataset_id(scene)}:points:1"
+    assert op["ref"] == f"v:{cloud_dataset_id(scene)}:points:1"
     assert message["blobs"] == {}
 
 
 def test_two_distant_point_moves_emit_two_small_patches(publisher_env):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
-    _touch_point(scene, 20, (2.0, 3.0, 4.0))
-    _touch_point(scene, 8_000, (5.0, 6.0, 7.0))
+    touch_point(scene, 20, (2.0, 3.0, 4.0))
+    touch_point(scene, 8_000, (5.0, 6.0, 7.0))
     publisher.sync()
 
     ((_topic, message),) = server.protocol.drain()
@@ -214,17 +114,17 @@ def test_two_distant_point_moves_emit_two_small_patches(publisher_env):
 
 def test_retained_point_patch_skips_full_object_manager_serialization():
     scene = make_points_cloud_scene()
-    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    counting = CountingObjectManager(scene.api.vtk_object_manager)
     scene.api.vtk_object_manager = counting
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
         counting.update_state_calls.clear()
 
-        _touch_point(scene, 1234, (5.0, 6.0, 7.0))
+        touch_point(scene, 1234, (5.0, 6.0, 7.0))
         publisher.sync()
 
         ((_topic, message),) = server.protocol.drain()
@@ -242,18 +142,18 @@ def test_moving_a_single_point_patches_it_without_reserializing():
     place by one whole-array patch instead, so its node is not re-serialized.
     """
     scene = make_points_cloud_scene(point_count=1)
-    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    counting = CountingObjectManager(scene.api.vtk_object_manager)
     scene.api.vtk_object_manager = counting
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
         counting.update_state_calls.clear()
 
         for step in range(1, 4):
-            _touch_point(scene, 0, (float(step), 2.0 * step, -1.0 * step))
+            touch_point(scene, 0, (float(step), 2.0 * step, -1.0 * step))
             publisher.sync()
 
             ((_topic, message),) = server.protocol.drain()
@@ -278,12 +178,12 @@ def test_scattered_edits_to_a_small_array_patch_it_whole():
     unchanged, and the one whole-array patch carries the live content.
     """
     scene = make_points_cloud_scene(point_count=100)
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
 
         for index in range(9):
             scene.handles["points"].SetPoint(index * 10, float(index), 1.0, 2.0)
@@ -293,7 +193,7 @@ def test_scattered_edits_to_a_small_array_patch_it_whole():
         ((_topic, message),) = server.protocol.drain()
         (op,) = message["ops"]
         assert (op["op"], op["offset"]) == ("patchArray", 0)
-        live = live_dataset_array(scene.api.vtk_object_manager, _dataset_id(scene))
+        live = live_dataset_array(scene.api.vtk_object_manager, cloud_dataset_id(scene))
         assert np.array_equal(np.frombuffer(bytes(op["data"]), dtype=np.float32), live)
         assert message["blobs"] == {}
     finally:
@@ -313,12 +213,12 @@ def test_a_rewrite_patches_in_place_only_up_to_the_small_array_limit(
 ):
     """The most float32 points that fit the limit patch; one more resends."""
     scene = make_points_cloud_scene(point_count=point_count)
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
     try:
-        _start_retention(scene, publisher, server)
+        start_retention(scene, publisher, server)
 
         points = scene.handles["points"]
         for index in range(point_count):
@@ -334,7 +234,7 @@ def test_a_rewrite_patches_in_place_only_up_to_the_small_array_limit(
 
 def test_majority_change_resends_full_content_ref(publisher_env):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
     points = scene.handles["points"]
     for index in range(POINT_COUNT):
@@ -352,7 +252,7 @@ def test_majority_change_resends_full_content_ref(publisher_env):
 
 def test_length_change_resends_full_content_ref(publisher_env):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
     coords = np.zeros((POINT_COUNT + 7, 3), dtype=np.float32)
     scene.handles["points"].SetData(numpy_to_vtk(coords, deep=True))
@@ -361,7 +261,7 @@ def test_length_change_resends_full_content_ref(publisher_env):
 
     ((_topic, message),) = server.protocol.drain()
     upserts = [op for op in message["ops"] if op["op"] == "upsert"]
-    (op,) = [op for op in upserts if op["id"] == _dataset_id(scene)]
+    (op,) = [op for op in upserts if op["id"] == cloud_dataset_id(scene)]
     entry = op["node"]["arrays"]["points"]
     assert entry["ref"].startswith("c:")
     assert entry["size"] == (POINT_COUNT + 7) * 3
@@ -379,7 +279,7 @@ def test_over_cap_array_is_never_retained(publisher_env, monkeypatch):
     scene, publisher, server = publisher_env
     monkeypatch.setattr(hot_arrays, "RETENTION_CAP_BYTES", 8)
 
-    _touch_point(scene, 0, (9.0, 9.0, 9.0))
+    touch_point(scene, 0, (9.0, 9.0, 9.0))
     publisher.sync()
 
     ((_topic, message),) = server.protocol.drain()
@@ -388,7 +288,7 @@ def test_over_cap_array_is_never_retained(publisher_env, monkeypatch):
     assert publisher._hot_arrays._retained == {}
 
     # Still refused on a later tick, when a stored entry does exist.
-    _touch_point(scene, 1, (8.0, 8.0, 8.0))
+    touch_point(scene, 1, (8.0, 8.0, 8.0))
     publisher.sync()
     server.protocol.drain()
     assert publisher._hot_arrays._retained == {}
@@ -396,10 +296,10 @@ def test_over_cap_array_is_never_retained(publisher_env, monkeypatch):
 
 def test_identical_content_publishes_nothing(publisher_env):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
     # Same value re-written: Modified() fires, bytes are unchanged.
-    _touch_point(scene, 0, (9.0, 9.0, 9.0))
+    touch_point(scene, 0, (9.0, 9.0, 9.0))
     publisher.sync()
 
     assert server.protocol.drain() == []
@@ -407,11 +307,11 @@ def test_identical_content_publishes_nothing(publisher_env):
 
 def test_patch_then_other_prop_change_still_upserts(publisher_env):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
     # Point move + actor visibility in one tick: patch + actor upsert, and
     # the dataset upsert stays suppressed (its only change was the array).
-    _touch_point(scene, 10, (1.0, 2.0, 3.0))
+    touch_point(scene, 10, (1.0, 2.0, 3.0))
     scene.handles["actor"].SetVisibility(False)
     publisher.sync()
 
@@ -420,26 +320,28 @@ def test_patch_then_other_prop_change_still_upserts(publisher_env):
     for op in message["ops"]:
         ops_by_kind.setdefault(op["op"], []).append(op)
     assert len(ops_by_kind["patchArray"]) == 1
-    assert [op["id"] for op in ops_by_kind["upsert"]] != [_dataset_id(scene)]
+    assert [op["id"] for op in ops_by_kind["upsert"]] != [cloud_dataset_id(scene)]
 
 
 def test_hot_array_orphaned_blobs_are_released(publisher_env):
     scene, publisher, server = publisher_env
     object_manager = scene.api.vtk_object_manager
-    _start_retention(scene, publisher, server)
+    start_retention(scene, publisher, server)
 
-    _touch_point(scene, 42, (1.0, 1.0, 1.0))
+    touch_point(scene, 42, (1.0, 1.0, 1.0))
     # A simultaneous non-array change deliberately takes the full translation
     # fallback, which creates the unused fresh blob this test exercises.
     scene.handles["actor"].SetVisibility(False)
     publisher.sync()
-    orphan_ref = publisher._hot_arrays._orphaned_refs[(_dataset_id(scene), "points")]
+    orphan_ref = publisher._hot_arrays._orphaned_refs[
+        (cloud_dataset_id(scene), "points")
+    ]
     (orphan_hash,) = ref_manager_hashes([orphan_ref])
     assert blob_size(object_manager, orphan_hash)
 
     # The next patch mints a new fresh hash; the previous orphan's blob is
     # no longer referenced by any state and is queued for the debounced GC.
-    _touch_point(scene, 43, (2.0, 2.0, 2.0))
+    touch_point(scene, 43, (2.0, 2.0, 2.0))
     scene.handles["actor"].SetVisibility(True)
     publisher.sync()
     assert blob_size(object_manager, orphan_hash)  # retire is deferred
@@ -454,7 +356,7 @@ def test_hot_array_orphaned_blobs_are_released(publisher_env):
 
 def test_transaction_batches_mutations_into_one_broadcast():
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -482,7 +384,7 @@ def test_transaction_batches_mutations_into_one_broadcast():
 
 def test_dirty_marks_auto_publish_on_next_loop_tick():
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
 
     async def scenario():
         publisher = ScenePublisher(
@@ -504,7 +406,7 @@ def test_dirty_marks_auto_publish_on_next_loop_tick():
 
 def test_queued_command_publishes_on_next_loop_tick():
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
 
     async def scenario():
         publisher = ScenePublisher(
@@ -555,7 +457,7 @@ def test_retained_commands_are_replaced_cleared_and_replayed_on_resync():
 
 def test_resync_flushes_pending_changes_before_snapshot():
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -573,7 +475,7 @@ def test_resync_flushes_pending_changes_before_snapshot():
 
 def test_scene_resync_rpc_routes_to_registered_publisher():
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -594,14 +496,6 @@ def test_scene_resync_rpc_routes_to_registered_publisher():
 # ----------------------------------------------------------------------
 # Camera authority
 # ----------------------------------------------------------------------
-
-
-def make_publisher(scene, **kwargs):
-    server = _FakeServer()
-    publisher = ScenePublisher(
-        server, scene.api, scene.render_window, scene.render_window_id, **kwargs
-    )
-    return publisher, server
 
 
 def _camera_id(scene):
@@ -729,11 +623,11 @@ def test_event_is_current_goes_stale_when_the_node_is_touched_or_removed():
 
 def test_patch_array_staleness_counts(publisher_env):
     scene, publisher, server = publisher_env
-    _start_retention(scene, publisher, server)
-    dataset_id = _dataset_id(scene)
+    start_retention(scene, publisher, server)
+    dataset_id = cloud_dataset_id(scene)
     event = {"seq": publisher.store.seq}
 
-    _touch_point(scene, 12, (8.0, 7.0, 6.0))
+    touch_point(scene, 12, (8.0, 7.0, 6.0))
     publisher.sync()
     server.protocol.drain()
 
@@ -743,10 +637,10 @@ def test_patch_array_staleness_counts(publisher_env):
 
 def test_parsed_state_cache_skips_unchanged_referenced_states():
     scene = make_basic_scene()
-    counting = _CountingObjectManager(scene.api.vtk_object_manager)
+    counting = CountingObjectManager(scene.api.vtk_object_manager)
     scene.api.vtk_object_manager = counting
     publisher = ScenePublisher(
-        _FakeServer(), scene.api, scene.render_window, scene.render_window_id
+        FakeServer(), scene.api, scene.render_window, scene.render_window_id
     )
     try:
         mapper_id = counting.GetId(scene.handles["mapper"])
@@ -771,7 +665,7 @@ def test_parsed_state_cache_skips_unchanged_referenced_states():
 
 def test_removed_dataset_blobs_are_unregistered():
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -808,7 +702,7 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
     caching an empty array, so the mapper stamps nothing.
     """
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -845,9 +739,9 @@ def test_reentering_dataset_reregisters_its_dropped_blob():
             if op["op"] == "upsert" and op["id"] == dataset_id
         ]
         entry = upsert["node"]["arrays"]["points"]
-        assert entry["ref"] in message["blobs"], (
-            "the re-entering dataset's points blob must be inlined"
-        )
+        assert (
+            entry["ref"] in message["blobs"]
+        ), "the re-entering dataset's points blob must be inlined"
         payload = bytes(message["blobs"][entry["ref"]])
         assert len(payload) == expected_bytes, (
             f"re-entering dataset broadcast {len(payload)} bytes, expected "
@@ -861,7 +755,7 @@ def test_deferred_blob_gc_keeps_hashes_that_return_alive():
     """Protection is computed at flush time: a hash queued as stale that a
     later commit brings back into the live set must survive the flush."""
     scene = make_basic_scene()
-    server = _FakeServer()
+    server = FakeServer()
     publisher = ScenePublisher(
         server, scene.api, scene.render_window, scene.render_window_id
     )
@@ -898,12 +792,12 @@ def test_a_patched_away_blob_retires_once_serialization_stops_naming_it(
     """
     scene, publisher, server = publisher_env
     object_manager = scene.api.vtk_object_manager
-    message = _start_retention(scene, publisher, server)
+    message = start_retention(scene, publisher, server)
     (hash_value,) = ref_manager_hashes(
         [message["ops"][0]["node"]["arrays"]["points"]["ref"]]
     )
 
-    _touch_point(scene, 42, (1.0, 2.0, 3.0))
+    touch_point(scene, 42, (1.0, 2.0, 3.0))
     publisher.sync()
     ((_topic, patched),) = server.protocol.drain()
     assert [op["op"] for op in patched["ops"]] == ["patchArray"]

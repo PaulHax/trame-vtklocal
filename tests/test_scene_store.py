@@ -1,37 +1,20 @@
 """SceneStore unit + property tests (push sync v2, pure Python, no VTK).
 
-The reference ``apply_ops`` here is the normative client behavior: a client
-mirror that applies every broadcast op must equal ``store.snapshot()["nodes"]``
-after every commit. The JS engine implements exactly this contract.
+A client mirror that applies every broadcast op with the reference
+``apply_ops`` must equal ``store.snapshot()["nodes"]`` after every commit.
 """
 
 from __future__ import annotations
 
-import copy
 import random
 
 import pytest
 
+from push_oracle.reference import apply_ops
+
 from trame_vtklocal.store import SceneStore
 
 RW = "1"
-
-
-def apply_ops(mirror, ops):
-    """Reference client-mirror applier."""
-    for op in ops:
-        if op["op"] == "upsert":
-            mirror[op["id"]] = copy.deepcopy(op["node"])
-        elif op["op"] == "remove":
-            del mirror[op["id"]]
-        elif op["op"] == "patchArray":
-            node = mirror[op["id"]]
-            arrays = dict(node["arrays"])
-            arrays[op["key"]] = {**arrays[op["key"]], "ref": op["ref"]}
-            mirror[op["id"]] = {**node, "arrays": arrays}
-        else:  # pragma: no cover - protocol violation
-            raise AssertionError(f"unknown op {op['op']!r}")
-    return mirror
 
 
 def basic_nodes():

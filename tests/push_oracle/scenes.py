@@ -12,6 +12,9 @@ trigger.
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+from vtkmodules.util.numpy_support import numpy_to_vtk
+
 # Importing the OpenGL2 backend registers the object-factory overrides that
 # vtkRenderWindow() resolves to. VTK 9.6 no longer pulls it in behind
 # vtkRenderingCore, so without this the scene factories build a backend-less
@@ -564,3 +567,49 @@ def mutate_map_drape_frame(scene: OracleScene, frame_index: int):
     handles["actors"][3].SetVisibility(frame_index % 3 != 0)
     for key in ["footprint", "frustum", "connection", "trail"]:
         handles[key].Modified()
+
+
+POINT_COUNT = 10_000
+
+
+def make_points_cloud_scene(point_count=POINT_COUNT, name="points_cloud"):
+    """One actor over a large float32 point cloud (hot-array workloads)."""
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+    from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+
+    api = _ObjectManagerApiNoAttachments()
+    render_window = vtkRenderWindow()
+    render_window.SetOffScreenRendering(1)
+    renderer = vtkRenderer()
+    render_window.AddRenderer(renderer)
+
+    coords = np.linspace(0.0, 1.0, point_count * 3, dtype=np.float32).reshape(-1, 3)
+    points = vtkPoints()
+    points.SetData(numpy_to_vtk(coords, deep=True))
+
+    verts = vtkCellArray()
+    verts.InsertNextCell(1)
+    verts.InsertCellPoint(0)
+
+    polydata = vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetVerts(verts)
+    actor, mapper = add_actor(renderer, polydata)
+
+    render_window_id = api.vtk_object_manager.RegisterObject(render_window)
+    render_window.Render()
+    api.vtk_object_manager.UpdateStatesFromObjects()
+    return OracleScene(
+        name=name,
+        api=api,
+        render_window=render_window,
+        render_window_id=render_window_id,
+        handles={
+            "renderer": renderer,
+            "actor": actor,
+            "mapper": mapper,
+            "polydata": polydata,
+            "points": points,
+        },
+    )

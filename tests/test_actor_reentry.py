@@ -8,7 +8,13 @@ from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 
 from push_oracle.scenes import add_actor, make_quad_scene
-from test_v2_oracle import MirrorClient, hot_array_fast_path, make_publisher
+from push_oracle.harness import (
+    CountingObjectManager,
+    MirrorClient,
+    blob_size,
+    hot_array_fast_path,
+    make_publisher,
+)
 
 
 def flush(publisher, server, client):
@@ -137,7 +143,6 @@ def test_shared_geometry_survives_one_actor_leaving_and_returning():
 @pytest.mark.parametrize("flush_removed", [False, True])
 @pytest.mark.parametrize("changed", [False, True])
 def test_reentry_restores_blobs_and_retires_old_content(flush_removed, changed):
-    from test_publisher import blob_size
     from trame_vtklocal.store import ref_manager_hashes
 
     scene = make_quad_scene()
@@ -172,11 +177,9 @@ def test_reentry_restores_blobs_and_retires_old_content(flush_removed, changed):
 
 
 def test_reentry_refresh_failure_can_retry_descendants(monkeypatch):
-    from test_publisher import _CountingObjectManager
-
     scene = make_quad_scene()
     h = scene.handles
-    wrapper = _CountingObjectManager(scene.api.vtk_object_manager)
+    wrapper = CountingObjectManager(scene.api.vtk_object_manager)
     scene.api.vtk_object_manager = wrapper
     publisher, server = make_publisher(scene)
     client = MirrorClient()
@@ -254,11 +257,10 @@ def test_failed_actor_replacement_releases_detached_actor(monkeypatch):
     import gc
     from vtkmodules.vtkCommonCore import vtkWeakReference
     from push_oracle.scenes import make_line_polydata
-    from test_publisher import _CountingObjectManager
 
     scene = make_quad_scene()
     h = scene.handles
-    manager = _CountingObjectManager(scene.api.vtk_object_manager)
+    manager = CountingObjectManager(scene.api.vtk_object_manager)
     scene.api.vtk_object_manager = manager
     publisher, server = make_publisher(scene)
     client = MirrorClient()

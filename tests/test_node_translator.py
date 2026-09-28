@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from push_oracle.harness import blob_size
 from push_oracle.scenes import (
     OracleScene,
     _ObjectManagerApiNoAttachments,
@@ -280,16 +281,6 @@ def changed_ids(before, after):
         for node_id in set(before) | set(after)
         if before.get(node_id) != after.get(node_id)
     }
-
-
-def blob_size(object_manager, hash_value):
-    """Registered blob length (0 when the hash is gone).
-
-    VTK >= 9.6 answers an unknown hash with an EMPTY array rather than None,
-    so length — never ``is not None`` — is the liveness test.
-    """
-    blob = object_manager.GetBlob(hash_value)
-    return 0 if blob is None else memoryview(blob).nbytes
 
 
 def commit_scene(scene, nodes):

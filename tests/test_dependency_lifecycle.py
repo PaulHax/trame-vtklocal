@@ -9,8 +9,13 @@ from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersSources import vtkConeSource
 from vtkmodules.vtkRenderingCore import vtkProperty
 
-from push_oracle.scenes import add_actor, make_basic_scene
-from test_v2_oracle import MirrorClient, make_publisher
+from push_oracle.scenes import add_actor, make_basic_scene, make_points_cloud_scene
+from push_oracle.harness import (
+    MirrorClient,
+    make_publisher,
+    start_retention,
+    touch_point,
+)
 from trame_vtklocal.module.node_translator import translate_scene
 
 
@@ -188,16 +193,9 @@ def test_precommit_failure_retries_changes_and_commands(monkeypatch):
 
 @pytest.mark.parametrize("fast", [True, False])
 def test_failed_commit_preserves_retained_array_for_retry(monkeypatch, fast):
-    from test_hot_array_fast_path import (
-        _make_publisher,
-        _start_retention,
-        _touch_point,
-        make_points_cloud_scene,
-    )
-
     scene = make_points_cloud_scene(point_count=1000)
-    publisher, server = _make_publisher(scene)
-    _start_retention(scene, publisher, server)
+    publisher, server = make_publisher(scene)
+    start_retention(scene, publisher, server)
     client = MirrorClient()
     client.resync(publisher)
     before = {
@@ -205,7 +203,7 @@ def test_failed_commit_preserves_retained_array_for_retry(monkeypatch, fast):
     }
     original = publisher.store._commit
     try:
-        _touch_point(scene, 123, (5, 6, 7))
+        touch_point(scene, 123, (5, 6, 7))
         if not fast:
             scene.handles["actor"].SetVisibility(False)
 

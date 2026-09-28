@@ -261,7 +261,11 @@ function normalizeTiles3d(value) {
   }
   const appearance = {};
   if (value.overlayOrder !== undefined) {
-    if (!Number.isInteger(value.overlayOrder) || value.overlayOrder < 0 || value.overlayOrder > 10000)
+    if (
+      !Number.isInteger(value.overlayOrder) ||
+      value.overlayOrder < 0 ||
+      value.overlayOrder > 10000
+    )
       throw new RangeError("overlayOrder must be an integer within 0..10000");
     appearance.overlayOrder = value.overlayOrder;
   }
@@ -805,12 +809,17 @@ export function createStreamedSceneHost(options = {}) {
         getDevicePixelRatio(),
       );
       if (entry.config.kind === "tiles3d") {
-        entry.appearance = createMeshAppearanceRenderer(renderer, () => entry.config.kindConfig);
+        entry.appearance = createMeshAppearanceRenderer(
+          renderer,
+          () => entry.config.kindConfig,
+        );
       }
       try {
         entry.member = factories.create(
           entry.config.kind,
-          entry.appearance ? { ...contextForMember, renderer: entry.appearance.renderer } : contextForMember,
+          entry.appearance
+            ? { ...contextForMember, renderer: entry.appearance.renderer }
+            : contextForMember,
           memberConfig(entry),
         );
       } catch (error) {

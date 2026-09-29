@@ -87,6 +87,7 @@ export function createPickableGestures({
       : null;
     return {
       type,
+      ...(drag ? { gesture_id: drag.id } : {}),
       seq: readSeq() ?? null,
       pointer,
       viewport: readViewport() || null,
@@ -219,6 +220,9 @@ export function createPickableGestures({
     const canvas = getCanvas();
     const grabOffset = pickResult.grabOffset || { x: 0, y: 0 };
     drag = {
+      id: Array.from(crypto.getRandomValues(new Uint32Array(4)), (part) =>
+        part.toString(16).padStart(8, "0"),
+      ).join(""),
       pick: pickResult,
       grabOffset,
       pointerId: event?.pointerId,
@@ -241,6 +245,10 @@ export function createPickableGestures({
     );
     emitPayload(payload, onDragStart);
     return true;
+  }
+
+  function reconcileTarget(isPresent) {
+    if (drag && !isPresent(drag.pick)) endDrag(null, { cancelled: true });
   }
 
   function cancelForNode(nodeId) {
@@ -299,6 +307,7 @@ export function createPickableGestures({
     setEmitBackgroundClick,
     setShouldGrab,
     cancelForNode,
+    reconcileTarget,
     teardown,
   };
 }

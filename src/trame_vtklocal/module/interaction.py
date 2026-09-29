@@ -42,6 +42,7 @@ class PickableConfig(_PickableFields, total=False):
     """The ``pickable`` block; ``plane`` is present only when one was given."""
 
     plane: PickPlane
+    previewGroup: str
 
 
 def make_pickable(
@@ -52,6 +53,7 @@ def make_pickable(
     grab_px: SupportsFloat,
     priority: SupportsInt = 0,
     preview: PickPreview | None = None,
+    preview_group: str | None = None,
     plane: Mapping[str, Iterable[SupportsFloat]] | None = None,
 ) -> PickableConfig:
     """Mark ``mapper`` pickable and stamp its opaque hit-test metadata.
@@ -62,7 +64,9 @@ def make_pickable(
     wins). Re-calling with a changed config replaces it and bumps the mapper's
     MTime so the next push re-serializes it (reaching the client as a patch
     op); an unchanged config is a no-op, so callers can re-tag on every update
-    without forcing spurious re-serialization.
+    without forcing spurious re-serialization. ``preview_group`` explicitly
+    groups render buckets sharing one coordinate system and stable point ids.
+    A point id must be unique across all buckets within that group.
     """
     grab = positive_finite(grab_px, "grab_px must be a positive number")
     if preview not in (None, "screen", "plane", "cloud"):
@@ -91,6 +95,10 @@ def make_pickable(
         "priority": int(priority),
         "preview": preview,
     }
+    if preview_group is not None:
+        if not isinstance(preview_group, str) or not preview_group or ids is None:
+            raise ValueError("preview_group requires a nonempty string and point ids")
+        config["previewGroup"] = preview_group
     if normalized_plane is not None:
         config["plane"] = normalized_plane
     set_block(mapper, PICKABLE_STATE_KEY, config)

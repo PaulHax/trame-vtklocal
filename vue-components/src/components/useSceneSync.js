@@ -23,6 +23,7 @@ import {
   describePickableRegistry,
   pickAt as pickAtRegistry,
   resolvePickableMapper,
+  resolvePreviewTarget,
 } from "./pickables";
 import { getDevicePixelRatio, getViewportMetrics } from "./viewportMetrics";
 import { createRegistrationGesture } from "./registrationGesture";
@@ -369,8 +370,6 @@ export function useSceneSync(
 
     clearCoincidentTopology = registerBlockHandlers(reconciler, {
       pickables,
-      // Cancelling the drag ends its preview through onDragEnd.
-      onPickableRemoved: (nodeId) => gestures.cancelForNode(nodeId),
       distanceToCameraGlyphs,
       pointCloudPresentations,
       getStreamedSceneHost: () => streamedSceneHost,
@@ -392,6 +391,9 @@ export function useSceneSync(
         },
       },
       callbacks: {
+        beforeApply() {
+          dragPreview.beforeApply();
+        },
         beforeSnapshot() {
           appliedCommands.clear();
           dragPreview.end();
@@ -572,6 +574,11 @@ export function useSceneSync(
   function afterApply(message) {
     bindPrimaryCameraToRenderers();
     protectPreviewBindings();
+    gestures.reconcileTarget((pick) =>
+      pick.previewGroup != null
+        ? resolvePreviewTarget(pickables, pick, instances) !== null
+        : pickables.has(pick.nodeId),
+    );
     dragPreview.reapply(message);
   }
 
@@ -660,6 +667,7 @@ export function useSceneSync(
     getBoundArray: (id, key) => reconciler?.getBoundArray(id, key),
     getInstance,
     getPickableIds: (nodeId) => pickables.get(nodeId)?.ids ?? null,
+    resolveTarget: (pick) => resolvePreviewTarget(pickables, pick, instances),
     requestRender: () => renderRequestCallback?.(),
   });
 
@@ -686,7 +694,7 @@ export function useSceneSync(
     emit: (payload) => emit("pointerEvent", payload),
     onDragStart: dragPreview.start,
     onDragMove: dragPreview.move,
-    onDragEnd: dragPreview.end,
+    onDragEnd: dragPreview.release,
   });
 
   return {

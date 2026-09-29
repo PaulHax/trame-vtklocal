@@ -174,6 +174,9 @@ def on_pointer_event(event):
             f"context={event.get('context')}"
         )
 
+    if kind == "target.drag.end":
+        view.send_command("pointer.drag.end", {"gesture_id": event["gesture_id"]})
+
 
 @server.trigger("pickable_ready")
 def on_ready():

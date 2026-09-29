@@ -122,6 +122,7 @@ export function createSceneEngine({
   function applyOpsMessage(message) {
     ingestBlobs(message.blobs);
     const ops = message.ops || [];
+    callbacks.beforeApply?.(message);
     reconciler.applyMessage(ops, mirror, cache);
     // patchArray re-points its cache slot in place, so only upserts and
     // removes can strand a cached blob — skip the full live-ref walk for

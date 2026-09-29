@@ -323,6 +323,10 @@ class FeatureDemo:
                     self.scene.glyph_data.GetPoints().Modified()
 
                 self.publish(commit_drag)
+        if event.get("type") == "target.drag.end":
+            self.views[view_index].send_command(
+                "pointer.drag.end", {"gesture_id": event["gesture_id"]}
+            )
         self.state.flush()
 
 

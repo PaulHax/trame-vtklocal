@@ -94,12 +94,15 @@ def test_pickable_preview_configuration_round_trips():
         grab_px=12,
         preview="plane",
         plane=plane,
+        ids=["a", "b"],
+        preview_group="landmarks-one",
     )
 
     (node,) = _find_pickable_nodes(_translate(api, render_window_id))
     block = node["blocks"][pick.PICKABLE_STATE_KEY]
     assert block["preview"] == "plane"
     assert block["plane"] == plane
+    assert block["previewGroup"] == "landmarks-one"
 
 
 def test_pickable_cloud_preview_configuration_round_trips():

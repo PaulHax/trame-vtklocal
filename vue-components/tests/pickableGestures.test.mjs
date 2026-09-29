@@ -478,3 +478,18 @@ test("clicks emit through the enrichment hook like every other gesture", async (
   assert.equal(background.type, "background.click");
   assert.equal(background.marked, true);
 });
+
+test("each drag has one opaque identity across start, moves and release", async () => {
+  const harness = makeHarness();
+  const gestures = await createGestures(harness);
+  for (let i = 0; i < 2; i += 1) {
+    gestures.startTargetDrag(pointerEvent(100, 100));
+    harness.windowRef.dispatch("pointermove", pointerEvent(120, 100));
+    harness.windowRef.dispatch("pointerup", pointerEvent(140, 100));
+  }
+  const ids = harness.events.map((event) => event.gesture_id);
+  assert.match(ids[0], /^[0-9a-f]{32}$/);
+  assert.deepEqual(ids.slice(0, 3), Array(3).fill(ids[0]));
+  assert.deepEqual(ids.slice(3), Array(3).fill(ids[3]));
+  assert.notEqual(ids[0], ids[3]);
+});

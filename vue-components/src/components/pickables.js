@@ -52,6 +52,7 @@ function normalizeConfig(config) {
     priority: Number.isFinite(priority) ? priority : 0,
     preview: preview === "plane" && !plane ? null : preview,
     plane,
+    previewGroup: config.previewGroup ?? null,
   };
 }
 
@@ -64,6 +65,7 @@ function configSignature(config) {
     config.ids ? config.ids.join(",") : "",
     JSON.stringify(config.tags),
     config.preview || "",
+    config.previewGroup || "",
     JSON.stringify(config.plane),
   ].join("|");
 }
@@ -287,6 +289,7 @@ export function pickAt(
       pointId: entry.ids?.[near.pointIndex] ?? near.pointIndex,
       tags: entry.tags,
       preview: entry.preview,
+      previewGroup: entry.previewGroup,
       plane: entry.plane,
       pointsNodeId:
         instances?.getInstanceId?.(mapper.getInputData?.(0)) ?? null,
@@ -315,6 +318,7 @@ export function pickAt(
     pointId: best.pointId,
     tags: best.tags,
     preview: best.preview,
+    previewGroup: best.previewGroup,
     plane: best.plane,
     pointsNodeId,
     // The sole staleness contract: every scene node this pick's screen
@@ -342,9 +346,33 @@ export function describePickableRegistry(registry) {
       grabPx: entry.grabPx,
       priority: entry.priority,
       preview: entry.preview,
+      previewGroup: entry.previewGroup,
       idCount: entry.ids ? entry.ids.length : null,
       mapperLive: isLiveInstance(entry.mapper),
     });
   }
   return { size: registry.size, entries };
+}
+
+// A group is an explicit server declaration that its buckets share one point
+// identity space and coordinate system. Ambiguous IDs never select a target.
+export function resolvePreviewTarget(registry, pick, instances) {
+  let result = null;
+  for (const [nodeId, entry] of registry) {
+    if (
+      pick.previewGroup == null ||
+      entry.previewGroup !== pick.previewGroup ||
+      entry.preview !== pick.preview
+    )
+      continue;
+    const pointIndex = entry.ids?.indexOf(pick.pointId) ?? -1;
+    if (pointIndex < 0) continue;
+    if (result || entry.ids.indexOf(pick.pointId, pointIndex + 1) >= 0)
+      return null;
+    const mapper = resolvePickableMapper(entry);
+    const pointsNodeId = instances?.getInstanceId?.(mapper?.getInputData?.(0));
+    if (pointsNodeId == null) continue;
+    result = { nodeId, pointsNodeId: String(pointsNodeId), pointIndex };
+  }
+  return result;
 }

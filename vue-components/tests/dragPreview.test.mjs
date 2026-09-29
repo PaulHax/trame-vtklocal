@@ -52,6 +52,7 @@ test("screen drag preview updates one bound point and remains an overlay", async
 
   // A server patch for another point applies normally; reapply only restores
   // the optimistically dragged point.
+  preview.beforeApply();
   values[0] = -1;
   values[3] = 9;
   preview.reapply();
@@ -59,6 +60,7 @@ test("screen drag preview updates one bound point and remains an overlay", async
   assert.equal(values[3], 9);
 
   preview.end();
+  preview.beforeApply();
   values[0] = 2;
   assert.equal(preview.reapply(), false);
   assert.equal(values[0], 2);
@@ -95,6 +97,7 @@ test("ending a preview restores the last server-confirmed point", async () => {
   // The server confirms a cloud-depth point. It remains hidden by the active
   // screen-plane preview, then becomes authoritative when the drag ends even
   // if drag.end itself is a server-side no-op because the point is unchanged.
+  preview.beforeApply();
   values.set([2, 3, 4], 0);
   preview.reapply({
     ops: [
@@ -112,6 +115,7 @@ test("ending a preview restores the last server-confirmed point", async () => {
 
   // A patch to another point must not replace the saved confirmation with the
   // optimistic coordinate currently occupying this point's array slot.
+  preview.beforeApply();
   values.set([7, 8, 9], 3);
   preview.reapply({
     ops: [
@@ -152,6 +156,7 @@ test("partial server patches confirm only the covered point components", async (
 
   preview.start({ pick });
   preview.move({ cloud_solve: { status: "hit", world: [5, 6, 7] } });
+  preview.beforeApply();
   values[0] = 2;
   preview.reapply({
     ops: [
@@ -200,6 +205,7 @@ test("cloud drag uses solved world hits instead of a screen plane", async () => 
   );
   assert.deepEqual(Array.from(values), [2, 3, 4]);
 
+  preview.beforeApply();
   values.set([2, 3, 4]);
   preview.reapply({
     ops: [
@@ -299,6 +305,7 @@ test("preview ends when the bound points array is structurally replaced", async 
   assert.equal(preview.move({ pointer: { x: 75, y: 50 } }), true);
   assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
 
+  preview.beforeApply();
   values = new Float32Array([9, 9, 9]); // shrunk: index 0 is now B
   assert.equal(preview.reapply(), false);
   assert.deepEqual(Array.from(values), [9, 9, 9]);
@@ -341,6 +348,7 @@ test("preview follows the grabbed point id through same-size re-buckets", async 
   assert.ok(Math.abs(values[0] - 0.5) < 1e-6);
 
   // Same-size membership swap: A left, C joined. Index 0 is now B.
+  preview.beforeApply();
   ids = ["B", "C"];
   values.set([9, 9, 9, 8, 8, 8]);
   assert.equal(preview.reapply(), false);
@@ -450,4 +458,271 @@ test("plane drag preview honors vtk.js row-major composite matrices", async () =
   assert.ok(Math.abs(values[0] + 5) < 1e-6, `x was ${values[0]}`);
   assert.ok(Math.abs(values[1]) < 1e-6, `y was ${values[1]}`);
   assert.ok(Math.abs(values[2]) < 1e-6, `z was ${values[2]}`);
+});
+
+test("release holds the drop point through delayed updates until its acknowledgement", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const values = new Float32Array([0, 0, 0]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({ getBoundArray: () => array });
+  const pick = {
+    nodeId: "mapper",
+    pointsNodeId: "points",
+    pointIndex: 0,
+    world: [0, 0, 0],
+    preview: "cloud",
+  };
+  const hit = (x) => ({ cloud_solve: { status: "hit", world: [x, 0, 0] } });
+  const command = (id) => ({
+    name: "pointer.drag.end",
+    payload: { gesture_id: id },
+  });
+  const patch = (x, commands = []) => {
+    preview.beforeApply();
+    values[0] = x;
+    preview.reapply({
+      ops: [
+        {
+          op: "patchArray",
+          id: "points",
+          key: "points",
+          offset: 0,
+          data: new Float32Array([x, 0, 0]),
+          dataType: "Float32Array",
+        },
+      ],
+      commands,
+    });
+  };
+
+  preview.start({ pick, gesture_id: "first" });
+  preview.move(hit(8));
+  preview.release(hit(10));
+  assert.equal(values[0], 10, "release must use the final pointer position");
+  patch(2);
+  assert.equal(values[0], 10);
+  patch(5, [command("another-client")]);
+  assert.equal(values[0], 10);
+  // Server constraints may adjust the drop point: acknowledgement, not
+  // coordinate equality, decides when server truth becomes visible.
+  patch(9, [command("first")]);
+  assert.equal(values[0], 9);
+  patch(11);
+  assert.equal(values[0], 11);
+
+  preview.start({ pick, gesture_id: "second" });
+  preview.move(hit(20));
+  preview.release(hit(20));
+  preview.beforeApply();
+  preview.reapply({ commands: [command("first")] });
+  assert.equal(
+    values[0],
+    20,
+    "a stale acknowledgement must not end another drag",
+  );
+  preview.beforeApply();
+  preview.reapply({ commands: [command("second")] });
+  assert.equal(
+    values[0],
+    11,
+    "a rejected or unchanged drop needs no point patch",
+  );
+
+  preview.start({ pick, gesture_id: "third" });
+  preview.move(hit(30));
+  preview.release(hit(30));
+  preview.end();
+  assert.equal(values[0], 11, "teardown must clear a pending release");
+
+  preview.start({ pick, gesture_id: "fourth" });
+  preview.move(hit(40));
+  preview.release(hit(40));
+  preview.start({ pick, gesture_id: "fifth" });
+  assert.equal(
+    values[0],
+    40,
+    "regrabbing must preserve the held drop position",
+  );
+  patch(35, [command("fourth")]);
+  assert.equal(values[0], 40, "the previous drop must not move the new grab");
+  preview.move(hit(50));
+  preview.release(hit(50));
+  patch(50, [command("fifth")]);
+  assert.equal(values[0], 50);
+});
+
+test("independent releases retain both points through interleaved server replies", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const { createSceneEngine } = await loadModule(
+    "/src/components/engine/sceneEngine.js",
+  );
+  const values = new Float32Array([0, 0, 0, 1, 0, 0]);
+  const array = { getData: () => values, modified() {} };
+  const preview = createDragPreview({ getBoundArray: () => array });
+  const hit = (x) => ({ cloud_solve: { status: "hit", world: [x, 0, 0] } });
+  const start = (index, gesture_id) =>
+    preview.start({
+      gesture_id,
+      pick: {
+        nodeId: "m",
+        pointsNodeId: "p",
+        pointIndex: index,
+        preview: "cloud",
+      },
+    });
+  let receive;
+  let snapshotApplied;
+  const ready = new Promise((resolve) => {
+    snapshotApplied = resolve;
+  });
+  const session = {
+    subscribe(_topic, callback) {
+      receive = callback;
+      return {};
+    },
+    unsubscribe() {},
+    async call() {
+      return { v: 2, rw: "1", seq: 0, root: "1", nodes: {}, blobs: {} };
+    },
+  };
+  const engine = createSceneEngine({
+    client: { getConnection: () => ({ getSession: () => session }) },
+    rwId: "1",
+    reconciler: {
+      reset() {},
+      applySnapshot() {},
+      applyMessage(ops) {
+        for (const op of ops) values.set(op.data, op.offset);
+      },
+    },
+    mirror: { gcBlobCache() {}, size: () => 0 },
+    cache: new Map(),
+    callbacks: {
+      beforeSnapshot: preview.end,
+      onSnapshotApplied: snapshotApplied,
+      beforeApply: preview.beforeApply,
+      onApplied: preview.reapply,
+    },
+  });
+  engine.start();
+  await ready;
+  let seq = 0;
+  const patch = (ops, gesture_id = null) =>
+    receive([
+      {
+        v: 2,
+        rw: "1",
+        baseSeq: seq++,
+        seq,
+        ops,
+        blobs: {},
+        commands: gesture_id
+          ? [{ name: "pointer.drag.end", payload: { gesture_id } }]
+          : [],
+      },
+    ]);
+  start(0, "a");
+  preview.move(hit(10));
+  preview.release(hit(10));
+  start(1, "b");
+  preview.move(hit(20));
+  preview.release(hit(20));
+  assert.deepEqual(Array.from(values), [10, 0, 0, 20, 0, 0]);
+  patch([{ op: "patchArray", offset: 0, data: [2] }]);
+  assert.deepEqual(Array.from(values), [10, 0, 0, 20, 0, 0]);
+  patch([{ op: "patchArray", offset: 0, data: [9] }], "a");
+  assert.deepEqual(Array.from(values), [9, 0, 0, 20, 0, 0]);
+  patch([{ op: "patchArray", offset: 4, data: [3] }], "foreign-client");
+  assert.deepEqual(Array.from(values), [9, 0, 0, 20, 0, 0]);
+  patch([], "b");
+  assert.deepEqual(Array.from(values), [9, 0, 0, 1, 3, 0]);
+  start(0, "cancel");
+  preview.move(hit(40));
+  preview.release({ cancelled: true });
+  patch([], "cancel");
+  assert.equal(values[0], 9);
+  engine.stop();
+});
+
+test("a grouped preview follows bucket changes without touching another dataset", async () => {
+  const { createDragPreview } = await loadModule(
+    "/src/components/dragPreview.js",
+  );
+  const { applyPickableBlock, resolvePreviewTarget } = await loadModule(
+    "/src/components/pickables.js",
+  );
+  const registry = new Map();
+  const buffers = new Map();
+  function bucket(nodeId, ids, values, group = "dataset-one") {
+    const buffer = { getData: () => new Float32Array(values), modified() {} };
+    const data = new Float32Array(values);
+    buffer.getData = () => data;
+    buffers.set(nodeId, buffer);
+    applyPickableBlock(
+      registry,
+      nodeId,
+      {
+        ids,
+        grabPx: 10,
+        preview: "cloud",
+        previewGroup: group,
+      },
+      { getInputData: () => nodeId },
+    );
+    return data;
+  }
+  const instances = { getInstanceId: (id) => id };
+  const normal = bucket("normal", ["A", "B"], [0, 0, 0, 1, 0, 0]);
+  const other = bucket("other", ["A"], [99, 0, 0], "dataset-two");
+  const preview = createDragPreview({
+    getBoundArray: (id) => buffers.get(id),
+    getPickableIds: (id) => registry.get(id)?.ids,
+    resolveTarget: (pick) => resolvePreviewTarget(registry, pick, instances),
+  });
+  const pick = {
+    nodeId: "normal",
+    pointsNodeId: "normal",
+    pointIndex: 0,
+    pointId: "A",
+    preview: "cloud",
+    previewGroup: "dataset-one",
+  };
+  const hit = (x) => ({ cloud_solve: { status: "hit", world: [x, 0, 0] } });
+  preview.start({ pick, gesture_id: "drag" });
+  preview.move(hit(10));
+  preview.beforeApply();
+  assert.equal(normal[0], 0);
+  const remaining = bucket("normal", ["B"], [1, 0, 0]);
+  const selected = bucket("selected", ["A"], [2, 0, 0]);
+  preview.reapply();
+  preview.move(hit(20));
+  preview.release(hit(30));
+  assert.deepEqual(Array.from(remaining), [1, 0, 0]);
+  assert.deepEqual(Array.from(selected), [30, 0, 0]);
+  assert.deepEqual(Array.from(other), [99, 0, 0]);
+  preview.beforeApply();
+  selected[0] = 25;
+  preview.reapply({
+    commands: [{ name: "pointer.drag.end", payload: { gesture_id: "drag" } }],
+  });
+  assert.equal(selected[0], 25);
+
+  // Duplicate identities within one declared scope are unsafe to retarget.
+  bucket("duplicate", ["A"], [55, 0, 0]);
+  assert.equal(resolvePreviewTarget(registry, pick, instances), null);
+  registry.delete("duplicate");
+  preview.start({
+    pick: { ...pick, nodeId: "selected", pointsNodeId: "selected" },
+    gesture_id: "deleted",
+  });
+  preview.move(hit(40));
+  preview.beforeApply();
+  registry.delete("selected");
+  preview.reapply();
+  assert.equal(preview.move(hit(50)), false);
+  assert.equal(other[0], 99);
 });

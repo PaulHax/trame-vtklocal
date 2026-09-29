@@ -211,6 +211,32 @@ controls and reproducible headless checks.
 Gesture ``pointer_event`` camera matrices use column-major layout for both
 local and shared views, matching ``setRenderedCamera``.
 
+Drag release acknowledgement
+----------------------------
+
+Drag events carry an opaque ``gesture_id`` shared by their start, moves and
+end. The browser holds the final preview position after release so delayed
+scene updates cannot replay earlier pointer positions. After processing a
+``target.drag.end`` event, the application must enqueue an acknowledgement on
+the originating view, after publishing any final scene mutations::
+
+    view.send_command("pointer.drag.end", {"gesture_id": event["gesture_id"]})
+
+Send the acknowledgement even when the drop is unchanged, cancelled or
+rejected. Use ``finally`` if the handler may return early. Do not retain the
+command. The acknowledgement shares the ordered scene stream with the final
+position; once applied, the server position becomes authoritative. Async
+handlers must await their scene mutations before acknowledging the release.
+
+For points that move between render buckets, pass the same nonempty
+``preview_group`` to ``make_pickable`` for every bucket in one layer. Provide
+stable ``ids`` that are unique within that group and use one coordinate system
+and preview mode throughout it. Use a distinct group for every independent
+layer or dataset. The preview follows ``(preview_group, point_id)`` across
+buckets; duplicate identities or a removed target stop that preview safely.
+Different points retain independent pending previews, and a regrab transfers
+that point's preview to the new gesture.
+
 Streamed memory allowance
 -------------------------
 

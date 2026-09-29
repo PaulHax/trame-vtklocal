@@ -3,7 +3,6 @@
 
 import { mat4 } from "../glMatrix";
 import { getWorldToClipMatrix } from "./cameraMatrix";
-import { viewAsTypedArray } from "./sync/base64";
 
 const EPSILON = 1e-9;
 
@@ -39,25 +38,28 @@ export function createDragPreview({
   getBoundArray,
   getInstance,
   getPickableIds,
+  resolveTarget,
   requestRender,
 } = {}) {
-  let active = null;
+  const previews = new Set();
+  let current = null;
 
-  // Where does the grabbed point live in the bound array right now? The app
-  // may reorder or re-bucket points mid-drag (e.g. selecting the grabbed
-  // point moves it between render buckets), so the pick-time index can go
-  // stale while the array keeps its size. When the pick was made against an
-  // ids block, follow the grabbed id (returning -1 when the point left this
-  // node). An index-fallback pointId is just a number that ids arriving
-  // mid-drag would never contain, so those picks stay on the index path.
-  function currentPointIndex() {
-    if (!active.trackById) return active.pick.pointIndex;
-    const ids = getPickableIds?.(active.pick.nodeId);
-    if (!Array.isArray(ids)) return active.pick.pointIndex;
-    return ids.indexOf(active.pick.pointId);
+  function samePoint(preview, pick) {
+    if (preview.pick.previewGroup != null || pick.previewGroup != null) {
+      return (
+        preview.pick.previewGroup === pick.previewGroup &&
+        preview.pick.pointId === pick.pointId
+      );
+    }
+    return (
+      preview.pick.nodeId === pick.nodeId &&
+      (preview.trackById
+        ? preview.pick.pointId === pick.pointId
+        : preview.pick.pointIndex === pick.pointIndex)
+    );
   }
 
-  function previewWorld(payload) {
+  function previewWorld(active, payload) {
     if (active.pick.preview === "cloud") {
       const world = payload?.cloud_solve?.world;
       return payload?.cloud_solve?.status === "hit" &&
@@ -92,184 +94,160 @@ export function createDragPreview({
     return origin && normal ? intersectPlane(near, far, origin, normal) : null;
   }
 
-  function journalSlot(array, values, offset) {
-    let journal = active.undo.find(
-      (entry) => entry.array === array && entry.offset === offset,
-    );
-    if (!journal) {
-      journal = {
-        array,
-        values,
-        offset,
-        confirmed: values.slice(offset, offset + 3),
-        optimistic: null,
-      };
-      active.undo.push(journal);
-    } else if (journal.values !== values) {
-      // A full node republish reuses the vtk array but replaces its typed
-      // array. The replacement contains clean server state, so it becomes the
-      // new undo baseline instead of restoring into the detached old buffer.
-      journal.values = values;
-      journal.confirmed = values.slice(offset, offset + 3);
-      journal.optimistic = null;
-    }
-    return journal;
-  }
-
-  function restoreUndo({ clear = false } = {}) {
-    if (!active) return false;
-    let restored = false;
-    for (const entry of active.undo) {
-      if (!entry.optimistic) continue;
-      if (entry.offset + 2 >= entry.values.length) continue;
-      for (let component = 0; component < 3; component += 1) {
-        // A structural replacement may reuse the same typed array and overwrite
-        // this slot without a patch op. Restore only bytes still carrying our
-        // last overlay; anything else is newer external/server state.
-        if (
-          Object.is(
-            entry.values[entry.offset + component],
-            entry.optimistic[component],
-          )
-        ) {
-          entry.values[entry.offset + component] = entry.confirmed[component];
-        } else {
-          entry.confirmed[component] = entry.values[entry.offset + component];
-        }
-      }
-      entry.optimistic = null;
-      entry.array.modified?.();
-      restored = true;
-    }
-    if (clear) active.undo.length = 0;
-    if (restored) {
-      getInstance?.(active.pointsNodeId)?.modified?.();
-      getInstance?.(active.pick.nodeId)?.modified?.();
-      requestRender?.();
-    }
-    return restored;
-  }
-
-  function cancelPreview() {
-    if (!active) return false;
-    const restored = restoreUndo({ clear: true });
-    active = null;
-    return restored;
-  }
-
-  function write(world) {
-    if (!active || !world) return false;
-    const array = getBoundArray?.(active.pointsNodeId, "points");
-    const values = array?.getData?.();
-    const pointIndex = currentPointIndex();
-    const offset = pointIndex * 3;
-    if (pointIndex < 0 || !values || offset + 2 >= values.length) {
-      // The grabbed point left this node (re-bucketed by the app) or the
-      // array shrank past it: writing through a stale index would move a
-      // DIFFERENT point. Stop previewing; server confirmations own the rest
-      // of the drag.
-      cancelPreview();
-      return false;
-    }
-    if (values.length !== active.expectedLength) {
-      if (active.expectedLength !== null && !active.trackById) {
-        // Structural change with no point identity to re-target by.
-        cancelPreview();
-        return false;
-      }
-      active.expectedLength = values.length;
-    }
-    const journal = journalSlot(array, values, offset);
-    values.set(world, offset);
-    journal.optimistic = values.slice(offset, offset + 3);
-    array.modified?.();
-    getInstance?.(active.pointsNodeId)?.modified?.();
-    getInstance?.(active.pick.nodeId)?.modified?.();
-    active.world = world.slice();
+  function restore(preview) {
+    const saved = preview.undo;
+    preview.undo = null;
+    if (!saved) return false;
+    // Each overlay owns exactly one point. Undo before reconciling scene
+    // messages so partial patches and rebucketing always read server data.
+    saved.values.set(saved.confirmed, saved.offset);
+    saved.array.modified?.();
+    getInstance?.(saved.pointsNodeId)?.modified?.();
+    getInstance?.(saved.nodeId)?.modified?.();
     requestRender?.();
     return true;
   }
 
-  function matchingPatchData(op) {
-    if (
-      !active ||
-      op?.op !== "patchArray" ||
-      String(op.id) !== active.pointsNodeId ||
-      op.key !== "points"
-    ) {
-      return null;
-    }
-    try {
-      return viewAsTypedArray(op.data, op.dataType);
-    } catch {
-      return null;
-    }
+  function remove(preview) {
+    const restored = restore(preview);
+    previews.delete(preview);
+    if (current === preview) current = null;
+    return restored;
   }
 
-  // Reconciler patches have already landed when reapply() runs. Fold exactly
-  // the covered typed-array elements into the undo journal before putting the
-  // optimistic overlay back; untouched components retain their prior server
-  // values instead of accidentally adopting optimistic neighbors.
-  function absorbConfirmations(message) {
-    if (!active || !Array.isArray(message?.ops)) return;
-    const currentArray = getBoundArray?.(active.pointsNodeId, "points");
-    for (const op of message.ops) {
-      const data = matchingPatchData(op);
-      if (!data) continue;
-      const patchStart = Number(op.offset);
-      const patchEnd = patchStart + data.length;
-      for (const entry of active.undo) {
-        if (entry.array !== currentArray) continue;
-        const overlapStart = Math.max(entry.offset, patchStart);
-        const overlapEnd = Math.min(entry.offset + 3, patchEnd);
-        for (let index = overlapStart; index < overlapEnd; index += 1) {
-          entry.confirmed[index - entry.offset] = data[index - patchStart];
-        }
-      }
+  function targetFor(preview) {
+    const { pick } = preview;
+    if (pick.previewGroup != null) return resolveTarget?.(pick) ?? null;
+    const ids = getPickableIds?.(pick.nodeId);
+    const pointIndex = preview.trackById
+      ? Array.isArray(ids)
+        ? ids.indexOf(pick.pointId)
+        : -1
+      : pick.pointIndex;
+    return { nodeId: pick.nodeId, pointsNodeId: pick.pointsNodeId, pointIndex };
+  }
+
+  function write(preview, world) {
+    if (!world) return false;
+    const target = targetFor(preview);
+    const array =
+      target && getBoundArray?.(String(target.pointsNodeId), "points");
+    const values = array?.getData?.();
+    const offset = target?.pointIndex * 3;
+    if (
+      !target ||
+      target.pointIndex < 0 ||
+      !values ||
+      offset + 2 >= values.length ||
+      (!preview.trackById &&
+        preview.expectedLength !== null &&
+        preview.expectedLength !== values.length)
+    ) {
+      remove(preview);
+      return false;
     }
+    if (
+      preview.undo &&
+      (preview.undo.array !== array ||
+        preview.undo.values !== values ||
+        preview.undo.offset !== offset)
+    ) {
+      restore(preview);
+    }
+    preview.expectedLength = values.length;
+    if (!preview.undo) {
+      preview.undo = {
+        ...target,
+        array,
+        values,
+        offset,
+        confirmed: values.slice(offset, offset + 3),
+      };
+    }
+    values.set(world, offset);
+    array.modified?.();
+    getInstance?.(String(target.pointsNodeId))?.modified?.();
+    getInstance?.(target.nodeId)?.modified?.();
+    preview.world = world.slice();
+    requestRender?.();
+    return true;
   }
 
   function start(payload) {
-    cancelPreview();
+    if (current) remove(current);
     const pick = payload?.pick;
-    if (!pick?.preview || pick.pointsNodeId == null) {
-      active = null;
-      return false;
+    if (!pick?.preview || pick.pointsNodeId == null) return false;
+    // A regrab takes over that point's pending overlay and its authoritative
+    // baseline. Other points keep their own pending release previews.
+    const pending = [...previews].find((preview) => samePoint(preview, pick));
+    if (pending) {
+      current = pending;
+      current.pick = pick;
+      current.gestureId = payload.gesture_id;
+      current.released = false;
+      return true;
     }
     const ids = getPickableIds?.(String(pick.nodeId));
-    active = {
+    current = {
       pick,
-      pointsNodeId: String(pick.pointsNodeId),
-      // Identity tracking only holds when the pick actually carries an id
-      // from the pickable's ids block; otherwise pointId is the numeric
-      // index fallback and ids can never resolve it.
+      gestureId: payload.gesture_id,
+      released: false,
       trackById: Array.isArray(ids) && ids[pick.pointIndex] != null,
       world: null,
       expectedLength: null,
-      undo: [],
+      undo: null,
     };
+    previews.add(current);
     return true;
   }
 
   function move(payload) {
-    if (!active) return false;
-    const world = previewWorld(payload);
-    if (active.pick.preview === "cloud" && !world) {
-      if (active.world) restoreUndo();
-      active.world = null;
+    if (!current) return false;
+    const world = previewWorld(current, payload);
+    if (current.pick.preview === "cloud" && !world) {
+      restore(current);
+      current.world = null;
       return false;
     }
-    return write(world);
+    return write(current, world);
+  }
+
+  function beforeApply() {
+    for (const preview of previews) restore(preview);
   }
 
   function reapply(message = null) {
-    absorbConfirmations(message);
-    return active?.world ? write(active.world) : false;
+    let changed = false;
+    for (const preview of previews) {
+      if (
+        preview.released &&
+        message?.commands?.some(
+          (command) =>
+            command.name === "pointer.drag.end" &&
+            command.payload?.gesture_id === preview.gestureId,
+        )
+      ) {
+        changed = remove(preview) || changed;
+      } else if (preview.world) {
+        changed = write(preview, preview.world) || changed;
+      } else if (!targetFor(preview)) {
+        remove(preview);
+      }
+    }
+    return changed;
+  }
+
+  function release(payload) {
+    if (!current) return;
+    if (!payload?.cancelled) move(payload);
+    if (!current) return;
+    current.released = true;
+    current = null;
   }
 
   function end() {
-    cancelPreview();
+    for (const preview of previews) remove(preview);
   }
 
-  return { start, move, reapply, end };
+  return { start, move, beforeApply, reapply, release, end };
 }

@@ -14,7 +14,7 @@
     "vue": "^2.7.0 || >=3.0.0"
   },
   "dependencies": {
-    "pointcloud-lod": "0.12.4"
+    "pointcloud-lod": "0.12.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",
